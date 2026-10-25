@@ -11,7 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:freedium_mobile/features/inbox/domain/inbox_message.dart';
 
-class InboxNotifier extends Notifier<InboxState> {
+class InboxNotifier() extends Notifier<InboxState> {
   @override
   InboxState build() => const InboxState();
 
@@ -80,7 +80,6 @@ class InboxNotifier extends Notifier<InboxState> {
                 : '页面已打开，等待短信…${hits > 0 ? '（已截获 $hits 个响应）' : ''}')
           : '${merged.length} 条 · 来源 $src${hits > 0 ? ' · 截获 $hits' : ''}',
       pageUrl: payload['url']?.toString() ?? state.pageUrl,
-      clearError: true,
     );
   }
 
@@ -108,7 +107,7 @@ class InboxNotifier extends Notifier<InboxState> {
   }
 
   void reset() {
-    state = const InboxState(status: '正在打开收件页…');
+    state = const InboxState();
   }
 }
 

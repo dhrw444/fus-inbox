@@ -23,16 +23,15 @@ const kInboxDefaultUrl = 'https://freeussms.com/numbers/17573242429/';
 const _kInjectAsset = 'assets/js/fus_inbox.js';
 const _kChannel = 'FusInbox';
 
-class InboxScreen extends ConsumerStatefulWidget {
-  const InboxScreen({super.key, this.url = kInboxDefaultUrl});
-
+class const InboxScreen({super.key, this.url = kInboxDefaultUrl})
+    extends ConsumerStatefulWidget {
   final String url;
 
   @override
   ConsumerState<InboxScreen> createState() => _InboxScreenState();
 }
 
-class _InboxScreenState extends ConsumerState<InboxScreen> {
+class _InboxScreenState() extends ConsumerState<InboxScreen> {
   late final WebViewController _controller;
   late Future<WebViewWidget> _webViewFuture;
 
@@ -235,9 +234,8 @@ class _InboxScreenState extends ConsumerState<InboxScreen> {
   }
 }
 
-class _MessageList extends StatelessWidget {
-  const _MessageList({required this.messages, required this.onCopy});
-
+class const _MessageList({required this.messages, required this.onCopy})
+    extends StatelessWidget {
   final List<InboxMessage> messages;
   final Future<void> Function(String) onCopy;
 
@@ -315,9 +313,8 @@ class _MessageList extends StatelessWidget {
   }
 }
 
-class _Tag extends StatelessWidget {
-  const _Tag({required this.text, required this.theme, this.busy = false});
-
+class const _Tag({required this.text, required this.theme, this.busy = false})
+    extends StatelessWidget {
   final String text;
   final ThemeData theme;
   final bool busy;
@@ -344,9 +341,8 @@ class _Tag extends StatelessWidget {
   }
 }
 
-class _BottomBar extends StatelessWidget {
-  const _BottomBar({required this.inbox, required this.onShowList});
-
+class const _BottomBar({required this.inbox, required this.onShowList})
+    extends StatelessWidget {
   final InboxState inbox;
   final VoidCallback onShowList;
 
@@ -373,9 +369,8 @@ class _BottomBar extends StatelessWidget {
   }
 }
 
-class _HintCard extends StatelessWidget {
-  const _HintCard({required this.inbox, required this.theme});
-
+class const _HintCard({required this.inbox, required this.theme})
+    extends StatelessWidget {
   final InboxState inbox;
   final ThemeData theme;
 

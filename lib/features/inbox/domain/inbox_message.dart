@@ -6,16 +6,14 @@
 library;
 
 /// 单条短信。
-class InboxMessage {
-  const InboxMessage({
-    required this.key,
-    required this.code,
-    required this.text,
-    this.time = '',
-    this.phone = '',
-    this.isNew = false,
-  });
-
+class const InboxMessage({
+  required this.key,
+  required this.code,
+  required this.text,
+  this.time = '',
+  this.phone = '',
+  this.isNew = false,
+}) {
   final String key;
   final String code;
   final String text;
@@ -52,17 +50,15 @@ enum InboxPhase {
   failed,
 }
 
-class InboxState {
-  const InboxState({
-    this.messages = const [],
-    this.phase = InboxPhase.waiting,
-    this.source = '',
-    this.hits = 0,
-    this.status = '正在打开收件页…',
-    this.error,
-    this.pageUrl,
-  });
-
+class const InboxState({
+  this.messages = const [],
+  this.phase = InboxPhase.waiting,
+  this.source = '',
+  this.hits = 0,
+  this.status = '正在打开收件页…',
+  this.error,
+  this.pageUrl,
+}) {
   final List<InboxMessage> messages;
   final InboxPhase phase;
 
