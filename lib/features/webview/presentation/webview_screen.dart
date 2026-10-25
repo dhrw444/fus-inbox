@@ -1,4 +1,4 @@
-import 'package:freedium_mobile/shared/widgets/expressive_icon_button.dart';
+import 'package:fus_inbox/shared/widgets/expressive_icon_button.dart';
 import 'package:material_3_expressive/material_3_expressive.dart';
 
 import 'dart:async';
@@ -6,17 +6,17 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/features/bookmarks/application/bookmarks_provider.dart';
-import 'package:freedium_mobile/features/bookmarks/presentation/widgets/move_to_folder_sheet.dart';
-import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
-import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
-import 'package:freedium_mobile/features/webview/presentation/widgets/font_settings_sheet.dart';
-import 'package:freedium_mobile/features/webview/presentation/widgets/reader_loading_overlays.dart';
-import 'package:freedium_mobile/features/webview/presentation/widgets/reader_webview.dart';
-import 'package:freedium_mobile/features/home/presentation/home_screen.dart';
-import 'package:freedium_mobile/features/webview/application/initial_mirror_resolver.dart';
-import 'package:freedium_mobile/features/webview/domain/webview_state.dart';
-import 'package:freedium_mobile/features/webview/application/webview_provider.dart';
+import 'package:fus_inbox/features/bookmarks/application/bookmarks_provider.dart';
+import 'package:fus_inbox/features/bookmarks/presentation/widgets/move_to_folder_sheet.dart';
+import 'package:fus_inbox/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/settings/domain/settings_state.dart';
+import 'package:fus_inbox/features/webview/presentation/widgets/font_settings_sheet.dart';
+import 'package:fus_inbox/features/webview/presentation/widgets/reader_loading_overlays.dart';
+import 'package:fus_inbox/features/webview/presentation/widgets/reader_webview.dart';
+import 'package:fus_inbox/features/home/presentation/home_screen.dart';
+import 'package:fus_inbox/features/webview/application/initial_mirror_resolver.dart';
+import 'package:fus_inbox/features/webview/domain/webview_state.dart';
+import 'package:fus_inbox/features/webview/application/webview_provider.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 @visibleForTesting

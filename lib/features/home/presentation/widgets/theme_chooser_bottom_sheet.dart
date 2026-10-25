@@ -1,8 +1,8 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
-import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+import 'package:fus_inbox/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/settings/domain/settings_state.dart';
 
 void showThemeChooserBottomSheet(BuildContext context) {
   showModalBottomSheet<void>(

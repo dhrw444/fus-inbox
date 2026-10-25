@@ -1,13 +1,13 @@
 import 'dart:convert';
 
-import 'package:freedium_mobile/features/settings/application/settings_service.dart';
+import 'package:fus_inbox/features/settings/application/settings_service.dart';
 
 import 'package:material_ui/material_ui.dart' show ThemeMode;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/core/services/font_size_service.dart';
-import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
-import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+import 'package:fus_inbox/core/services/font_size_service.dart';
+import 'package:fus_inbox/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/settings/domain/settings_state.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 

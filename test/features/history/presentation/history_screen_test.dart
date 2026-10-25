@@ -5,9 +5,9 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/services/font_size_service.dart';
-import 'package:freedium_mobile/features/history/domain/reading_history.dart';
-import 'package:freedium_mobile/features/history/presentation/history_screen.dart';
+import 'package:fus_inbox/core/services/font_size_service.dart';
+import 'package:fus_inbox/features/history/domain/reading_history.dart';
+import 'package:fus_inbox/features/history/presentation/history_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 

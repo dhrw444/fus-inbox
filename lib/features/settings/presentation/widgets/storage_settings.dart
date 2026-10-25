@@ -5,10 +5,10 @@ import 'dart:async';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/settings/application/settings_provider.dart';
 
-import 'package:freedium_mobile/core/constants/app_constants.dart';
-import 'package:freedium_mobile/core/services/cache_service.dart';
+import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/core/services/cache_service.dart';
 
 import 'settings_update_action.dart';
 

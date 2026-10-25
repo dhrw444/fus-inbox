@@ -1,6 +1,6 @@
-import 'package:freedium_mobile/core/utils/external_url_launcher.dart'
+import 'package:fus_inbox/core/utils/external_url_launcher.dart'
     show parseExternalHttpUrl;
-import 'package:freedium_mobile/features/history/domain/reading_history.dart'
+import 'package:fus_inbox/features/history/domain/reading_history.dart'
     show normalizeReadingProgress;
 
 /// Navigation policy for WebView requests, shared by the [Webview] notifier

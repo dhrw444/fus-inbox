@@ -6,8 +6,8 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:freedium_mobile/features/numbers/data/numbers_repository.dart';
-import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/data/numbers_repository.dart';
+import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 /// 目录页签（对应界面上可横向滚动的 TabBar）。
 enum NumberTab(this.label) {

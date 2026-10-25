@@ -2,8 +2,8 @@ import 'package:material_3_expressive/material_3_expressive.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/core/services/font_size_service.dart';
-import 'package:freedium_mobile/features/webview/presentation/widgets/font_settings_sheet.dart';
+import 'package:fus_inbox/core/services/font_size_service.dart';
+import 'package:fus_inbox/features/webview/presentation/widgets/font_settings_sheet.dart';
 
 void main() {
   group('FontSettingsSheet', () {

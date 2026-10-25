@@ -14,7 +14,7 @@ if (keystorePropertiesFile.exists()) {
 }
 
 android {
-    namespace = "io.github.amansikarwar.freedium_mobile"
+    namespace = "com.yg.fusinbox"
     compileSdk = 37
     ndkVersion = flutter.ndkVersion
 

@@ -1,4 +1,4 @@
-package io.github.amansikarwar.freedium_mobile
+package com.yg.fusinbox
 
 import android.content.Context
 import android.graphics.Color

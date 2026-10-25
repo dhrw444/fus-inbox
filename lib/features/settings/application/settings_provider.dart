@@ -3,19 +3,19 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/core/services/font_size_service.dart'
+import 'package:fus_inbox/core/services/font_size_service.dart'
     show sharedPreferencesProvider;
-import 'package:freedium_mobile/core/utils/serial_task_queue.dart';
-import 'package:freedium_mobile/core/utils/url.dart'
+import 'package:fus_inbox/core/utils/serial_task_queue.dart';
+import 'package:fus_inbox/core/utils/url.dart'
     show hasSameOrigin, isHttpUri, normalizeMirrorUrl, trimTrailingSlash;
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:material_ui/material_ui.dart' show ThemeMode;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:freedium_mobile/features/settings/application/mirror_probe.dart'
+import 'package:fus_inbox/features/settings/application/mirror_probe.dart'
     show probeMirrorUrl;
-import 'package:freedium_mobile/features/settings/application/settings_service.dart'
+import 'package:fus_inbox/features/settings/application/settings_service.dart'
     show SettingsService;
-import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+import 'package:fus_inbox/features/settings/domain/settings_state.dart';
 
 export 'mirror_probe.dart'
     show MirrorProbeResult, probeMirrorUrl, sendMirrorProbeRequest;

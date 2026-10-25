@@ -14,19 +14,19 @@ export 'core/routing/app_navigation.dart'
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:freedium_mobile/core/constants/app_constants.dart';
-import 'package:freedium_mobile/core/routing/app_navigation.dart'
+import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/core/routing/app_navigation.dart'
     show
         currentRouteNameObserver,
         navigateToWebview,
         navigatorKey,
         shouldSkipIncomingWebviewNavigation;
-import 'package:freedium_mobile/core/services/intent_service.dart';
-import 'package:freedium_mobile/core/theme/theme_provider.dart';
-import 'package:freedium_mobile/core/theme/expressive_theme.dart';
-import 'package:freedium_mobile/core/utils/article_url_parser.dart';
-import 'package:freedium_mobile/features/main/presentation/main_screen.dart';
-import 'package:freedium_mobile/features/onboarding/application/onboarding_provider.dart';
+import 'package:fus_inbox/core/services/intent_service.dart';
+import 'package:fus_inbox/core/theme/theme_provider.dart';
+import 'package:fus_inbox/core/theme/expressive_theme.dart';
+import 'package:fus_inbox/core/utils/article_url_parser.dart';
+import 'package:fus_inbox/features/main/presentation/main_screen.dart';
+import 'package:fus_inbox/features/onboarding/application/onboarding_provider.dart';
 
 part 'app.g.dart';
 

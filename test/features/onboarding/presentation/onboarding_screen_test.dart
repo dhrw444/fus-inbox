@@ -1,8 +1,8 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/services/font_size_service.dart';
-import 'package:freedium_mobile/features/onboarding/presentation/onboarding_screen.dart';
+import 'package:fus_inbox/core/services/font_size_service.dart';
+import 'package:fus_inbox/features/onboarding/presentation/onboarding_screen.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../test_helpers.dart';

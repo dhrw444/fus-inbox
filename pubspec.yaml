@@ -1,4 +1,4 @@
-name: freedium_mobile
+name: fus_inbox
 description: "Read articles from seven supported publishers without hitting the paywall"
 publish_to: "none"
 version: 0.13.0+13

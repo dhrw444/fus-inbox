@@ -14,7 +14,7 @@ library;
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 /// 一页目录抓下来的结果。
 class const NumberPage({required this.numbers, this.total}) {

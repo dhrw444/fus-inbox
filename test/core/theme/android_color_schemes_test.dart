@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/theme/android_color_schemes.dart';
+import 'package:fus_inbox/core/theme/android_color_schemes.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

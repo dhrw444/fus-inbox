@@ -1,6 +1,6 @@
-import 'package:freedium_mobile/shared/widgets/expressive_icon_button.dart';
+import 'package:fus_inbox/shared/widgets/expressive_icon_button.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:freedium_mobile/shared/widgets/article_card.dart'
+import 'package:fus_inbox/shared/widgets/article_card.dart'
     show libraryContentMaxWidth;
 
 /// Search bar hosted in the `AppBar.bottom` slot of library screens

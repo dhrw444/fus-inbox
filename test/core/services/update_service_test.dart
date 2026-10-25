@@ -2,7 +2,7 @@ import 'dart:convert';
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/services/update_service.dart';
+import 'package:fus_inbox/core/services/update_service.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 

@@ -4,9 +4,9 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
-import 'package:freedium_mobile/core/utils/url.dart'
+import 'package:fus_inbox/core/utils/url.dart'
     show normalizeMirrorUrl, trimTrailingSlash;
-import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+import 'package:fus_inbox/features/settings/domain/settings_state.dart';
 
 class const AddMirrorDialog({
   super.key,

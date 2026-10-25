@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/features/webview/domain/webview_state.dart';
+import 'package:fus_inbox/features/webview/domain/webview_state.dart';
 
 void main() {
   group('WebviewState.copyWith', () {

@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 typedef BookmarkFilePicker = Future<String?> Function();
 
-const bookmarkBackupChannel = MethodChannel('freedium/bookmark_backup');
+const bookmarkBackupChannel = MethodChannel('fusinbox/bookmark_backup');
 final bookmarkFilePickerProvider = Provider<BookmarkFilePicker>(
   (ref) =>
       () => bookmarkBackupChannel.invokeMethod<String>('openBackup'),

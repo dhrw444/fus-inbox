@@ -2,7 +2,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/services/intent_service.dart';
+import 'package:fus_inbox/core/services/intent_service.dart';
 import 'package:receive_intent/receive_intent.dart';
 
 import '../../test_helpers.dart';

@@ -5,8 +5,8 @@ library;
 
 import 'package:material_ui/material_ui.dart';
 
-import 'package:freedium_mobile/features/numbers/presentation/numbers_screen.dart';
-import 'package:freedium_mobile/features/saved/presentation/saved_screen.dart';
+import 'package:fus_inbox/features/numbers/presentation/numbers_screen.dart';
+import 'package:fus_inbox/features/saved/presentation/saved_screen.dart';
 
 class const MainScreen({super.key}) extends StatefulWidget {
   @override

@@ -8,7 +8,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:freedium_mobile/features/inbox/domain/inbox_message.dart';
+import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 
 class InboxStore({this.onChanged}) {
   final VoidCallback? onChanged;

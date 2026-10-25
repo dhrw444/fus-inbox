@@ -6,24 +6,24 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart' show ColorScheme, Colors;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:freedium_mobile/core/constants/app_constants.dart';
-import 'package:freedium_mobile/core/services/font_size_service.dart';
-import 'package:freedium_mobile/core/utils/external_url_launcher.dart';
-import 'package:freedium_mobile/core/utils/url.dart' show trimTrailingSlash;
-import 'package:freedium_mobile/features/history/application/history_provider.dart';
-import 'package:freedium_mobile/features/history/domain/reading_history.dart';
-import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
-import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
-import 'package:freedium_mobile/features/webview/application/freedium_article_url_builder.dart';
-import 'package:freedium_mobile/features/webview/application/theme_injector_service.dart';
-import 'package:freedium_mobile/features/webview/application/webview_error_mapper.dart'
+import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/core/services/font_size_service.dart';
+import 'package:fus_inbox/core/utils/external_url_launcher.dart';
+import 'package:fus_inbox/core/utils/url.dart' show trimTrailingSlash;
+import 'package:fus_inbox/features/history/application/history_provider.dart';
+import 'package:fus_inbox/features/history/domain/reading_history.dart';
+import 'package:fus_inbox/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/settings/domain/settings_state.dart';
+import 'package:fus_inbox/features/webview/application/freedium_article_url_builder.dart';
+import 'package:fus_inbox/features/webview/application/theme_injector_service.dart';
+import 'package:fus_inbox/features/webview/application/webview_error_mapper.dart'
     show getUserFriendlyWebviewErrorMessage;
-import 'package:freedium_mobile/features/webview/application/webview_navigation_policy.dart'
+import 'package:fus_inbox/features/webview/application/webview_navigation_policy.dart'
     show
         WebviewNavigationAction,
         buildReadingProgressRestoreScript,
         resolveWebviewNavigationAction;
-import 'package:freedium_mobile/features/webview/domain/webview_state.dart';
+import 'package:fus_inbox/features/webview/domain/webview_state.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';

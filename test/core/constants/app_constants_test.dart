@@ -1,6 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/constants/app_constants.dart';
-import 'package:freedium_mobile/core/utils/external_url_launcher.dart';
+import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/core/utils/external_url_launcher.dart';
 
 void main() {
   group('AppConstants', () {

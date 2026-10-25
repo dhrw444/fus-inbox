@@ -1,14 +1,14 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:freedium_mobile/core/theme/dynamic_color_scheme.dart';
+import 'package:fus_inbox/core/theme/dynamic_color_scheme.dart';
 
 Future<({ColorScheme light, ColorScheme dark})?>
 loadAndroidColorSchemes() async {
   if (kIsWeb || defaultTargetPlatform != TargetPlatform.android) return null;
 
   try {
-    final palettes = await const MethodChannel('freedium/theme')
+    final palettes = await const MethodChannel('fusinbox/theme')
         .invokeMapMethod<String, dynamic>('getColorSchemes');
     if (palettes == null) return null;
 

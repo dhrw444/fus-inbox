@@ -3,8 +3,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:freedium_mobile/core/constants/app_constants.dart';
-import 'package:freedium_mobile/core/utils/url.dart' show normalizeHttpUrl;
+import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/core/utils/url.dart' show normalizeHttpUrl;
 import 'package:http/http.dart' as http;
 import 'package:pub_semver/pub_semver.dart';
 
@@ -42,8 +42,8 @@ class UpdateService({
 
   this : _client = client ?? http.Client();
 
-  static const String _repoOwner = 'AmanSikarwar';
-  static const String _repoName = 'freedium_mobile';
+  static const String _repoOwner = 'dhrw444';
+  static const String _repoName = 'fus-inbox';
   static const String _apiUrl =
       'https://api.github.com/repos/$_repoOwner/$_repoName/releases/latest';
 

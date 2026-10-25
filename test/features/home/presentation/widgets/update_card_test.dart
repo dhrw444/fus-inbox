@@ -5,10 +5,10 @@ import 'dart:math' as math;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/services/update_service.dart';
-import 'package:freedium_mobile/core/utils/external_url_launcher.dart';
-import 'package:freedium_mobile/core/theme/app_theme.dart';
-import 'package:freedium_mobile/features/home/presentation/widgets/update_card.dart';
+import 'package:fus_inbox/core/services/update_service.dart';
+import 'package:fus_inbox/core/utils/external_url_launcher.dart';
+import 'package:fus_inbox/core/theme/app_theme.dart';
+import 'package:fus_inbox/features/home/presentation/widgets/update_card.dart';
 
 void main() {
   group('UpdateCard', () {

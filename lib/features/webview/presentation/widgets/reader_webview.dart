@@ -4,7 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
-const readerPlatformChannel = MethodChannel('freedium/webview');
+const readerPlatformChannel = MethodChannel('fusinbox/webview');
 
 Future<WebViewWidget> createReaderWebView(WebViewController controller) async {
   PlatformWebViewWidgetCreationParams params =

@@ -1,4 +1,4 @@
-import 'package:freedium_mobile/shared/widgets/expressive_icon_button.dart';
+import 'package:fus_inbox/shared/widgets/expressive_icon_button.dart';
 import 'package:material_3_expressive/material_3_expressive.dart';
 
 import 'dart:async';
@@ -7,20 +7,20 @@ import 'dart:io';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:freedium_mobile/core/constants/app_constants.dart';
-import 'package:freedium_mobile/core/services/update_service.dart';
-import 'package:freedium_mobile/core/utils/article_url_parser.dart';
-import 'package:freedium_mobile/core/utils/external_url_launcher.dart';
-import 'package:freedium_mobile/features/bookmarks/presentation/bookmarks_screen.dart';
-import 'package:freedium_mobile/features/history/application/history_provider.dart';
-import 'package:freedium_mobile/features/history/domain/reading_history.dart';
-import 'package:freedium_mobile/features/history/presentation/history_screen.dart';
-import 'package:freedium_mobile/features/home/application/home_provider.dart';
-import 'package:freedium_mobile/features/home/presentation/widgets/about_dialog.dart';
-import 'package:freedium_mobile/features/home/presentation/widgets/continue_reading_section.dart';
-import 'package:freedium_mobile/features/home/presentation/widgets/update_card.dart';
-import 'package:freedium_mobile/features/settings/presentation/settings_screen.dart';
-import 'package:freedium_mobile/core/routing/app_navigation.dart';
+import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/core/services/update_service.dart';
+import 'package:fus_inbox/core/utils/article_url_parser.dart';
+import 'package:fus_inbox/core/utils/external_url_launcher.dart';
+import 'package:fus_inbox/features/bookmarks/presentation/bookmarks_screen.dart';
+import 'package:fus_inbox/features/history/application/history_provider.dart';
+import 'package:fus_inbox/features/history/domain/reading_history.dart';
+import 'package:fus_inbox/features/history/presentation/history_screen.dart';
+import 'package:fus_inbox/features/home/application/home_provider.dart';
+import 'package:fus_inbox/features/home/presentation/widgets/about_dialog.dart';
+import 'package:fus_inbox/features/home/presentation/widgets/continue_reading_section.dart';
+import 'package:fus_inbox/features/home/presentation/widgets/update_card.dart';
+import 'package:fus_inbox/features/settings/presentation/settings_screen.dart';
+import 'package:fus_inbox/core/routing/app_navigation.dart';
 
 class const HomeScreen({super.key}) extends ConsumerStatefulWidget {
   @override

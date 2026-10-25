@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/services/clipboard_service.dart';
+import 'package:fus_inbox/core/services/clipboard_service.dart';
 
 import '../../test_helpers.dart';
 

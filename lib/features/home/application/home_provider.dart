@@ -1,9 +1,9 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:freedium_mobile/core/services/clipboard_service.dart';
-import 'package:freedium_mobile/core/utils/article_url_parser.dart';
-import 'package:freedium_mobile/features/home/domain/home_state.dart';
+import 'package:fus_inbox/core/services/clipboard_service.dart';
+import 'package:fus_inbox/core/utils/article_url_parser.dart';
+import 'package:fus_inbox/features/home/domain/home_state.dart';
 
-export 'package:freedium_mobile/features/home/domain/home_state.dart';
+export 'package:fus_inbox/features/home/domain/home_state.dart';
 
 part 'home_provider.g.dart';
 

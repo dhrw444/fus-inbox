@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/features/webview/application/initial_mirror_resolver.dart';
+import 'package:fus_inbox/features/webview/application/initial_mirror_resolver.dart';
 
 void main() {
   group('resolveInitialMirrorUrl', () {

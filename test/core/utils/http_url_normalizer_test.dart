@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/core/utils/url.dart';
+import 'package:fus_inbox/core/utils/url.dart';
 
 import '../../test_helpers.dart';
 

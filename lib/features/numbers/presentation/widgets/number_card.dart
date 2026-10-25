@@ -3,7 +3,7 @@ library;
 
 import 'package:material_ui/material_ui.dart';
 
-import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 class const NumberCard({
   super.key,

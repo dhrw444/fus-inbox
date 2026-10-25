@@ -14,12 +14,12 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-import 'package:freedium_mobile/features/inbox/application/inbox_provider.dart';
-import 'package:freedium_mobile/features/inbox/domain/inbox_message.dart';
-import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
-import 'package:freedium_mobile/features/numbers/presentation/widgets/number_card.dart'
+import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
+import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
+import 'package:fus_inbox/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart'
     show relativeTime;
-import 'package:freedium_mobile/features/webview/presentation/widgets/reader_webview.dart'
+import 'package:fus_inbox/features/webview/presentation/widgets/reader_webview.dart'
     show createReaderWebView;
 
 const _kInjectAsset = 'assets/js/fus_inbox.js';

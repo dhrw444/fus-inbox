@@ -1,6 +1,6 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/features/webview/presentation/widgets/reader_webview.dart';
+import 'package:fus_inbox/features/webview/presentation/widgets/reader_webview.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 

@@ -3,14 +3,14 @@ import 'dart:convert';
 import 'package:material_ui/material_ui.dart' show ThemeMode;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
-import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
-import 'package:freedium_mobile/features/settings/application/settings_service.dart';
+import 'package:fus_inbox/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/settings/application/settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/features/bookmarks/application/bookmarks_provider.dart';
-import 'package:freedium_mobile/features/bookmarks/application/bookmarks_service.dart';
-import 'package:freedium_mobile/features/history/application/history_provider.dart';
-import 'package:freedium_mobile/features/history/application/history_service.dart';
-import 'package:freedium_mobile/core/utils/serial_task_queue.dart';
+import 'package:fus_inbox/features/bookmarks/application/bookmarks_provider.dart';
+import 'package:fus_inbox/features/bookmarks/application/bookmarks_service.dart';
+import 'package:fus_inbox/features/history/application/history_provider.dart';
+import 'package:fus_inbox/features/history/application/history_service.dart';
+import 'package:fus_inbox/core/utils/serial_task_queue.dart';
 
 import '../test_helpers.dart';
 

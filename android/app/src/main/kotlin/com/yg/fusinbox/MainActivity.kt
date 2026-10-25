@@ -1,4 +1,4 @@
-package io.github.amansikarwar.freedium_mobile
+package com.yg.fusinbox
 
 import android.app.Activity
 import android.content.Intent
@@ -15,7 +15,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "freedium/theme")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fusinbox/theme")
             .setMethodCallHandler { call, result ->
                 if (call.method != "getColorSchemes") {
                     result.notImplemented()
@@ -27,7 +27,7 @@ class MainActivity : FlutterActivity() {
                     }
                 }
             }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "freedium/webview")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fusinbox/webview")
             .setMethodCallHandler { call, result ->
                 if (call.method == "getAndroidSdkVersion") {
                     result.success(Build.VERSION.SDK_INT)
@@ -35,7 +35,7 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "freedium/bookmark_backup")
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "fusinbox/bookmark_backup")
             .setMethodCallHandler { call, result ->
                 if (call.method != "openBackup") {
                     result.notImplemented()

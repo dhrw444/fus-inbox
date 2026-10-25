@@ -1,8 +1,8 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_3_expressive/material_3_expressive.dart';
 import 'package:material_ui/material_ui.dart';
-import 'package:freedium_mobile/core/theme/app_theme.dart';
-import 'package:freedium_mobile/core/theme/expressive_theme.dart';
+import 'package:fus_inbox/core/theme/app_theme.dart';
+import 'package:fus_inbox/core/theme/expressive_theme.dart';
 
 void main() {
   for (final brightness in Brightness.values) {

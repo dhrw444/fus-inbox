@@ -1,6 +1,6 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/features/webview/application/theme_injector_service.dart';
+import 'package:fus_inbox/features/webview/application/theme_injector_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

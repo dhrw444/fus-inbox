@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:receive_intent/receive_intent.dart' as platform;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:freedium_mobile/core/utils/article_url_parser.dart';
+import 'package:fus_inbox/core/utils/article_url_parser.dart';
 
 part 'intent_service.g.dart';
 

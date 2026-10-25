@@ -1,8 +1,8 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:freedium_mobile/features/bookmarks/application/bookmark_io.dart';
-import 'package:freedium_mobile/features/bookmarks/domain/bookmarked_article.dart';
+import 'package:fus_inbox/features/bookmarks/application/bookmark_io.dart';
+import 'package:fus_inbox/features/bookmarks/domain/bookmarked_article.dart';
 
 import '../../../test_helpers.dart';
 

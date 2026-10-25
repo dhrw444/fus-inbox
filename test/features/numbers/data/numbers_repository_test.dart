@@ -9,7 +9,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:freedium_mobile/features/numbers/data/numbers_repository.dart';
+import 'package:fus_inbox/features/numbers/data/numbers_repository.dart';
 
 void main() {
   late String html;

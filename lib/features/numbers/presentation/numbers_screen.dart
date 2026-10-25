@@ -8,11 +8,11 @@ library;
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import 'package:freedium_mobile/features/inbox/presentation/inbox_screen.dart';
-import 'package:freedium_mobile/features/numbers/application/numbers_provider.dart';
-import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
-import 'package:freedium_mobile/features/numbers/presentation/widgets/number_card.dart';
-import 'package:freedium_mobile/features/saved/application/saved_provider.dart';
+import 'package:fus_inbox/features/inbox/presentation/inbox_screen.dart';
+import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
+import 'package:fus_inbox/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart';
+import 'package:fus_inbox/features/saved/application/saved_provider.dart';
 
 class const NumbersScreen({super.key}) extends ConsumerStatefulWidget {
   @override

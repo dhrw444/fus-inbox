@@ -1,8 +1,8 @@
 import 'dart:convert';
 
-import 'package:freedium_mobile/core/utils/url.dart' show normalizeHttpUrl;
-import 'package:freedium_mobile/features/bookmarks/domain/bookmark_folder.dart';
-import 'package:freedium_mobile/features/bookmarks/domain/bookmarked_article.dart';
+import 'package:fus_inbox/core/utils/url.dart' show normalizeHttpUrl;
+import 'package:fus_inbox/features/bookmarks/domain/bookmark_folder.dart';
+import 'package:fus_inbox/features/bookmarks/domain/bookmarked_article.dart';
 
 // JSON backup format for bookmarks, versioned for forward compatibility:
 //
