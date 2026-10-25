@@ -24,13 +24,13 @@ void main() {
       final client = MockClient((request) async {
         expect(
           request.url.toString(),
-          'https://api.github.com/repos/AmanSikarwar/freedium_mobile/releases/latest',
+          'https://api.github.com/repos/dhrw444/fus-inbox/releases/latest',
         );
 
         return http.Response(
           jsonEncode({
             'tag_name': 'v0.14.0',
-            'html_url': 'https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.14.0',
+            'html_url': 'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0',
             'body': null,
           }),
           200,
@@ -43,7 +43,7 @@ void main() {
       expect(updateInfo!.latestVersion, 'v0.14.0');
       expect(
         updateInfo.releaseUrl,
-        'https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.14.0',
+        'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0',
       );
       expect(updateInfo.releaseNotes, isEmpty);
     });
@@ -53,7 +53,7 @@ void main() {
         return http.Response(
           jsonEncode({
             'tag_name': ' V0.14.0 ',
-            'html_url': ' https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.14.0 ',
+            'html_url': ' https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0 ',
             'body': ['not a string'],
           }),
           200,
@@ -66,7 +66,7 @@ void main() {
       expect(updateInfo!.latestVersion, 'v0.14.0');
       expect(
         updateInfo.releaseUrl,
-        'https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.14.0',
+        'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0',
       );
       expect(updateInfo.releaseNotes, isEmpty);
     });
@@ -93,7 +93,7 @@ void main() {
         return http.Response(
           jsonEncode({
             'tag_name': 'v0.10.0',
-            'html_url': 'https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.10.0',
+            'html_url': 'https://github.com/dhrw444/fus-inbox/releases/tag/v0.10.0',
             'body': 'Current release',
           }),
           200,

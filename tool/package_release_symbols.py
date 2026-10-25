@@ -38,7 +38,7 @@ def main():
     if empty:
         raise SystemExit(f'Empty release symbol files: {", ".join(empty)}')
 
-    bundle_name = f'freedium-v{version}-build{build_number}-symbols'
+    bundle_name = f'fus-inbox-v{version}-build{build_number}-symbols'
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
     archive = OUTPUT_DIRECTORY / f'{bundle_name}.zip'
     temporary_archive = archive.with_suffix('.zip.tmp')

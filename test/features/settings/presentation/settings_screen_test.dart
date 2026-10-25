@@ -92,7 +92,7 @@ void main() {
           (_) async => http.Response(
             jsonEncode({
               'tag_name': 'v0.14.0',
-              'html_url': 'https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.14.0',
+              'html_url': 'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0',
               'body': 'Release notes',
             }),
             200,
@@ -163,7 +163,7 @@ void main() {
       final prefs = await SharedPreferences.getInstance();
       final launchedUrls = <String?>[];
       const releaseUrl =
-          'https://github.com/AmanSikarwar/freedium_mobile/releases/tag/v0.14.0';
+          'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0';
       final updateService = UpdateService(
         client: MockClient(
           (_) async => http.Response(
