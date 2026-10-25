@@ -107,10 +107,13 @@ NumberPage parseDirectory(String html) {
   }
 
   final totalMatch = _totalRe.firstMatch(html);
-  return NumberPage(
-    numbers: out,
-    total: int.tryParse(totalMatch?.group(1) ?? ''),
-  );
+  final total = int.tryParse(totalMatch?.group(1) ?? '');
+  // 页面自报有号、却一张卡都没解析出来 = 站点模板变了。显式抛错，
+  // 别让上层把「解析失败」显示成「这里没有号码」。
+  if (out.isEmpty && total != null && total > 0) {
+    throw NumberFetchException('目录解析失败：页面自报 $total 个号，但一张卡片都没匹配上，站点模板可能变了');
+  }
+  return NumberPage(numbers: out, total: total);
 }
 
 /// 目录数据源。

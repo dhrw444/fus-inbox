@@ -6,7 +6,6 @@ import 'package:flutter/foundation.dart';
 import 'package:material_ui/material_ui.dart' show ColorScheme, Colors;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/services/font_size_service.dart';
 import 'package:fus_inbox/core/utils/external_url_launcher.dart';
 import 'package:fus_inbox/core/utils/url.dart' show trimTrailingSlash;

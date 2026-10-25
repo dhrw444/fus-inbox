@@ -11,7 +11,8 @@ import 'package:flutter/foundation.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 
 class InboxStore({this.onChanged}) {
-  final VoidCallback? onChanged;
+  /// 页面销毁时置空：引擎可能比页面活得久，回传不该再触发已卸载页面的刷新。
+  VoidCallback? onChanged;
 
   InboxState _state = const InboxState();
   InboxState get state => _state;
@@ -140,4 +141,7 @@ class InboxStore({this.onChanged}) {
     _firstBatchDone = false;
     _emit(const InboxState());
   }
+
+  /// 页面销毁时调用：此后任何回传都只更新状态，不再回调界面。
+  void detach() => onChanged = null;
 }

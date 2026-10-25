@@ -114,13 +114,15 @@ class const InboxState({
     String? status,
     String? error,
     bool clearError = false,
+    bool clearStatus = false,
+    bool clearSource = false,
   }) {
     return InboxState(
       messages: messages ?? this.messages,
       phase: phase ?? this.phase,
-      source: source ?? this.source,
+      source: clearSource ? '' : (source ?? this.source),
       hits: hits ?? this.hits,
-      status: status ?? this.status,
+      status: clearStatus ? '' : (status ?? this.status),
       error: clearError ? null : (error ?? this.error),
     );
   }

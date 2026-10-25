@@ -1,5 +1,5 @@
-import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/utils/url.dart'
+import 'package:fus_inbox/features/webview/application/legacy_mirror.dart';
     show hasSameOrigin, trimTrailingSlash;
 
 Uri buildFreediumArticleUri({
@@ -65,7 +65,7 @@ String canonicalArticleUrl(
   Iterable<String> mirrorUrls = const [],
 }) {
   final mirrors = {
-    AppConstants.freediumMirrorUrl,
+    legacyReaderMirrorUrl,
     'https://freedium.cfd', // Legacy shared links remain readable.
     ...mirrorUrls,
   };

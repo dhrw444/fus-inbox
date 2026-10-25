@@ -1,6 +1,5 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/services/font_size_service.dart';
 import 'package:fus_inbox/features/webview/application/freedium_article_url_builder.dart';
 import 'package:fus_inbox/features/webview/application/webview_provider.dart';
@@ -8,6 +7,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:webview_flutter_platform_interface/webview_flutter_platform_interface.dart';
 import 'package:fus_inbox/features/settings/application/settings_provider.dart';
+import 'package:fus_inbox/features/webview/application/legacy_mirror.dart';
 
 import '../webview_test_helpers.dart';
 
@@ -33,7 +33,7 @@ void main() {
       notifier.setThemeInjector(FakeThemeInjector());
       notifier.createController();
       final displayed = buildFreediumArticleUri(
-        mirrorUrl: AppConstants.freediumMirrorUrl,
+        mirrorUrl: legacyReaderMirrorUrl,
         articleUrl: 'https://medium.com/example/second-story',
       );
       platform.delegate.start(displayed.toString());
@@ -69,7 +69,7 @@ void main() {
       expect(
         capturedParams.single.uri,
         buildFreediumArticleUri(
-          mirrorUrl: AppConstants.freediumMirrorUrl,
+          mirrorUrl: legacyReaderMirrorUrl,
           articleUrl: articleUrl,
         ),
       );

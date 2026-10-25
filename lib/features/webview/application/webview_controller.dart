@@ -1,8 +1,9 @@
+import 'package:fus_inbox/features/webview/application/legacy_mirror.dart';
 part of 'webview_provider.dart';
 
 extension _WebviewController on Webview {
   WebViewController _createController({String? baseUrl}) {
-    final activeBaseUrl = baseUrl ?? AppConstants.freediumMirrorUrl;
+    final activeBaseUrl = baseUrl ?? legacyReaderMirrorUrl;
     final initialUrl = buildFreediumArticleUri(
       mirrorUrl: activeBaseUrl,
       articleUrl: url,

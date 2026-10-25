@@ -67,12 +67,14 @@
   function str(v) { return typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)); }
 
   // 站点给的 copy_code 是权威值；没有才从正文里兜。
+  // 兜底必须带语义门：否则「订单 12345 已发货」这类正文会被当成验证码放大。
   function codeFrom(text) {
-    var m = str(text).match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
+    var t = str(text);
+    if (!/(code|verif|otp|passcode|验证码|验证)/i.test(t)) return '';
+    var m = t.match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
     return m ? m[1] : '';
   }
 
-  var lastKey2 = '';
   function normMessage(m) {
     if (!m || typeof m !== 'object') return null;
     var content = str(m.content || m.body || m.text || m.message);

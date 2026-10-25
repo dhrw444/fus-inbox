@@ -14,16 +14,21 @@ import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import 'package:fus_inbox/core/webview/webview_widget.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart'
     show relativeTime;
-import 'package:fus_inbox/features/webview/presentation/widgets/reader_webview.dart'
-    show createReaderWebView;
 
 const _kInjectAsset = 'assets/js/fus_inbox.js';
 const _kChannel = 'FusInbox';
+
+/// 允许引擎停留的主机。
+///
+/// [InboxStore.ingestRaw] 会无条件接收通道送来的 JSON，所以通道只能留给
+/// 站点自己的页面——第三方页面拿到它就等于能往状态层里塞任意数据。
+const _kAllowedHost = 'freeussms.com';
 
 class const InboxScreen({required this.number, super.key})
     extends StatefulWidget {
@@ -38,7 +43,7 @@ class _InboxScreenState() extends State<InboxScreen> {
   late Future<WebViewWidget> _webViewFuture;
   late final InboxStore _store;
 
-  String? _injectScript;
+  late final Future<String> _scriptFuture;
   Timer? _watchdog;
 
   /// 站点要求人工过风控时，临时露一次页面。平时恒为 false。
@@ -52,9 +57,12 @@ class _InboxScreenState() extends State<InboxScreen> {
         if (mounted) setState(() {});
       },
     );
+    _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
+      _store.fail('注入脚本读不到：$e');
+      return '';
+    });
     _controller = _buildController();
-    _webViewFuture = createReaderWebView(_controller);
-    unawaited(_loadScript());
+    _webViewFuture = createPlatformWebView(_controller);
     unawaited(_controller.loadRequest(Uri.parse(widget.number.inboxUrl)));
     _watchdog = Timer(const Duration(seconds: 25), _onWatchdog);
   }
@@ -62,6 +70,13 @@ class _InboxScreenState() extends State<InboxScreen> {
   @override
   void dispose() {
     _watchdog?.cancel();
+    // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
+    _store.detach();
+    unawaited(
+      _controller
+          .loadRequest(Uri.parse('about:blank'))
+          .catchError((Object _) {}),
+    );
     super.dispose();
   }
 
@@ -71,14 +86,6 @@ class _InboxScreenState() extends State<InboxScreen> {
     _store.note(
       _store.state.hits == 0 ? '25 秒没截获到接口响应，可能卡在站点的人机验证。' : '截获到了接口，但里面没有消息。',
     );
-  }
-
-  Future<void> _loadScript() async {
-    try {
-      _injectScript = await rootBundle.loadString(_kInjectAsset);
-    } catch (e) {
-      _store.fail('注入脚本读不到：$e');
-    }
   }
 
   WebViewController _buildController() {
@@ -94,7 +101,16 @@ class _InboxScreenState() extends State<InboxScreen> {
       )
       ..setNavigationDelegate(
         NavigationDelegate(
-          onPageStarted: (url) => unawaited(_inject()),
+          // 只放行站点自己的域名。通道会把页面发来的 JSON 直接交给状态层，
+          // 任何第三方页面拿到它都是不该有的攻击面。
+          onNavigationRequest: (request) {
+            final host = Uri.tryParse(request.url)?.host ?? '';
+            if (host == _kAllowedHost || host.endsWith('.$_kAllowedHost')) {
+              return NavigationDecision.navigate;
+            }
+            return NavigationDecision.prevent;
+          },
+          // 文档就绪后才注入；onPageStarted 阶段 document 还不存在。
           onPageFinished: (url) => unawaited(_inject()),
           onWebResourceError: (error) {
             if (error.isForMainFrame == false) return;
@@ -105,7 +121,7 @@ class _InboxScreenState() extends State<InboxScreen> {
   }
 
   Future<void> _inject() async {
-    final script = _injectScript ?? await rootBundle.loadString(_kInjectAsset);
+    final script = await _scriptFuture;
     if (script.isEmpty) return;
     try {
       await _controller.runJavaScript(script);

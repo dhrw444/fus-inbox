@@ -1,6 +1,6 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:material_ui/material_ui.dart' show ThemeMode;
-import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/features/webview/application/legacy_mirror.dart';
 
 part 'settings_state.freezed.dart';
 part 'settings_state.g.dart';
@@ -24,7 +24,7 @@ abstract class const SettingsState._() with _$SettingsState {
     @Default(ThemeMode.system) ThemeMode themeMode,
     @Default(SettingsState.defaultDefaultFontSize) double defaultFontSize,
     @Default([]) List<FreediumMirror> mirrors,
-    @Default(AppConstants.freediumMirrorUrl) String selectedMirrorUrl,
+    @Default(legacyReaderMirrorUrl) String selectedMirrorUrl,
     @Default(true) bool autoSwitchMirror,
     @Default(SettingsState.defaultMirrorTimeout) int mirrorTimeout,
     @Default(true) bool showSitePopups,
@@ -57,7 +57,7 @@ abstract class const SettingsState._() with _$SettingsState {
   static List<FreediumMirror> get defaultMirrors => [
     const FreediumMirror(
       name: 'Freedium Mirror (Primary)',
-      url: AppConstants.freediumMirrorUrl,
+      url: legacyReaderMirrorUrl,
       isDefault: true,
     ),
   ];

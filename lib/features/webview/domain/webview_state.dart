@@ -1,5 +1,5 @@
 import 'package:freezed_annotation/freezed_annotation.dart';
-import 'package:fus_inbox/core/constants/app_constants.dart';
+import 'package:fus_inbox/features/webview/application/legacy_mirror.dart';
 
 part 'webview_state.freezed.dart';
 
@@ -34,7 +34,7 @@ abstract class const WebviewState._() with _$WebviewState {
     @Default(true) bool isInitialLoad,
     @Default(18.0) double fontSize,
     String? currentUrl,
-    @Default(AppConstants.freediumMirrorUrl) String activeBaseUrl,
+    @Default(legacyReaderMirrorUrl) String activeBaseUrl,
     @Default(false) bool hasError,
     String? errorMessage,
     // One-shot message for the UI layer to display as a SnackBar.

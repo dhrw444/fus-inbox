@@ -497,7 +497,7 @@ return $default(_that.themeMode,_that.defaultFontSize,_that.mirrors,_that.select
 
 
 class _SettingsState extends SettingsState {
-  const _SettingsState({this.themeMode = ThemeMode.system, this.defaultFontSize = SettingsState.defaultDefaultFontSize,  List<FreediumMirror> mirrors = const [], this.selectedMirrorUrl = AppConstants.freediumMirrorUrl, this.autoSwitchMirror = true, this.mirrorTimeout = SettingsState.defaultMirrorTimeout, this.showSitePopups = true}): _mirrors = mirrors,super._();
+  const _SettingsState({this.themeMode = ThemeMode.system, this.defaultFontSize = SettingsState.defaultDefaultFontSize,  List<FreediumMirror> mirrors = const [], this.selectedMirrorUrl = legacyReaderMirrorUrl, this.autoSwitchMirror = true, this.mirrorTimeout = SettingsState.defaultMirrorTimeout, this.showSitePopups = true}): _mirrors = mirrors,super._();
   
 
 @override@JsonKey() final  ThemeMode themeMode;
