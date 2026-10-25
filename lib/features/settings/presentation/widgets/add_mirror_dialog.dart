@@ -1,0 +1,167 @@
+import 'package:material_3_expressive/material_3_expressive.dart';
+
+import 'dart:async';
+
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter/services.dart';
+import 'package:freedium_mobile/core/utils/url.dart'
+    show normalizeMirrorUrl, trimTrailingSlash;
+import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+
+class const AddMirrorDialog({
+  super.key,
+  this.existingMirror,
+  required this.onAdd,
+}) extends StatefulWidget {
+  final FreediumMirror? existingMirror;
+  final FutureOr<bool> Function(FreediumMirror mirror) onAdd;
+
+  @override
+  State<AddMirrorDialog> createState() => _AddMirrorDialogState();
+}
+
+class _AddMirrorDialogState() extends State<AddMirrorDialog> {
+  late TextEditingController _nameController;
+  late TextEditingController _urlController;
+  final _formKey = GlobalKey<FormState>();
+  bool _isSubmitting = false;
+  String? _submissionError;
+
+  bool get isEditing => widget.existingMirror != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController(
+      text: widget.existingMirror?.name ?? '',
+    );
+    _urlController = TextEditingController(
+      text: widget.existingMirror?.url ?? 'https://',
+    );
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text(isEditing ? 'Edit Mirror' : 'Add Custom Mirror'),
+      content: Form(
+        key: _formKey,
+        child: Column(
+          mainAxisSize: .min,
+          children: [
+            TextFormField(
+              controller: _nameController,
+              decoration: const InputDecoration(
+                labelText: 'Name',
+                hintText: 'My Custom Mirror',
+                prefixIcon: Icon(Icons.label),
+              ),
+              validator: (value) {
+                if (value == null || value.trim().isEmpty) {
+                  return 'Please enter a name';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
+              controller: _urlController,
+              decoration: const InputDecoration(
+                labelText: 'URL',
+                hintText: 'https://freedium.example.com',
+                prefixIcon: Icon(Icons.link),
+              ),
+              keyboardType: .url,
+              validator: (value) {
+                final url = value?.trim();
+                if (url == null || url.isEmpty) {
+                  return 'Please enter a URL';
+                }
+                if (normalizeMirrorUrl(url) == null) {
+                  return 'Please enter a valid HTTPS mirror URL';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Tip: Make sure the mirror uses the same API as freedium-mirror.cfd',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (_submissionError != null) ...[
+              const SizedBox(height: 12),
+              Text(
+                _submissionError!,
+                style: Theme.of(context).textTheme.bodySmall
+                    ?.copyWith(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        M3EButton.text(
+          onPressed: _isSubmitting ? null : () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        M3EButton.filled(
+          onPressed: _isSubmitting ? null : _submit,
+          child: Text(
+            _isSubmitting ? 'Saving...' : (isEditing ? 'Save' : 'Add'),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _submit() async {
+    setState(() => _submissionError = null);
+    if (!_formKey.currentState!.validate()) {
+      return;
+    }
+
+    HapticFeedback.mediumImpact();
+    final rawUrl = _urlController.text.trim();
+    // Validator already guarantees non-null, fallback to trimmed raw.
+    final url = normalizeMirrorUrl(rawUrl) ?? trimTrailingSlash(rawUrl);
+
+    final mirror = FreediumMirror(
+      name: _nameController.text.trim(),
+      url: url,
+      isCustom: true,
+    );
+
+    setState(() => _isSubmitting = true);
+    final bool accepted;
+    try {
+      accepted = await Future<bool>.value(widget.onAdd(mirror));
+    } catch (_) {
+      if (!mounted) return;
+      _showSubmissionError();
+      return;
+    }
+    if (!mounted) return;
+
+    if (accepted) {
+      Navigator.pop(context);
+    } else {
+      _showSubmissionError();
+    }
+  }
+
+  void _showSubmissionError() {
+    setState(() {
+      _isSubmitting = false;
+      _submissionError = 'Mirror already exists or could not be saved.';
+    });
+  }
+}

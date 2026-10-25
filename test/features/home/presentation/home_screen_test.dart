@@ -1,0 +1,305 @@
+import 'package:material_3_expressive/material_3_expressive.dart';
+
+import 'dart:async';
+import 'dart:ui' show SemanticsAction, Tristate;
+
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:freedium_mobile/core/constants/app_constants.dart';
+import 'package:freedium_mobile/core/services/clipboard_service.dart';
+import 'package:freedium_mobile/core/theme/app_theme.dart';
+import 'package:freedium_mobile/core/utils/external_url_launcher.dart';
+import 'package:freedium_mobile/features/home/presentation/home_screen.dart';
+
+import '../../../test_helpers.dart';
+
+class _DelayedPasteClipboardService() extends ClipboardService {
+  final pasteCompleter = Completer<String?>();
+  int pasteCount = 0;
+
+  @override
+  Future<String?> paste() {
+    pasteCount++;
+    if (pasteCount == 1) {
+      return Future<String?>.value();
+    }
+    return pasteCompleter.future;
+  }
+}
+
+void main() {
+  for (final brightness in Brightness.values) {
+    testWidgets('uses surface and inverse colors in ${brightness.name} mode', (
+      tester,
+    ) async {
+      final scheme = ColorScheme.fromSeed(
+        seedColor: const Color(0xff006c4c),
+        brightness: brightness,
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith(
+              (ref) => FakeClipboardService(),
+            ),
+          ],
+          child: MaterialApp(
+            theme: AppTheme(Typography.englishLike2021).theme(scheme),
+            home: const HomeScreen(),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final title = tester.widget<RichText>(
+        find.descendant(
+          of: find.text(AppConstants.appName),
+          matching: find.byType(RichText),
+        ),
+      );
+      expect(title.text.style?.color, scheme.onSurface);
+
+      final readAction = find.widgetWithText(M3EButton, 'Read Article');
+      final actionSurface = tester.widget<Material>(
+        find.descendant(of: readAction, matching: find.byType(Material)).first,
+      );
+      final actionLabel = tester.widget<RichText>(
+        find.descendant(
+          of: find.text('Read Article'),
+          matching: find.byType(RichText),
+        ),
+      );
+      expect(actionSurface.color, scheme.primaryContainer);
+      expect(actionLabel.text.style?.color, scheme.onPrimaryContainer);
+
+      await tester.tap(findTooltip('Paste from clipboard'));
+      await tester.pumpAndSettle();
+
+      final snackBar = find.byType(SnackBar);
+      final surface = tester.widget<Material>(
+        find.descendant(of: snackBar, matching: find.byType(Material)).first,
+      );
+      final message = tester.widget<RichText>(
+        find.descendant(
+          of: find.text('Could not paste from clipboard'),
+          matching: find.byType(RichText),
+        ),
+      );
+      expect(surface.color, scheme.inverseSurface);
+      expect(message.text.style?.color, scheme.onInverseSurface);
+    });
+  }
+
+  group('HomeScreen clipboard detection', () {
+    testWidgets('renders the documented primary action', (tester) async {
+      final clipboard = FakeClipboardService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Read Article'), findsOneWidget);
+      expect(find.text('Article URL'), findsOneWidget);
+      expect(find.text('Get Article'), findsNothing);
+    });
+
+    testWidgets('paste button exposes an accessible label', (tester) async {
+      final semantics = tester.ensureSemantics();
+      final clipboard = FakeClipboardService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final data = tester
+          .getSemantics(findTooltip('Paste from clipboard'))
+          .getSemanticsData();
+      expect(data.label, 'Paste from clipboard');
+      expect(data.flagsCollection.isButton, isTrue);
+      expect(data.flagsCollection.isEnabled, Tristate.isTrue);
+      expect(data.hasAction(SemanticsAction.tap), isTrue);
+      semantics.dispose();
+    });
+
+    testWidgets('opens the source repository from the GitHub star chip', (
+      tester,
+    ) async {
+      final clipboard = FakeClipboardService();
+      final launchedUrls = <String?>[];
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+            externalUrlLauncherProvider.overrideWith((ref) {
+              return (url) async {
+                launchedUrls.add(url);
+                return true;
+              };
+            }),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Star on GitHub'));
+      await tester.pumpAndSettle();
+
+      expect(launchedUrls, [AppConstants.appSourceUrl]);
+    });
+
+    testWidgets('auto-fills a valid article URL from the clipboard', (
+      tester,
+    ) async {
+      final clipboard = FakeClipboardService(
+        'Read HTTPS://Medium.COM/example/story/?sk=abc',
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final editableText = tester.widget<EditableText>(
+        find.byType(EditableText),
+      );
+      expect(
+        editableText.controller.text,
+        'https://medium.com/example/story?sk=abc',
+      );
+      expect(clipboard.pasteCount, 1);
+    });
+
+    testWidgets('ignores clipboard text that does not contain a URL', (
+      tester,
+    ) async {
+      final clipboard = FakeClipboardService('plain text');
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final editableText = tester.widget<EditableText>(
+        find.byType(EditableText),
+      );
+      expect(editableText.controller.text, isEmpty);
+    });
+
+    testWidgets('shows paste failure when clipboard has no text', (
+      tester,
+    ) async {
+      final clipboard = FakeClipboardService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byIcon(Icons.paste));
+      await tester.pumpAndSettle();
+
+      final editableText = tester.widget<EditableText>(
+        find.byType(EditableText),
+      );
+      expect(clipboard.pasteCount, 2);
+      expect(editableText.controller.text, isEmpty);
+      expect(find.text('Could not paste from clipboard'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('does not overwrite typed input when the app resumes', (
+      tester,
+    ) async {
+      final clipboard = FakeClipboardService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.byType(TextFormField),
+        'https://medium.com/manual/story',
+      );
+      clipboard.text = 'https://medium.com/clipboard/story';
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pumpAndSettle();
+
+      final editableText = tester.widget<EditableText>(
+        find.byType(EditableText),
+      );
+      expect(editableText.controller.text, 'https://medium.com/manual/story');
+    });
+
+    testWidgets('ignores paste completion after the screen is disposed', (
+      tester,
+    ) async {
+      final clipboard = _DelayedPasteClipboardService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: HomeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byIcon(Icons.paste));
+      await tester.pump();
+      expect(clipboard.pasteCount, 2);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            clipboardServiceProvider.overrideWith((ref) => clipboard),
+          ],
+          child: const MaterialApp(home: SizedBox.shrink()),
+        ),
+      );
+
+      clipboard.pasteCompleter.complete('https://medium.com/clipboard/story');
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+    });
+  });
+}

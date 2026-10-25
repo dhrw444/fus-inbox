@@ -1,0 +1,548 @@
+import 'dart:convert';
+
+import 'package:freedium_mobile/features/settings/application/settings_service.dart';
+
+import 'package:material_ui/material_ui.dart' show ThemeMode;
+import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:freedium_mobile/core/services/font_size_service.dart';
+import 'package:freedium_mobile/features/settings/application/settings_provider.dart';
+import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+
+import '../../../test_helpers.dart';
+
+class _RecordingFreediumUrlService(super.ref) extends FreediumUrlService {
+  int invalidateCount = 0;
+
+  @override
+  void invalidateCache() {
+    invalidateCount++;
+  }
+}
+
+void main() {
+  group('isFreediumMirrorUrl', () {
+    test('matches URLs on configured mirror hosts', () {
+      expect(
+        isFreediumMirrorUrl(
+          'https://freedium-mirror.cfd/https://medium.com/example/story',
+          SettingsState.defaultMirrors,
+        ),
+        isTrue,
+      );
+    });
+
+    test('rejects hosts that only share a mirror URL prefix', () {
+      expect(
+        isFreediumMirrorUrl(
+          'https://freedium-mirror.cfd.evil.example/https://medium.com/story',
+          SettingsState.defaultMirrors,
+        ),
+        isFalse,
+      );
+    });
+
+    test('rejects URLs that do not match the mirror origin', () {
+      expect(
+        isFreediumMirrorUrl(
+          'http://freedium-mirror.cfd/https://medium.com/story',
+          SettingsState.defaultMirrors,
+        ),
+        isFalse,
+      );
+      expect(
+        isFreediumMirrorUrl(
+          'https://freedium-mirror.cfd:8443/https://medium.com/story',
+          SettingsState.defaultMirrors,
+        ),
+        isFalse,
+      );
+    });
+
+    test('respects custom mirror path boundaries', () {
+      const mirrors = [
+        FreediumMirror(
+          name: 'Path mirror',
+          url: 'https://mirror.example/base///',
+        ),
+      ];
+
+      expect(
+        isFreediumMirrorUrl('https://mirror.example/base/story', mirrors),
+        isTrue,
+      );
+      expect(
+        isFreediumMirrorUrl('https://mirror.example/baseball/story', mirrors),
+        isFalse,
+      );
+    });
+  });
+
+  group('SettingsNotifier', () {
+    test('rejects re-adding the retired mirror', () async {
+      final container = prefsContainer(await mockPrefs());
+      addTearDown(container.dispose);
+      expect(
+        await container
+            .read(settingsProvider.notifier)
+            .addMirror(
+              const FreediumMirror(
+                name: 'Retired',
+                url: 'https://freedium.cfd',
+              ),
+            ),
+        isFalse,
+      );
+      expect(
+        container.read(settingsProvider).requireValue.mirrors,
+        SettingsState.defaultMirrors,
+      );
+    });
+
+    test(
+      'overlapping setting and mirror changes preserve every saved value',
+      () async {
+        final prefs = await mockPrefs();
+        final container = prefsContainer(prefs);
+        addTearDown(container.dispose);
+        final notifier = container.read(settingsProvider.notifier);
+        const first = FreediumMirror(
+          name: 'First',
+          url: 'https://first.example',
+        );
+        const second = FreediumMirror(
+          name: 'Second',
+          url: 'https://second.example',
+        );
+        final results = await Future.wait([
+          notifier.setThemeMode(ThemeMode.dark),
+          notifier.setDefaultFontSize(24),
+          notifier.setShowSitePopups(false),
+          notifier.setAutoSwitchMirror(false),
+          notifier.setMirrorTimeout(12),
+          notifier.addMirror(first),
+          notifier.addMirror(second),
+        ]);
+        expect(results, everyElement(isTrue));
+        final state = container.read(settingsProvider).requireValue;
+        expect(state.themeMode, ThemeMode.dark);
+        expect(state.defaultFontSize, 24);
+        expect(state.showSitePopups, isFalse);
+        expect(state.autoSwitchMirror, isFalse);
+        expect(state.mirrorTimeout, 12);
+        expect(state.mirrors, containsAll([first, second]));
+        expect(SettingsService(prefs).loadDefaultFontSize(), 24);
+        await Future.wait([
+          notifier.resetToDefaults(),
+          notifier.setDefaultFontSize(22),
+        ]);
+        expect(
+          container.read(settingsProvider).requireValue.defaultFontSize,
+          22,
+        );
+        expect(SettingsService(prefs).loadDefaultFontSize(), 22);
+      },
+    );
+
+    test('invalidates active URL cache when mirror list changes', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      const customMirror = FreediumMirror(
+        name: 'Custom',
+        url: 'https://custom.example',
+        isCustom: true,
+      );
+      const updatedMirror = FreediumMirror(
+        name: 'Updated',
+        url: 'https://updated.example',
+        isCustom: true,
+      );
+      final notifier = container.read(settingsProvider.notifier);
+
+      await notifier.addMirror(customMirror);
+      expect(freediumUrlService.invalidateCount, 1);
+
+      await notifier.updateMirror(customMirror, updatedMirror);
+      expect(freediumUrlService.invalidateCount, 2);
+
+      await notifier.removeMirror(updatedMirror);
+      expect(freediumUrlService.invalidateCount, 3);
+
+      await notifier.resetToDefaults();
+      expect(freediumUrlService.invalidateCount, 4);
+    });
+
+    test('invalidates active URL cache when mirror policy changes', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final notifier = container.read(settingsProvider.notifier);
+
+      await notifier.setAutoSwitchMirror(false);
+      expect(freediumUrlService.invalidateCount, 1);
+
+      await notifier.setMirrorTimeout(12);
+      expect(freediumUrlService.invalidateCount, 2);
+    });
+
+    test('clamps numeric setting updates to supported bounds', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      final notifier = container.read(settingsProvider.notifier);
+
+      await notifier.setDefaultFontSize(100);
+      await notifier.setMirrorTimeout(0);
+
+      final settings = container.read(settingsProvider).requireValue;
+      expect(settings.defaultFontSize, SettingsState.maxDefaultFontSize);
+      expect(settings.mirrorTimeout, SettingsState.minMirrorTimeout);
+      expect(
+        SettingsService(prefs).loadDefaultFontSize(),
+        SettingsState.maxDefaultFontSize,
+      );
+      expect(
+        SettingsService(prefs).loadMirrorTimeout(),
+        SettingsState.minMirrorTimeout,
+      );
+    });
+
+    test('keeps state and mirror cache unchanged when saving fails', () async {
+      SharedPreferencesStorePlatform.instance = FailingPrefsStore();
+      SharedPreferences.resetStatic();
+      addTearDown(() => SharedPreferences.setMockInitialValues({}));
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      freediumUrlService = container.read(
+        freediumUrlServiceProvider,
+      ) as _RecordingFreediumUrlService;
+
+      final notifier = container.read(settingsProvider.notifier);
+      final added = await notifier.addMirror(
+        const FreediumMirror(
+          name: 'Custom',
+          url: 'https://custom.example',
+          isCustom: true,
+        ),
+      );
+      await notifier.setAutoSwitchMirror(false);
+
+      final settings = container.read(settingsProvider).requireValue;
+      expect(added, isFalse);
+      expect(settings.mirrors, SettingsState.defaultMirrors);
+      expect(settings.autoSwitchMirror, isTrue);
+      expect(freediumUrlService.invalidateCount, 0);
+    });
+
+    test('normalizes custom mirrors before saving live state', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      freediumUrlService = container.read(
+        freediumUrlServiceProvider,
+      ) as _RecordingFreediumUrlService;
+
+      final added = await container
+          .read(settingsProvider.notifier)
+          .addMirror(
+            const FreediumMirror(
+              name: ' Custom ',
+              url: ' https://custom.example///?ref=home#top ',
+              isCustom: true,
+            ),
+          );
+
+      expect(added, isTrue);
+      final mirror = container.read(settingsProvider).requireValue.mirrors.last;
+      expect(mirror.name, 'Custom');
+      expect(mirror.url, 'https://custom.example');
+      expect(freediumUrlService.invalidateCount, 1);
+
+      final savedMirrors = SettingsService(prefs)
+          .loadMirrors()
+          .map((m) => jsonEncode(m.toJson()))
+          .toList();
+      final savedMirror = jsonDecode(savedMirrors.last) as Map<String, dynamic>;
+      expect(savedMirror['name'], 'Custom');
+      expect(savedMirror['url'], 'https://custom.example');
+    });
+
+    test(
+      'deduplicates custom mirrors after dropping query and fragment',
+      () async {
+        await mockPrefs({});
+        final prefs = await SharedPreferences.getInstance();
+        late _RecordingFreediumUrlService freediumUrlService;
+        final container = ProviderContainer(
+          overrides: [
+            sharedPreferencesProvider.overrideWith((ref) async => prefs),
+            freediumUrlServiceProvider.overrideWith((ref) {
+              freediumUrlService = _RecordingFreediumUrlService(ref);
+              return freediumUrlService;
+            }),
+          ],
+        );
+        addTearDown(container.dispose);
+        freediumUrlService = container.read(
+          freediumUrlServiceProvider,
+        ) as _RecordingFreediumUrlService;
+
+        final notifier = container.read(settingsProvider.notifier);
+        await notifier.addMirror(
+          const FreediumMirror(
+            name: 'Custom',
+            url: 'https://custom.example/base?ref=one#top',
+            isCustom: true,
+          ),
+        );
+        await notifier.addMirror(
+          const FreediumMirror(
+            name: 'Duplicate',
+            url: 'https://custom.example/base?ref=two#bottom',
+            isCustom: true,
+          ),
+        );
+
+        final customMirrors = container
+            .read(settingsProvider)
+            .requireValue
+            .mirrors
+            .where((mirror) => mirror.url == 'https://custom.example/base');
+        expect(customMirrors, hasLength(1));
+        expect(freediumUrlService.invalidateCount, 1);
+      },
+    );
+
+    test('rejects invalid and duplicate custom mirrors', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      freediumUrlService = container.read(
+        freediumUrlServiceProvider,
+      ) as _RecordingFreediumUrlService;
+
+      final notifier = container.read(settingsProvider.notifier);
+      final duplicateAdded = await notifier.addMirror(
+        const FreediumMirror(
+          name: 'Duplicate',
+          url: ' HTTPS://Freedium.CFD/ ',
+          isCustom: true,
+        ),
+      );
+      final invalidAdded = await notifier.addMirror(
+        const FreediumMirror(
+          name: 'Unsupported',
+          url: 'ftp://custom.example',
+          isCustom: true,
+        ),
+      );
+
+      expect(duplicateAdded, isFalse);
+      expect(invalidAdded, isFalse);
+      final settings = container.read(settingsProvider).requireValue;
+      expect(settings.mirrors, SettingsState.defaultMirrors);
+      expect(freediumUrlService.invalidateCount, 0);
+      expect(prefs.getStringList('freedium_mirrors'), isNull);
+    });
+
+    test('ignores selected mirror URLs outside current mirrors', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      freediumUrlService = container.read(
+        freediumUrlServiceProvider,
+      ) as _RecordingFreediumUrlService;
+
+      await container
+          .read(settingsProvider.notifier)
+          .setSelectedMirror('https://missing.example');
+
+      expect(
+        container.read(settingsProvider).requireValue.selectedMirrorUrl,
+        SettingsState.defaultMirrors.first.url,
+      );
+      expect(freediumUrlService.invalidateCount, 0);
+      expect(prefs.getString('selected_mirror_url'), isNull);
+    });
+
+    test('ignores stale mirror remove and update requests', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      late _RecordingFreediumUrlService freediumUrlService;
+      final container = ProviderContainer(
+        overrides: [
+          sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          freediumUrlServiceProvider.overrideWith((ref) {
+            freediumUrlService = _RecordingFreediumUrlService(ref);
+            return freediumUrlService;
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      freediumUrlService = container.read(
+        freediumUrlServiceProvider,
+      ) as _RecordingFreediumUrlService;
+
+      const staleMirror = FreediumMirror(
+        name: 'Stale',
+        url: 'https://stale.example',
+        isCustom: true,
+      );
+      final notifier = container.read(settingsProvider.notifier);
+
+      await notifier.removeMirror(staleMirror);
+      await notifier.updateMirror(
+        staleMirror,
+        const FreediumMirror(
+          name: 'Updated',
+          url: 'https://updated.example',
+          isCustom: true,
+        ),
+      );
+
+      expect(
+        container.read(settingsProvider).requireValue.mirrors,
+        SettingsState.defaultMirrors,
+      );
+      expect(freediumUrlService.invalidateCount, 0);
+      expect(prefs.getStringList('freedium_mirrors'), isNull);
+    });
+
+    test(
+      'falls back to default mirrors after removing last custom mirror',
+      () async {
+        const customMirror = FreediumMirror(
+          name: 'Custom',
+          url: 'https://custom.example',
+          isCustom: true,
+        );
+        await mockPrefs({
+          'freedium_mirrors': [jsonEncode(customMirror.toJson())],
+          'selected_mirror_url': customMirror.url,
+        });
+        final prefs = await SharedPreferences.getInstance();
+        final container = ProviderContainer(
+          overrides: [
+            sharedPreferencesProvider.overrideWith((ref) async => prefs),
+          ],
+        );
+        addTearDown(container.dispose);
+
+        await container
+            .read(settingsProvider.notifier)
+            .removeMirror(customMirror);
+
+        final settings = container.read(settingsProvider).requireValue;
+        expect(settings.mirrors, SettingsState.defaultMirrors);
+        expect(
+          settings.selectedMirrorUrl,
+          SettingsState.defaultMirrors.first.url,
+        );
+      },
+    );
+
+    test(
+      'restores defaults after snapshot failure and retains raw data',
+      () async {
+        const rawSnapshot = '{"version":999,"values":{"theme_mode":"dark"}}';
+        final prefs = await mockPrefs({'settings_snapshot': rawSnapshot});
+        final container = prefsContainer(prefs);
+        addTearDown(container.dispose);
+
+        await expectLater(
+          container.read(settingsProvider.future),
+          throwsFormatException,
+        );
+
+        final restored = await container
+            .read(settingsProvider.notifier)
+            .restoreDefaultsPreservingUnreadableSnapshot();
+
+        expect(restored, isTrue);
+        expect(
+          prefs.getString(SettingsService.recoverySnapshotKey),
+          rawSnapshot,
+        );
+        expect(
+          SettingsService(prefs).loadAllSettings(),
+          container.read(settingsProvider).requireValue,
+        );
+        expect(
+          container.read(settingsProvider).requireValue.mirrors,
+          SettingsState.defaultMirrors,
+        );
+      },
+    );
+  });
+}

@@ -1,0 +1,79 @@
+name: freedium_mobile
+description: "Read articles from seven supported publishers without hitting the paywall"
+publish_to: "none"
+version: 0.13.0+13
+
+environment:
+  sdk: ^3.13.0
+  flutter: ">=3.47.5"
+
+dependencies:
+  dynamic_color: ^2.1.0
+  flutter:
+    sdk: flutter
+  material_ui: ^1.7.0
+  material_3_expressive: ^1.1.7
+  material_color_utilities: ^0.13.0
+  webview_flutter: ^4.14.1
+  webview_flutter_android: ^4.14.1
+  webview_flutter_wkwebview: ^3.26.2
+  flutter_riverpod: ^3.4.3
+  flutter_markdown_plus: ^1.0.12
+  http: ^1.6.0
+  receive_intent: 0.2.8
+  pub_semver: ^2.2.1
+  share_plus: ^13.3.0
+  shared_preferences: ^2.5.5
+  shimmer: ^4.0.0
+  url_launcher: ^6.3.2
+  timeago: ^3.7.1
+  riverpod_annotation: ^4.0.7
+  freezed_annotation: ^3.1.0
+  json_annotation: ^4.12.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  riverpod_lint: ^3.1.9
+  shared_preferences_platform_interface: ^2.4.2
+  webview_flutter_platform_interface: ^2.15.1
+  riverpod_generator: ^4.0.9
+  build_runner: ^2.16.1
+  freezed: ^4.0.2
+  json_serializable: ^6.14.1
+  integration_test:
+    sdk: flutter
+
+# Forced past the ceiling of flutter_launcher_icons (cli_util).
+# Re-verify with flutter test, flutter analyze and an APK build after
+# any pub upgrade. cross_file is intentionally NOT overridden: 0.4.0 is
+# a breaking major that share_plus 13.3.0 does not compile against.
+# test_api and material_color_utilities are pinned by the Flutter SDK
+# itself and intentionally left alone.
+dependency_overrides:
+  cli_util: ^0.6.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/icon.png
+    - assets/js/
+    - assets/css/
+  fonts:
+    - family: PlayfairDisplay
+      fonts:
+        - asset: assets/fonts/PlayfairDisplay-Regular.ttf
+        - asset: assets/fonts/PlayfairDisplay-Bold.ttf
+          weight: 700
+
+flutter_launcher_icons:
+  android: "ic_launcher"
+  ios: true
+  image_path_android: "assets/icon/ic_launcher.png"
+  adaptive_icon_background: "assets/icon/ic_launcher_background.png"
+  adaptive_icon_foreground: "assets/icon/ic_launcher_foreground.png"
+  adaptive_icon_monochrome: "assets/icon/ic_launcher_monochrome.png"
+  min_sdk_android: 21
+  image_path_ios: "assets/icon/icon.png"

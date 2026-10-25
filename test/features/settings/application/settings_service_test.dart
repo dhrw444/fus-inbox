@@ -1,0 +1,198 @@
+import 'dart:convert';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:freedium_mobile/features/settings/application/settings_service.dart';
+import 'package:freedium_mobile/features/settings/domain/settings_state.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../../../test_helpers.dart';
+
+void main() {
+  group('SettingsService', () {
+    test('drops the retired mirror and repairs the selected URL', () async {
+      final prefs = await mockPrefs({
+        'freedium_mirrors': [
+          jsonEncode({'name': 'Retired', 'url': 'https://freedium.cfd'}),
+          jsonEncode(SettingsState.defaultMirrors.single.toJson()),
+        ],
+        'selected_mirror_url': 'https://freedium.cfd',
+      });
+      final settings = SettingsService(prefs).loadAllSettings();
+      expect(settings.mirrors, SettingsState.defaultMirrors);
+      expect(
+        settings.selectedMirrorUrl,
+        SettingsState.defaultMirrors.single.url,
+      );
+    });
+
+    test(
+      'loadMirrors keeps valid mirrors when another entry is malformed',
+      () async {
+        const customMirror = FreediumMirror(
+          name: 'Custom',
+          url: 'https://custom.example',
+          isCustom: true,
+        );
+        await mockPrefs({
+          'freedium_mirrors': ['{bad json', jsonEncode(customMirror.toJson())],
+        });
+
+        final service = SettingsService(await SharedPreferences.getInstance());
+
+        expect(service.loadMirrors(), [customMirror]);
+      },
+    );
+
+    test('loadMirrors skips invalid and duplicate mirror entries', () async {
+      const customMirror = FreediumMirror(
+        name: 'Custom',
+        url: 'https://custom.example',
+        isCustom: true,
+      );
+      await mockPrefs({
+        'freedium_mirrors': [
+          jsonEncode({'name': '', 'url': 'https://blank-name.example'}),
+          jsonEncode({'name': 'Missing host', 'url': 'https://'}),
+          jsonEncode({
+            'name': 'Unsupported scheme',
+            'url': 'ftp://example.com',
+          }),
+          jsonEncode(customMirror.toJson()),
+          jsonEncode(customMirror.copyWith(name: 'Duplicate').toJson()),
+        ],
+      });
+
+      final service = SettingsService(await SharedPreferences.getInstance());
+
+      expect(service.loadMirrors(), [customMirror]);
+    });
+
+    test('loadMirrors normalizes mirror names and URL origins', () async {
+      await mockPrefs({
+        'freedium_mirrors': [
+          jsonEncode({
+            'name': ' Custom ',
+            'url': ' HTTPS://Custom.Example///?ref=home#top ',
+            'isCustom': true,
+          }),
+        ],
+      });
+
+      final service = SettingsService(await SharedPreferences.getInstance());
+
+      expect(service.loadMirrors(), [
+        const FreediumMirror(
+          name: 'Custom',
+          url: 'https://custom.example',
+          isCustom: true,
+        ),
+      ]);
+    });
+
+    test('loadAllSettings normalizes persisted selected mirror URL', () async {
+      const customMirror = FreediumMirror(
+        name: 'Custom',
+        url: 'https://custom.example',
+        isCustom: true,
+      );
+      await mockPrefs({
+        'freedium_mirrors': [jsonEncode(customMirror.toJson())],
+        'selected_mirror_url': ' HTTPS://Custom.Example/ ',
+      });
+
+      final service = SettingsService(await SharedPreferences.getInstance());
+
+      final settings = service.loadAllSettings();
+
+      expect(settings.mirrors, [customMirror]);
+      expect(settings.selectedMirrorUrl, customMirror.url);
+    });
+
+    test(
+      'loadMirrors falls back to defaults when every entry is invalid',
+      () async {
+        await mockPrefs({
+          'freedium_mirrors': ['{bad json'],
+        });
+
+        final service = SettingsService(await SharedPreferences.getInstance());
+
+        expect(service.loadMirrors(), SettingsState.defaultMirrors);
+      },
+    );
+
+    test(
+      'loadAllSettings falls back when selected mirror is missing',
+      () async {
+        const customMirror = FreediumMirror(
+          name: 'Custom',
+          url: 'https://custom.example',
+          isCustom: true,
+        );
+        await mockPrefs({
+          'freedium_mirrors': [jsonEncode(customMirror.toJson())],
+          'selected_mirror_url': 'https://missing.example',
+          'auto_switch_mirror': false,
+        });
+
+        final service = SettingsService(await SharedPreferences.getInstance());
+
+        final settings = service.loadAllSettings();
+
+        expect(settings.mirrors, [customMirror]);
+        expect(settings.selectedMirrorUrl, customMirror.url);
+        expect(settings.autoSwitchMirror, isFalse);
+      },
+    );
+
+    test('loadAllSettings clamps persisted numeric preferences', () async {
+      await mockPrefs({'webview_font_size': 100.0, 'mirror_timeout': 0});
+
+      final service = SettingsService(await SharedPreferences.getInstance());
+
+      final settings = service.loadAllSettings();
+
+      expect(settings.defaultFontSize, SettingsState.maxDefaultFontSize);
+      expect(settings.mirrorTimeout, SettingsState.minMirrorTimeout);
+    });
+
+    test('loadAllSettings reads legacy default font size key', () async {
+      await mockPrefs({'default_font_size': 22.0});
+
+      final service = SettingsService(await SharedPreferences.getInstance());
+
+      expect(service.loadAllSettings().defaultFontSize, 22.0);
+    });
+
+    test('site popups default to shown and persist changes', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      final service = SettingsService(prefs);
+
+      expect(service.loadShowSitePopups(), isTrue);
+
+      await service.saveShowSitePopups(false);
+
+      expect(SettingsService(prefs).loadShowSitePopups(), isFalse);
+      expect(service.loadAllSettings().showSitePopups, isFalse);
+    });
+
+    test('save numeric preferences clamps out-of-range values', () async {
+      await mockPrefs({});
+      final prefs = await SharedPreferences.getInstance();
+      final service = SettingsService(prefs);
+
+      await service.saveDefaultFontSize(1);
+      await service.saveMirrorTimeout(100);
+
+      expect(
+        SettingsService(prefs).loadDefaultFontSize(),
+        SettingsState.minDefaultFontSize,
+      );
+      expect(
+        SettingsService(prefs).loadMirrorTimeout(),
+        SettingsState.maxMirrorTimeout,
+      );
+    });
+  });
+}

@@ -1,0 +1,87 @@
+import 'package:material_3_expressive/material_3_expressive.dart';
+import 'package:material_ui/material_ui.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:freedium_mobile/features/history/domain/reading_history.dart';
+import 'package:freedium_mobile/features/home/presentation/widgets/continue_reading_section.dart';
+
+import '../../../../test_helpers.dart';
+
+void main() {
+  testWidgets('shows the three latest unfinished articles', (tester) async {
+    final tapped = <ReadingHistory>[];
+    final history = [
+      _article('First', 0.2),
+      _article('Second', 0.4),
+      _article('Finished', 1),
+      _article('Not started', 0),
+      _article('Third', 0.8),
+      _article('Fourth', 0.6),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContinueReadingSection(
+            history: history,
+            onArticleTap: tapped.add,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Continue Reading'), findsOneWidget);
+    expect(find.text('First'), findsOneWidget);
+    expect(find.text('Second'), findsOneWidget);
+    expect(find.text('Third'), findsOneWidget);
+    expect(find.text('Not started'), findsNothing);
+    expect(find.text('Fourth'), findsNothing);
+    expect(find.text('Finished'), findsNothing);
+    expect(find.text('Finished stories'), findsNothing);
+    expect(find.byType(M3EProgressIndicator), findsNWidgets(3));
+
+    await tester.tap(find.text('Second'));
+    expect(tapped, [history[1]]);
+  });
+
+  testWidgets('stays hidden without an article in progress', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContinueReadingSection(
+            history: [_article('Not started', 0), _article('Finished', 1)],
+            onArticleTap: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('Continue Reading'), findsNothing);
+  });
+
+  testWidgets('stays hidden with only finished stories', (tester) async {
+    final history = [_article('Finished one', 1), _article('Finished two', 1)];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ContinueReadingSection(history: history, onArticleTap: (_) {}),
+        ),
+      ),
+    );
+
+    expect(find.text('Continue Reading'), findsNothing);
+    expect(find.text('Finished stories'), findsNothing);
+    expect(find.text('Finished one'), findsNothing);
+    expect(find.text('Finished two'), findsNothing);
+    expect(tester.getSize(find.byType(ContinueReadingSection)), Size.zero);
+  });
+}
+
+ReadingHistory _article(String title, double progress) {
+  return ReadingHistory(
+    url: 'https://medium.com/$title',
+    title: title,
+    timestamp: TestFixtures.groupDate,
+    progress: progress,
+  );
+}

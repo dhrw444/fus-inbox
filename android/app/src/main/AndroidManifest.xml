@@ -1,0 +1,198 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <application
+        android:label="SMS 收件箱"
+        android:name="${applicationName}"
+        android:icon="@mipmap/ic_launcher"
+        android:enableOnBackInvokedCallback="true">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/LaunchTheme"
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+            android:hardwareAccelerated="true"
+            android:windowSoftInputMode="adjustResize">
+            <meta-data android:name="flutter_deeplinking_enabled" android:value="false" />
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="https" />
+                <data android:host="link.medium.com" />
+                <data android:host="rsci.app.link" />
+                <data android:host="rsci-alternate.app.link" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" />
+                <data android:scheme="https" />
+                <data android:host="medium.com" />
+                <data android:host="www.medium.com" />
+                <data android:host="m.medium.com" />
+                <data android:host="blog.stackademic.com" />
+                <data android:host="towardsdatascience.com" />
+                <data android:host="uxdesign.cc" />
+                <data android:host="betterhumans.pub" />
+                <data android:host="uxplanet.org" />
+                <data android:host="betterprogramming.pub" />
+                <data android:host="writingcooperative.com" />
+                <data android:host="ehandbook.com" />
+                <data android:host="entrepreneurshandbook.co" />
+                <data android:host="blog.prototypr.io" />
+                <data android:host="medium.muz.li" />
+                <data android:host="medium.economist.com" />
+                <data android:host="thinkgrowth.org" />
+                <data android:host="netflixtechblog.com" />
+                <data android:host="blog.producthunt.com" />
+                <data android:host="bettermarketing.pub" />
+                <data android:host="codeburst.io" />
+                <data android:host="levelup.gitconnected.com" />
+                <data android:host="cafe.belikewise.com" />
+                <data android:host="javascript.plainenglish.io" />
+                <data android:host="magenta.as" />
+                <data android:host="byrslf.co" />
+                <data android:host="curiosityneverkilledthewriter.com" />
+                <data android:host="ux.shopify.com" />
+                <data android:host="thebelladonnacomedy.com" />
+                <data android:host="medium.datadriveninvestor.com" />
+                <data android:host="bothsidesofthetable.com" />
+                <data android:host="medium.reinvent.net" />
+                <data android:host="itnext.io" />
+                <data android:host="blog.growthhackers.com" />
+                <data android:host="library.gv.com" />
+                <data android:host="virtualrealitypop.com" />
+                <data android:host="blog.angular.io" />
+                <data android:host="deepdives.in" />
+                <data android:host="proandroiddev.com" />
+                <data android:host="facesoffounders.org" />
+                <data android:host="eand.co" />
+                <data android:host="building.theatlantic.com" />
+                <data android:host="stories.moma.org" />
+                <data android:host="bullshit.ist" />
+                <data android:host="news.greylock.com" />
+                <data android:host="blog.bitsrc.io" />
+                <data android:host="becominghuman.ai" />
+                <data android:host="chatbotsmagazine.com" />
+                <data android:host="blog.revolution.com" />
+                <data android:host="pub.towardsai.net" />
+                <data android:host="bootcamp.uxdesign.cc" />
+                <data android:host="code.likeagirl.io" />
+                <data android:host="brightthemag.com" />
+                <data android:host="brasil.uxdesign.cc" />
+                <data android:host="infosecwriteups.com" />
+                <data android:host="productcoalition.com" />
+                <data android:host="articles.c-a-s-t.com" />
+                <data android:host="blog.faceit.com" />
+                <data android:host="festivalpeak.com" />
+                <data android:host="chatbotslife.com" />
+                <data android:host="themakingofamillionaire.com" />
+                <data android:host="thebolditalic.com" />
+                <data android:host="blog.meteor.com" />
+                <data android:host="instagram-engineering.com" />
+                <data android:host="myerotica.com" />
+                <data android:host="gointothestory.blcklst.com" />
+                <data android:host="blog.mapbox.com" />
+                <data android:host="news.legendfantasywar.com" />
+                <data android:host="stillcrew.com" />
+                <data android:host="aninjusticemag.com" />
+                <data android:host="www.cantorsparadise.com" />
+                <data android:host="medium.mybridge.co" />
+                <data android:host="startupsventurecapital.com" />
+                <data android:host="baos.pub" />
+                <data android:host="you.women2.com" />
+                <data android:host="blackboxofpm.com" />
+                <data android:host="blog.devgenius.io" />
+                <data android:host="bthechange.com" />
+                <data android:host="insiders.fortune.com" />
+                <data android:host="blog.bcmhunt.com" />
+                <data android:host="faun.pub" />
+                <data android:host="python.plainenglish.io" />
+                <data android:host="thedesignteam.io" />
+                <data android:host="blog.goodaudience.com" />
+                <data android:host="blog.trezor.io" />
+                <data android:host="blog.streamtoken.net" />
+                <data android:host="blog.qz.com" />
+                <data android:host="tokeneconomy.co" />
+                <data android:host="storyandplanning.com" />
+                <data android:host="newo.cc" />
+                <data android:host="netbasal.com" />
+                <data android:host="eng.lyft.com" />
+                <data android:host="blog.sia.tech" />
+                <data android:host="500ish.com" />
+                <data android:host="loremipsum.ueno.co" />
+                <data android:host="blog.insightdatascience.com" />
+                <data android:host="medium.engineering" />
+                <data android:host="crossingenres.com" />
+                <data android:host="blog.jupyter.org" />
+                <data android:host="blog.x.company" />
+                <data android:host="medium.design" />
+                <data android:host="heartbeat.comet.ml" />
+                <data android:host="blog.matter-labs.io" />
+                <data android:host="open.nytimes.com" />
+                <data android:host="blog.mlreview.com" />
+                <data android:host="jtbd.info" />
+                <data android:host="blog.blockswap.network" />
+                <data android:host="nytimes.com" />
+                <data android:host="www.nytimes.com" />
+                <data android:host="nyti.ms" />
+                <data android:host="washingtonpost.com" />
+                <data android:host="www.washingtonpost.com" />
+                <data android:host="wapo.st" />
+                <data android:host="bloomberg.com" />
+                <data android:host="www.bloomberg.com" />
+                <data android:host="bloom.bg" />
+                <data android:host="reuters.com" />
+                <data android:host="www.reuters.com" />
+                <data android:host="reut.rs" />
+                <data android:host="economist.com" />
+                <data android:host="www.economist.com" />
+                <data android:host="econ.st" />
+                <data android:host="ft.com" />
+                <data android:host="www.ft.com" />
+                <data android:host="on.ft.com" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/*" />
+            </intent-filter>
+            <!-- Specifies an Android theme to apply to this Activity as soon as
+                 the Android process has started. This theme is visible to the user
+                 while the Flutter UI initializes. After that, this theme continues
+                 to determine the Window background behind the Flutter UI. -->
+            <meta-data
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"
+            />
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- Don't delete the meta-data below.
+             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <meta-data
+            android:name="flutterEmbedding"
+            android:value="2" />
+    </application>
+    <!-- Required to query activities that can process text, see:
+         https://developer.android.com/training/package-visibility and
+         https://developer.android.com/reference/android/content/Intent#ACTION_PROCESS_TEXT.
+
+         In particular, this is used by the Flutter engine in io.flutter.plugin.text.ProcessTextPlugin. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.PROCESS_TEXT" />
+            <data android:mimeType="text/plain" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
+        </intent>
+    </queries>
+</manifest>
