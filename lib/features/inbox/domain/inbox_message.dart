@@ -39,7 +39,7 @@ class const InboxMessage({
 }
 
 /// 抓取状态。
-enum InboxPhase {
+enum InboxPhase() {
   /// 页面还在加载 / 还没拿到数据。
   waiting,
 
