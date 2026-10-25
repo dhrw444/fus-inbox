@@ -5,7 +5,7 @@ import 'package:fus_inbox/core/theme/android_color_schemes.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  const channel = MethodChannel('freedium/theme');
+  const channel = MethodChannel('fusinbox/theme');
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
   const roleNames =
