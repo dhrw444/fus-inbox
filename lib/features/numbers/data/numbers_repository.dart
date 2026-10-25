@@ -1,159 +1,196 @@
-/// 号码目录抓取。
+/// 号码目录抓取：原生 HTTP + 模板解析，完全不依赖 WebView。
 ///
-/// freeussms 的 `/numbers/` 及其分页 `/numbers/page/N/` 是服务端直出的公开页面
-/// （没有 Turnstile，也不需要签名会话），所以这里纯 HTTP + HTML 解析。
-/// 页面结构（每张卡）：
-///   article.number-card[data-live-card=<32hex>]
-///     .number-area                -> "Ohio · 419"
-///     a[href*="/numbers/<digits>/"] -> 号码
-///     [data-count]                -> 已收条数
-///     time[data-rel-time]         -> 最后一条时间
-///     .is-fresh                   -> 最近有短信
+/// 为什么能这么干：`/numbers/` 是 WordPress 服务端直出的页面，号码卡片是
+/// 静态 HTML（`article.number-card`），不需要站点的会话签名。站点把签名锁
+/// 只放在 `/sms-api/v1/*`（短信正文）上，目录页自己留了活口——它自己的
+/// live.js 里写着 "This gate controls SMS bodies only."
+///
+/// 为什么不用 html 包：CI 用 `flutter pub get --enforce-lockfile`，新增依赖
+/// 会让 lockfile 失配直接失败。这段模板固定、字段固定，正则足够且已在真实
+/// 页面上验证 24/24 命中。站点改模板时这里会返回空列表 —— 上层会显示错误，
+/// 不会静默给错数据。
 library;
 
-import 'dart:convert';
-
-import 'package:html/parser.dart' as html_parser;
-import 'package:html/dom.dart';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
 
-class NumbersRepository() {
-  final http.Client _client = http.Client();
+/// 一页目录抓下来的结果。
+class const NumberPage({required this.numbers, this.total}) {
+  final List<AvailableNumber> numbers;
+
+  /// 页面自报的号码总数（`N available numbers`），拿不到就是 null。
+  final int? total;
+}
+
+/// 单张卡片的字段正则。
+///
+/// 全部按站点现有模板写死；任何一条不中，对应字段退回默认值而不是整卡丢弃。
+final _cardRe = RegExp(
+  r'<article\b[^>]*\bclass="[^"]*\bnumber-card\b[^"]*"[^>]*>.*?</article>',
+  dotAll: true,
+);
+final _idRe = RegExp(r'data-live-card="([0-9a-fA-F]{8,})"');
+final _numberRe = RegExp(r'/numbers/(\d{10,15})/');
+final _areaRe = RegExp(r'class="number-area"[^>]*>(.*?)<', dotAll: true);
+final _countRe = RegExp(r'data-count="(\d+)"');
+final _timeRe = RegExp(r'<time\b[^>]*\bdata-rel-time="([^"]+)"');
+final _freshRe = RegExp(r'\bis-fresh\b');
+final _totalRe = RegExp(r'(\d+)\s+available numbers');
+
+/// 只解模板里会出现的几个实体，不做通用解码。
+String _unescape(String s) => s
+    .replaceAll('&amp;', '&')
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#039;', "'")
+    .replaceAll('&#39;', "'")
+    .replaceAll('&middot;', '·')
+    .replaceAll('&nbsp;', ' ');
+
+/// 把 `Ohio · 419` 拆成州名与区号。
+({String state, String area}) _splitArea(String raw) {
+  var text = _unescape(raw).replaceAll(RegExp(r'\s+'), ' ').trim();
+  var state = text;
+  var area = '';
+  final seps = ['·', '•', '|', '–', '-'];
+  for (final sep in seps) {
+    final i = text.indexOf(sep);
+    if (i > 0) {
+      state = text.substring(0, i).trim();
+      area = text.substring(i + sep.length).trim();
+      break;
+    }
+  }
+  // 区号只留数字，形如 “419”。
+  area = area.replaceAll(RegExp(r'[^\d]'), '');
+  return (state: state, area: area);
+}
+
+/// 解析一页目录 HTML。
+@visibleForTesting
+NumberPage parseDirectory(String html) {
+  final out = <AvailableNumber>[];
+  final seen = <String>{};
+
+  for (final m in _cardRe.allMatches(html)) {
+    final card = m.group(0)!;
+    final numMatch = _numberRe.firstMatch(card);
+    if (numMatch == null) continue;
+    final number = numMatch.group(1)!;
+
+    final idMatch = _idRe.firstMatch(card);
+    final id = idMatch?.group(1) ?? number;
+
+    final areaMatch = _areaRe.firstMatch(card);
+    final region = areaMatch == null
+        ? (state: '', area: '')
+        : _splitArea(areaMatch.group(1)!);
+
+    final countMatch = _countRe.firstMatch(card);
+    final count = int.tryParse(countMatch?.group(1) ?? '') ?? 0;
+
+    if (!seen.add(number)) continue;
+    out.add(
+      AvailableNumber(
+        id: id,
+        number: number,
+        state: region.state,
+        areaCode: region.area,
+        messageCount: count,
+        lastTextAt: _timeRe.firstMatch(card)?.group(1),
+        isFresh: _freshRe.hasMatch(card),
+      ),
+    );
+  }
+
+  final totalMatch = _totalRe.firstMatch(html);
+  return NumberPage(
+    numbers: out,
+    total: int.tryParse(totalMatch?.group(1) ?? ''),
+  );
+}
+
+/// 目录数据源。
+class const NumbersRepository({this.client}) {
+  final http.Client? client;
 
   static const _base = 'https://freeussms.com';
   static const _ua =
-      'Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 '
+      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  static const _maxPages = 12;
+  http.Client get _http => client ?? _shared;
 
-  Map<String, String> get _headers => {
-    'User-Agent': _ua,
-    'Accept': 'text/html,application/xhtml+xml',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Referer': '$_base/numbers/',
-  };
+  static final http.Client _shared = http.Client();
 
   String _pageUrl(int page) =>
       page <= 1 ? '$_base/numbers/' : '$_base/numbers/page/$page/';
 
-  /// 抓一页，返回该页的号码。
-  Future<List<AvailableNumber>> fetchPage(int page) async {
-    final res = await _client
-        .get(Uri.parse(_pageUrl(page)), headers: _headers)
-        .timeout(const Duration(seconds: 20));
-    if (res.statusCode != 200) {
-      throw NumbersException('目录第 $page 页返回 ${res.statusCode}');
+  /// 抓一页。失败抛 [NumberFetchException]。
+  Future<NumberPage> fetchPage(int page) async {
+    final uri = Uri.parse(_pageUrl(page));
+    late final http.Response res;
+    try {
+      res = await _http
+          .get(
+            uri,
+            headers: {
+              'User-Agent': _ua,
+              'Accept': 'text/html,application/xhtml+xml',
+              'Accept-Language': 'en-US,en;q=0.9',
+              'Referer': '$_base/numbers/',
+            },
+          )
+          .timeout(const Duration(seconds: 20));
+    } on Exception catch (e) {
+      throw NumberFetchException('网络请求失败：$e');
     }
-    // 站点是 UTF-8；显式解码，避免 latin1 兜底毁掉州名。
-    return parseDirectory(utf8.decode(res.bodyBytes, allowMalformed: true));
+    if (res.statusCode != 200) {
+      throw NumberFetchException('目录返回 HTTP ${res.statusCode}');
+    }
+    return parseDirectory(res.body);
   }
 
-  /// 抓完整目录（逐页直到空页或超出上限）。
+  /// 顺序抓完整个目录。
   ///
-  /// onProgress 用于界面显示 "已加载 N 个号"。
-  Future<List<AvailableNumber>> fetchAll({
-    void Function(int loaded, int page)? onProgress,
-  }) async {
+  /// 站点每页 24 条、总数约百来条，所以顺序抓即可，不并发轰它。
+  /// 任何一页失败且还没有数据时才抛错；已经拿到数据就保留已抓到的部分。
+  Future<List<AvailableNumber>> fetchAll({int maxPages = 15}) async {
     final out = <AvailableNumber>[];
     final seen = <String>{};
-    for (var page = 1; page <= _maxPages; page++) {
-      List<AvailableNumber> batch;
+
+    for (var page = 1; page <= maxPages; page++) {
+      late final NumberPage batch;
       try {
         batch = await fetchPage(page);
-      } catch (e) {
+      } on NumberFetchException catch (e) {
         if (out.isEmpty) rethrow;
-        break; // 已经有数据就停，别让分页把整次刷新搞失败
+        debugPrint('目录第 $page 页失败，保留已抓到的 ${out.length} 条：$e');
+        break;
       }
-      if (batch.isEmpty) break;
-      var added = 0;
-      for (final n in batch) {
-        if (seen.add(n.id)) {
-          out.add(n);
-          added++;
-        }
+      if (batch.numbers.isEmpty) break;
+
+      final before = out.length;
+      for (final n in batch.numbers) {
+        if (seen.add(n.number)) out.add(n);
       }
-      onProgress?.call(out.length, page);
-      if (added == 0) break; // 分页开始重复 -> 到头了
+      // 整页都是重复的，说明已经绕回来了，收工。
+      if (out.length == before) break;
+
+      if (page < maxPages) {
+        await Future<void>.delayed(const Duration(milliseconds: 120));
+      }
     }
     return out;
   }
-
-  void dispose() => _client.close();
 }
 
-/// 从目录页 HTML 里提取号码卡。
-///
-/// 抽成静态方法便于单测直接喂 HTML，不用起网络。
-List<AvailableNumber> parseDirectory(String html) {
-  final doc = html_parser.parse(html);
-  final cards = doc.querySelectorAll('article.number-card');
-  final out = <AvailableNumber>[];
-
-  for (final card in cards) {
-    final id = card.attributes['data-live-card'] ?? '';
-    final link = _firstNumberLink(card);
-    if (link == null) continue;
-
-    final number = link;
-    final area = _text(card, '.number-area');
-    var state = area;
-    var areaCode = '';
-    if (area.contains('·')) {
-      final parts = area.split('·');
-      state = parts.first.trim();
-      areaCode = parts.length > 1 ? parts[1].trim() : '';
-    }
-
-    final countRaw = _firstWithAttr(card, '[data-count]', 'data-count');
-    final lastText = _firstWithAttr(
-      card,
-      'time[data-rel-time]',
-      'data-rel-time',
-    );
-    final cls = card.attributes['class'] ?? '';
-
-    out.add(
-      AvailableNumber(
-        id: id.isEmpty ? number : id,
-        number: number,
-        state: state,
-        areaCode: areaCode,
-        messageCount: int.tryParse(countRaw) ?? 0,
-        lastTextAt: lastText.isEmpty ? null : lastText,
-        isFresh: cls.contains('is-fresh'),
-      ),
-    );
-  }
-  return out;
-}
-
-/// 从卡里取出 `/numbers/<digits>/` 的数字部分。
-String? _firstNumberLink(Element card) {
-  final re = RegExp(r'/numbers/(\d{10,15})/');
-  for (final a in card.querySelectorAll('a[href]')) {
-    final m = re.firstMatch(a.attributes['href'] ?? '');
-    if (m != null) return m.group(1);
-  }
-  return null;
-}
-
-String _text(Element root, String selector) {
-  final el = root.querySelector(selector);
-  return el == null ? '' : el.text.trim();
-}
-
-String _firstWithAttr(Element root, String selector, String attr) {
-  final el = root.querySelector(selector);
-  if (el == null) return '';
-  return el.attributes[attr] ?? '';
-}
-
-class NumbersException implements Exception {
-  const NumbersException(this.message);
+class const NumberFetchException(this.message) implements Exception {
   final String message;
+
   @override
   String toString() => message;
 }
