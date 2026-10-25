@@ -21,7 +21,7 @@ jobs:
   build-release:
     name: Build signed release APKs
     needs: verify
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     permissions:
       contents: read
     outputs:

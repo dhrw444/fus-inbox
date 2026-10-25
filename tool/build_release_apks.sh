@@ -23,6 +23,8 @@ flutter_args=(
   build apk
   --release
   --split-per-abi
+  # 只编两种真机架构：省掉 x86_64（只用于模拟器）的一次完整 AOT 编译
+  --target-platform=android-arm64,android-arm
   --obfuscate
   --split-debug-info=build/debug-info
   -t lib/main.dart
