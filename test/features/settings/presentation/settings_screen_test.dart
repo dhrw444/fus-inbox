@@ -92,7 +92,8 @@ void main() {
           (_) async => http.Response(
             jsonEncode({
               'tag_name': 'v0.14.0',
-              'html_url': 'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0',
+              'html_url':
+                  'https://github.com/dhrw444/fus-inbox/releases/tag/v0.14.0',
               'body': 'Release notes',
             }),
             200,
