@@ -10,23 +10,21 @@ import 'package:freedium_mobile/features/numbers/data/numbers_repository.dart';
 import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
 
 /// 目录页签（对应界面上可横向滚动的 TabBar）。
-enum NumberTab() {
+enum NumberTab(this.label) {
   all('全部'),
   fresh('最新活跃'),
   withMessages('有短信'),
   byState('按州');
 
-  const NumberTab(this.label);
   final String label;
 }
 
 /// 排序方式。
-enum NumberSort() {
+enum NumberSort(this.label) {
   recent('最近活跃'),
   messages('短信最多'),
   number('号码顺序');
 
-  const NumberSort(this.label);
   final String label;
 }
 

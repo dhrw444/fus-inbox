@@ -52,7 +52,7 @@ String _unescape(String s) => s
 
 /// 把 `Ohio · 419` 拆成州名与区号。
 ({String state, String area}) _splitArea(String raw) {
-  var text = _unescape(raw).replaceAll(RegExp(r'\s+'), ' ').trim();
+  final text = _unescape(raw).replaceAll(RegExp(r'\s+'), ' ').trim();
   var state = text;
   var area = '';
   final seps = ['·', '•', '|', '–', '-'];
@@ -114,7 +114,9 @@ NumberPage parseDirectory(String html) {
 }
 
 /// 目录数据源。
-class const NumbersRepository({this.client}) {
+///
+/// 不能是 `const` 主构造：[_http] 是 `late final`，需要非 const 初始化。
+class NumbersRepository({this.client}) {
   final http.Client? client;
 
   static const _base = 'https://freeussms.com';
@@ -122,9 +124,9 @@ class const NumbersRepository({this.client}) {
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  http.Client get _http => client ?? _shared;
-
-  static final http.Client _shared = http.Client();
+  /// 未注入时自建一个，由本实例负责关闭——共用静态客户端的话
+  /// [dispose] 会把别人的连接一起关掉。
+  late final http.Client _http = client ?? http.Client();
 
   String _pageUrl(int page) =>
       page <= 1 ? '$_base/numbers/' : '$_base/numbers/page/$page/';
@@ -158,7 +160,12 @@ class const NumbersRepository({this.client}) {
   ///
   /// 站点每页 24 条、总数约百来条，所以顺序抓即可，不并发轰它。
   /// 任何一页失败且还没有数据时才抛错；已经拿到数据就保留已抓到的部分。
-  Future<List<AvailableNumber>> fetchAll({int maxPages = 15}) async {
+  ///
+  /// [onProgress] 每页抓完后回调一次，用于界面显示「已加载 N 个号」。
+  Future<List<AvailableNumber>> fetchAll({
+    int maxPages = 15,
+    void Function(int loaded, int page)? onProgress,
+  }) async {
     final out = <AvailableNumber>[];
     final seen = <String>{};
 
@@ -180,12 +187,17 @@ class const NumbersRepository({this.client}) {
       // 整页都是重复的，说明已经绕回来了，收工。
       if (out.length == before) break;
 
+      onProgress?.call(out.length, page);
+
       if (page < maxPages) {
         await Future<void>.delayed(const Duration(milliseconds: 120));
       }
     }
     return out;
   }
+
+  /// 释放 HTTP 客户端。provider 销毁时调用。
+  void dispose() => _http.close();
 }
 
 class const NumberFetchException(this.message) implements Exception {

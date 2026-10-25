@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 import 'package:freedium_mobile/features/numbers/domain/available_number.dart';
 
 class const NumberCard({
+  super.key,
   required this.number,
   required this.onTap,
   required this.saved,

@@ -44,7 +44,7 @@ class _MainScreenState() extends State<MainScreen> {
 }
 
 /// 收藏页自己需要一个带标题的壳。
-class const _SavedTab({super.key}) extends StatelessWidget {
+class const _SavedTab() extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(

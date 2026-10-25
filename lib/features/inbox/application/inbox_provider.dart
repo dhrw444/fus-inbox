@@ -60,7 +60,6 @@ class InboxStore({this.onChanged}) {
       order.add(m.id);
     }
 
-    var added = 0;
     for (final raw in items) {
       if (raw is! Map) continue;
       final msg = InboxMessage.fromJson(Map<String, dynamic>.from(raw));
@@ -68,7 +67,6 @@ class InboxStore({this.onChanged}) {
       final old = byId[msg.id];
       if (old == null) {
         order.insert(0, msg.id);
-        added++;
       }
       byId[msg.id] = InboxMessage(
         id: msg.id,
