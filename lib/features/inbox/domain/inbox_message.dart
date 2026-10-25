@@ -1,46 +1,77 @@
 /// 收件箱领域模型。
 ///
-/// 数据来源是 WebView 内 `assets/js/fus_inbox.js` 通过 `FusInbox` JS 通道
-/// 回传的 JSON——脚本挂钩了 freeussms 页面自身的 fetch/XHR，截获签名后的
-/// inbox 响应，所以这里只负责反序列化。
+/// 字段名与站点 `assets/live.js` 的 `messageCard(m)` 一一对应：
+///   m.event_id / m.sender / m.content / m.received_at / m.copy_code /
+///   m.protected / m.receiver
+/// 由 WebView 内的 `assets/js/fus_inbox.js` 归一化后经 `FusInbox` 通道回传。
 library;
 
 /// 单条短信。
 class const InboxMessage({
-  required this.key,
-  required this.code,
+  required this.id,
   required this.text,
-  this.time = '',
+  this.code = '',
+  this.sender = '',
+  this.receivedAt = '',
   this.phone = '',
   this.isNew = false,
+  this.isProtected = false,
 }) {
-  final String key;
-  final String code;
+  /// 站点的事件 id（`data-event-id` / `event_id`），去重靠它。
+  final String id;
+
+  /// 短信正文。
   final String text;
-  final String time;
+
+  /// 验证码。站点给了 `copy_code` 就用它，否则由正文提取。
+  final String code;
+
+  /// 发送方。
+  final String sender;
+
+  /// 收到时间（ISO 串）。
+  final String receivedAt;
+
+  /// 接收号码。
   final String phone;
+
+  /// 本次会话中新到的。
   final bool isNew;
 
-  static String _str(Object? v) => v is String ? v : (v == null ? '' : '$v');
+  /// 站点标记为「暂时不可读」。
+  final bool isProtected;
+
+  bool get hasCode => code.isNotEmpty;
+
+  static String _s(Object? v) => v is String ? v : (v == null ? '' : '$v');
 
   factory InboxMessage.fromJson(Map<String, dynamic> json) {
     return InboxMessage(
-      key: _str(json['key']),
-      code: _str(json['code']),
-      text: _str(json['text']),
-      time: _str(json['time']),
-      phone: _str(json['phone']),
-      isNew: json['isNew'] == true,
+      id: _s(json['id']),
+      text: _s(json['text']),
+      code: _s(json['code']),
+      sender: _s(json['sender']),
+      receivedAt: _s(json['time']),
+      phone: _s(json['phone']),
+      isProtected: json['protected'] == true,
     );
   }
 
-  /// 列表渲染用的短标签，例如 “+17573242429”。
-  String get shortPhone => phone.replaceAll(RegExp(r'[^\d+]'), '');
+  InboxMessage copyWith({bool? isNew}) => InboxMessage(
+    id: id,
+    text: text,
+    code: code,
+    sender: sender,
+    receivedAt: receivedAt,
+    phone: phone,
+    isNew: isNew ?? this.isNew,
+    isProtected: isProtected,
+  );
 }
 
 /// 抓取状态。
 enum InboxPhase() {
-  /// 页面还在加载 / 还没拿到数据。
+  /// 页面加载中 / 还没拿到内容。
   waiting,
 
   /// 已解析出至少一条短信。
@@ -57,22 +88,23 @@ class const InboxState({
   this.hits = 0,
   this.status = '正在打开收件页…',
   this.error,
-  this.pageUrl,
 }) {
   final List<InboxMessage> messages;
   final InboxPhase phase;
 
-  /// 数据来源：`接口`（截获 API）或 `页面`（DOM 扫描）。
+  /// 数据来源：`接口`（截获 API 响应）或 `页面`（DOM 扫描）。
   final String source;
 
-  /// 截获的接口响应条数，用于判断挂钩是否生效。
+  /// 截获的接口响应次数，用来判断挂钩有没有生效。
   final int hits;
 
   final String status;
   final String? error;
-  final String? pageUrl;
 
   int get newCount => messages.where((m) => m.isNew).length;
+
+  /// 有验证码的条数。
+  int get codeCount => messages.where((m) => m.hasCode).length;
 
   InboxState copyWith({
     List<InboxMessage>? messages,
@@ -81,7 +113,6 @@ class const InboxState({
     int? hits,
     String? status,
     String? error,
-    String? pageUrl,
     bool clearError = false,
   }) {
     return InboxState(
@@ -91,7 +122,6 @@ class const InboxState({
       hits: hits ?? this.hits,
       status: status ?? this.status,
       error: clearError ? null : (error ?? this.error),
-      pageUrl: pageUrl ?? this.pageUrl,
     );
   }
 }

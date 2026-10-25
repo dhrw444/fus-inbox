@@ -1,220 +1,301 @@
-/* fus_inbox.js — freeussms 收件箱抓取
+/* fus_inbox.js — freeussms 抓取层（精确字段版）
  *
- * freeussms 的收件箱受 Cloudflare Turnstile + WebCrypto 每请求签名保护，
- * 外部 HTTP 客户端拿不到数据。所以做法是：在承载页面的 WebView 里挂钩
- * 页面自身的 fetch / XMLHttpRequest，把 /sms-api/ 的响应 JSON 截下来，
- * 挖出验证码，通过 window.FusInbox 通道回传给 Flutter，由原生界面渲染。
- * 挂钩失败时退回 DOM 扫描。
+ * 为什么必须在页面里跑：
+ *   freeussms 的 `/sms-api/v1/*` 受 Cloudflare Turnstile 会话 + 每请求
+ *   WebCrypto 签名（X-FUS-Proof）保护，请求签名用的私钥只存在于页面上下文
+ *   （IndexedDB `fus-reader-v1`）。外部 HTTP 客户端拿不到，必须借页面自己的
+ *   请求能力。所以这里挂钩页面的 fetch / XMLHttpRequest，把响应抄一份回来。
  *
- * 宿主：android/app（Flutter webview_flutter）
+ * 字段名不是猜的——来自站点自己的 `assets/live.js`：
+ *   messageCard(m) 读 m.event_id / m.sender / m.content / m.received_at /
+ *                  m.copy_code / m.protected / m.receiver / m.number_id
+ *   update()       读 /sms-api/v1/numbers 的 d.numbers[] → {id, number, message_count}
+ *   DOM 卡片是 `article.sms-message[data-event-id]`，广告节点带 `data-fus-promotion`
+ *
+ * 宿主：Flutter WebView（webview_flutter）
  * 通道：FusInbox.postMessage(JSON 字符串)
- *   上行 {type:'messages', items:[...], src:'接口|页面', hits:N}
- *   上行 {type:'status',   text:'...'}
+ *
+ * 上行消息：
+ *   {type:'messages', items:[{id,sender,text,code,time,phone,protected}], hits, src, phase}
+ *   {type:'catalog',  items:[{id,number,count}], hits}
+ *   {type:'status',   text}
  */
 (function () {
   'use strict';
 
-  if (window.__fusInboxHooked) { try { window.__fusInbox && window.__fusInbox.rescan(); } catch (e) {} return; }
+  if (window.__fusInboxHooked) {
+    try { window.__fusInbox && window.__fusInbox.rescan(); } catch (e) {}
+    return;
+  }
   window.__fusInboxHooked = true;
 
-  var seen = {};
-  try { seen = JSON.parse(localStorage.getItem('fus-inbox-seen-v2') || '{}') || {}; } catch (e) { seen = {}; }
-
-  var msgs = [];
-  var src = '等待中';
   var hits = 0;
+  var src = '等待中';
   var lastErr = '';
+  var lastKey = '';
+  var messages = [];
 
   function post(obj) {
     try {
-      if (window.FusInbox && window.FusInbox.postMessage) window.FusInbox.postMessage(JSON.stringify(obj));
-    } catch (e) { lastErr = 'post: ' + e.message; }
+      if (window.FusInbox && window.FusInbox.postMessage) {
+        window.FusInbox.postMessage(JSON.stringify(obj));
+      }
+    } catch (e) { lastErr = 'post:' + e.message; }
   }
-  function push(extra) {
-    var p = { type: 'messages', items: msgs, src: src, hits: hits, count: msgs.length, url: location.href };
+
+  function status(text) { post({ type: 'status', text: text }); }
+
+  function pushMessages(phase) {
+    var key = JSON.stringify(messages);
+    if (key === lastKey && !phase) return;
+    lastKey = key;
+    var p = {
+      type: 'messages',
+      items: messages,
+      hits: hits,
+      src: src,
+      count: messages.length,
+      url: location.href,
+    };
+    if (phase) p.phase = phase;
     if (lastErr) p.err = lastErr;
-    if (extra) for (var k in extra) p[k] = extra[k];
     post(p);
   }
 
-  /* ---------- 工具 ---------- */
-  function isCode(s) { return typeof s === 'string' && /^\s*\d{4,8}\s*$/.test(s); }
-  function codeIn(s) {
-    if (typeof s !== 'string') return null;
-    var m = s.match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
-    return m ? m[1] : null;
-  }
-  function looksTime(s) {
-    if (typeof s !== 'string') return false;
-    if (/^\d{4}-\d{2}-\d{2}[T ]/.test(s)) return true;
-    return /\d+\s*(秒|分钟|小时|天|min|sec|hour|day|ago)/i.test(s);
-  }
-  function looksId(s) { return typeof s === 'string' && /^[0-9a-f]{16,64}$/i.test(s); }
-  function relTime(t) {
-    if (!t) return '';
-    var d = Date.parse(t);
-    if (!isNaN(d)) {
-      var diff = Math.floor((Date.now() - d) / 1000);
-      if (diff < 60) return diff + ' 秒前';
-      if (diff < 3600) return Math.floor(diff / 60) + ' 分钟前';
-      if (diff < 86400) return Math.floor(diff / 3600) + ' 小时前';
-      return Math.floor(diff / 86400) + ' 天前';
-    }
-    return t;
+  /* ---------------- 归一化 ---------------- */
+
+  function str(v) { return typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)); }
+
+  // 站点给的 copy_code 是权威值；没有才从正文里兜。
+  function codeFrom(text) {
+    var m = str(text).match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
+    return m ? m[1] : '';
   }
 
-  /* ---------- 从任意 JSON 挖消息 ---------- */
-  function pushMsg(o) {
-    var keys = Object.keys(o), strings = [];
-    var code = null, text = '', time = '', id = '', phone = '';
-    keys.forEach(function (k) {
-      var v = o[k];
-      if (typeof v === 'string') strings.push({ k: k, v: v });
-      else if (typeof v === 'number' && String(v).length >= 4 && String(v).length <= 8 && !code) code = String(v);
-    });
-    strings.forEach(function (p) {
-      if (!code && /^(code|otp|pin|verification_code|sms_code)$/i.test(p.k) && codeIn(p.v)) code = codeIn(p.v);
-    });
-    strings.forEach(function (p) { if (!code && isCode(p.v)) code = p.v.trim(); });
-    var bodyKeys = /^(body|text|message|content|msg|sms|message_body)$/i;
-    strings.forEach(function (p) { if (bodyKeys.test(p.k) && p.v.length > text.length) text = p.v; });
-    if (!text) {
-      strings.forEach(function (p) {
-        if (p.v.length > text.length && !isCode(p.v) && !looksId(p.v) && !looksTime(p.v) && !/^https?:/.test(p.v)) text = p.v;
-      });
-    }
-    if (!code) strings.forEach(function (p) { if (!code && codeIn(p.v) && !looksId(p.v)) code = codeIn(p.v); });
-    strings.forEach(function (p) {
-      if (!time && looksTime(p.v)) time = p.v;
-      if (!id && looksId(p.v)) id = p.v;
-      var digits = p.v.replace(/[^\d]/g, '');
-      if (!phone && digits.length >= 10 && digits.length <= 15 && /^\+?[\d\s()+-]+$/.test(p.v)) phone = p.v;
-    });
-    if (!code && !text) return;
-    var key = id || (code + '|' + text).slice(0, 80);
-    if (msgs.some(function (m) { return m.key === key; })) return;
-    msgs.push({
-      key: key,
-      code: code || '',
-      text: text,
-      time: relTime(time),
-      phone: phone,
-      isNew: !seen[key]
-    });
-    seen[key] = 1;
-    try { localStorage.setItem('fus-inbox-seen-v2', JSON.stringify(seen)); } catch (e) {}
+  var lastKey2 = '';
+  function normMessage(m) {
+    if (!m || typeof m !== 'object') return null;
+    var content = str(m.content || m.body || m.text || m.message);
+    var code = str(m.copy_code || m.code || '');
+    if (!code) code = codeFrom(content);
+    var sender = str(m.sender || m.from || '');
+    var received = str(m.received_at || m.receivedAt || m.time || '');
+    var receiver = str(m.receiver || '');
+    var id = str(m.event_id || m.id || m.eventId || '');
+    if (!content && !code) return null;
+    if (!id) id = (receiver + '|' + received + '|' + content).slice(0, 120);
+    return {
+      id: id,
+      sender: sender,
+      text: content,
+      code: code,
+      time: received,
+      phone: receiver,
+      protected: m.protected === true,
+    };
   }
 
-  function harvest(node, depth) {
-    if (depth > 8 || node === null || typeof node !== 'object') return;
-    if (Array.isArray(node)) {
-      if (node.length && node.every(function (x) { return x && typeof x === 'object' && !Array.isArray(x); })) {
-        var score = 0;
-        for (var i = 0; i < Math.min(node.length, 5); i++) {
-          var vals = Object.keys(node[i]).map(function (k) { return node[i][k]; });
-          if (vals.some(function (v) { return isCode(v) || codeIn(v); })) score++;
-          if (vals.some(function (v) { return typeof v === 'string' && v.length > 8 && !isCode(v); })) score++;
-        }
-        if (score >= node.length) node.forEach(pushMsg);
-      }
-      node.forEach(function (x) { harvest(x, depth + 1); });
-      return;
+  // 合并：同 id 后到的覆盖先到的（正文/验证码可能分批抵达）。
+  function merge(list) {
+    var byId = {};
+    var order = [];
+    var i, n;
+    for (i = 0; i < messages.length; i++) {
+      byId[messages[i].id] = messages[i];
+      order.push(messages[i].id);
     }
-    Object.keys(node).forEach(function (k) { harvest(node[k], depth + 1); });
+    for (i = 0; i < list.length; i++) {
+      n = list[i];
+      if (!n) continue;
+      if (!byId[n.id]) order.unshift(n.id);
+      var old = byId[n.id];
+      byId[n.id] = {
+        id: n.id,
+        sender: n.sender || (old && old.sender) || '',
+        text: n.text || (old && old.text) || '',
+        code: n.code || (old && old.code) || '',
+        time: n.time || (old && old.time) || '',
+        phone: n.phone || (old && old.phone) || '',
+        protected: n.protected,
+      };
+    }
+    var out = [];
+    for (i = 0; i < order.length; i++) if (byId[order[i]]) out.push(byId[order[i]]);
+    messages = out;
   }
+
+  /* ---------------- 抄页面自己的接口响应 ---------------- */
 
   function digest(json) {
+    if (!json || typeof json !== 'object') return false;
+
+    // 号码目录：d.numbers[] -> {id, number, message_count}
+    if (Array.isArray(json.numbers) && json.numbers.length) {
+      hits++;
+      var cat = [];
+      for (var k = 0; k < json.numbers.length; k++) {
+        var nb = json.numbers[k];
+        if (!nb || !nb.number) continue;
+        cat.push({
+          id: str(nb.id),
+          number: str(nb.number),
+          count: nb.message_count === undefined ? null : Number(nb.message_count),
+          state: str(nb.state || nb.region || ''),
+          area: str(nb.area_code || nb.area || ''),
+        });
+      }
+      if (cat.length) post({ type: 'catalog', items: cat, hits: hits });
+    }
+
+    // 收件箱：items[] 是消息数组
+    var raw = null;
+    if (Array.isArray(json.items)) raw = json.items;
+    else if (Array.isArray(json.messages)) raw = json.messages;
+    else if (Array.isArray(json.data)) raw = json.data;
+
+    if (!raw || !raw.length) return false;
+
     hits++;
     src = '接口';
-    var before = msgs.length;
-    try { harvest(json, 0); } catch (e) { lastErr = 'parse: ' + e.message; }
-    push();
-    return msgs.length !== before;
+    var norms = [];
+    for (var i = 0; i < raw.length; i++) {
+      var n = normMessage(raw[i]);
+      if (n) norms.push(n);
+    }
+    if (!norms.length) return false;
+    merge(norms);
+    pushMessages();
+    return true;
   }
 
-  /* ---------- 挂钩 fetch / XHR ---------- */
   function interesting(u) {
-    return typeof u === 'string' &&
-      (u.indexOf('/sms-api/') >= 0 || u.indexOf('inbox') >= 0 || u.indexOf('messages') >= 0);
+    if (typeof u !== 'string') return false;
+    return u.indexOf('/sms-api/') >= 0;
   }
 
   try {
-    var of = window.fetch;
-    if (of && !of.__fus) {
-      var nf = function (input) {
-        var u = (typeof input === 'string') ? input : (input && input.url) || '';
-        var p = of.apply(this, arguments);
-        try {
-          if (interesting(u)) p.then(function (res) { try { res.clone().json().then(digest).catch(function () {}); } catch (e) {} }).catch(function () {});
-        } catch (e) {}
+    var origFetch = window.fetch;
+    if (origFetch && !origFetch.__fus) {
+      var wrapped = function (input) {
+        var url = typeof input === 'string' ? input : (input && input.url) || '';
+        var p = origFetch.apply(this, arguments);
+        if (interesting(url)) {
+          try {
+            p.then(function (res) {
+              try {
+                res.clone().json().then(function (d) {
+                  try { digest(d); } catch (e) { lastErr = 'digest:' + e.message; }
+                }).catch(function () {});
+              } catch (e) {}
+              return res;
+            }).catch(function () {});
+          } catch (e) {}
+        }
         return p;
       };
-      nf.__fus = 1;
-      window.fetch = nf;
+      wrapped.__fus = 1;
+      window.fetch = wrapped;
     }
-  } catch (e) {}
+  } catch (e) { lastErr = 'fetch-hook:' + e.message; }
 
   try {
-    var oo = XMLHttpRequest.prototype.open, os = XMLHttpRequest.prototype.send;
-    if (!oo.__fus) {
-      var no = function (m, u) { this.__fusUrl = u; return oo.apply(this, arguments); };
-      no.__fus = 1;
-      XMLHttpRequest.prototype.open = no;
+    var origOpen = XMLHttpRequest.prototype.open;
+    var origSend = XMLHttpRequest.prototype.send;
+    if (!origOpen.__fus) {
+      var newOpen = function (method, url) {
+        this.__fusUrl = url;
+        return origOpen.apply(this, arguments);
+      };
+      newOpen.__fus = 1;
+      XMLHttpRequest.prototype.open = newOpen;
       XMLHttpRequest.prototype.send = function () {
         var self = this;
         this.addEventListener('load', function () {
           if (!interesting(self.__fusUrl)) return;
           try { digest(JSON.parse(self.responseText)); } catch (e) {}
         });
-        return os.apply(this, arguments);
+        return origSend.apply(this, arguments);
       };
     }
-  } catch (e) {}
+  } catch (e) { lastErr = 'xhr-hook:' + e.message; }
 
-  /* ---------- DOM 兜底扫描 ---------- */
+  /* ---------------- DOM 兜底 ----------------
+   * 只扫收件箱容器，跳过广告节点（data-fus-promotion）。
+   * 结构（来自站点 live.js 的 messageCard）：article.sms-message[data-event-id]
+   *   .sms-message-top > .message-origin > h3     发送方
+   *   time                                         时间
+   *   p.live-message-body                          正文
+   *   .code-chip[data-live-copy]                   验证码
+   */
   function domScan() {
-    var found = 0;
-    var nodes = document.querySelectorAll('li,tr,div,p,span,td,article');
-    for (var i = 0; i < nodes.length && found < 60; i++) {
-      var el = nodes[i];
-      if (el.children.length > 6) continue;
-      var tx = (el.textContent || '').trim();
-      if (tx.length < 4 || tx.length > 300) continue;
-      var m = tx.match(/\b\d{4,8}\b/);
-      if (!m) continue;
-      var key = 'dom|' + m[0] + '|' + tx.slice(0, 60);
-      if (msgs.some(function (x) { return x.key === key; })) continue;
-      msgs.push({ key: key, code: m[0], text: tx.slice(0, 200), time: '', phone: '', isNew: !seen[key] });
-      seen[key] = 1;
-      found++;
+    var root = document.querySelector('[data-live-messages]');
+    if (!root) { status('页面里还没出现收件箱容器'); return 0; }
+
+    var cards = root.querySelectorAll('[data-event-id]');
+    var found = [];
+    for (var i = 0; i < cards.length; i++) {
+      var c = cards[i];
+      // 广告节点混在同一个列表里，明确剔掉。
+      if (c.hasAttribute('data-fus-promotion') || c.closest('[data-fus-promotion]')) continue;
+
+      var h3 = c.querySelector('.message-origin h3');
+      var body = c.querySelector('.live-message-body');
+      var chip = c.querySelector('.code-chip[data-live-copy]');
+      var t = c.querySelector('time');
+
+      var text = body ? (body.textContent || '').trim() : '';
+      var code = chip ? (chip.getAttribute('data-live-copy') || '').trim() : '';
+      if (!code && text) code = codeFrom(text);
+      var sender = h3 ? (h3.textContent || '').trim() : '';
+      var when = t ? (t.getAttribute('datetime') || t.textContent || '').trim() : '';
+
+      if (!text && !code) continue;
+      found.push({
+        id: c.getAttribute('data-event-id') || '',
+        sender: sender,
+        text: text,
+        code: code,
+        time: when,
+        phone: '',
+        protected: /unavailable/i.test(c.textContent || ''),
+      });
     }
-    if (found) {
+
+    if (found.length) {
       if (src === '等待中') src = '页面';
-      try { localStorage.setItem('fus-inbox-seen-v2', JSON.stringify(seen)); } catch (e) {}
-      push();
+      merge(found);
+      pushMessages();
+    } else {
+      status('收件箱容器在，但还没有可见消息');
     }
-    return found;
+    return found.length;
   }
 
-  window.__fusInbox = { rescan: function () { domScan(); push(); }, digest: digest };
+  window.__fusInbox = {
+    rescan: function () { domScan(); pushMessages('rescan'); },
+    digest: digest,
+    dump: function () { return JSON.stringify(messages); },
+  };
 
-  /* ---------- 启动 ---------- */
+  /* ---------------- 启动 ---------------- */
   function boot() {
-    post({ type: 'status', text: '脚本已注入，等待数据…' });
-    push({ hint: 'boot' });
-    setTimeout(domScan, 1500);
-    setTimeout(domScan, 4000);
-    setTimeout(domScan, 9000);
-    setTimeout(function () { push({ hint: 'idle-check' }); }, 12000);
+    status('抓取层已就绪');
+    // 站点自己的渲染节奏：先接口，后 DOM。多打几次保底。
+    var delays = [1200, 3000, 6000, 10000, 15000, 22000];
+    for (var i = 0; i < delays.length; i++) setTimeout(domScan, delays[i]);
     try {
       var mo = new MutationObserver(function () {
         clearTimeout(mo.__t);
-        mo.__t = setTimeout(domScan, 900);
+        mo.__t = setTimeout(domScan, 800);
       });
       mo.observe(document.documentElement, { childList: true, subtree: true });
     } catch (e) {}
+    setInterval(function () { if (!messages.length) domScan(); }, 12000);
   }
 
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-  else boot();
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
 })();

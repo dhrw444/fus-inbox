@@ -25,7 +25,7 @@ import 'package:freedium_mobile/core/services/intent_service.dart';
 import 'package:freedium_mobile/core/theme/theme_provider.dart';
 import 'package:freedium_mobile/core/theme/expressive_theme.dart';
 import 'package:freedium_mobile/core/utils/article_url_parser.dart';
-import 'package:freedium_mobile/features/inbox/presentation/inbox_screen.dart';
+import 'package:freedium_mobile/features/main/presentation/main_screen.dart';
 import 'package:freedium_mobile/features/onboarding/application/onboarding_provider.dart';
 
 part 'app.g.dart';
@@ -139,7 +139,7 @@ class const App({super.key}) extends ConsumerWidget {
             ? const Scaffold(
                 body: Center(child: M3EProgressIndicator.circularWavy()),
               )
-            : const InboxScreen(),
+            : const MainScreen(),
       ),
       loading: () => MaterialApp(
         builder: (context, child) {

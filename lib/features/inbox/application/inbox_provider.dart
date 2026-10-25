@@ -1,24 +1,34 @@
-/// 收件箱状态容器。
+/// 收件箱状态。
 ///
-/// 由 WebView 的 `FusInbox` JS 通道喂数据，不做任何网络请求——
-/// freeussms 的接口需要页面自身的 WebCrypto 签名，外部拿不到。
+/// 每个号一个 store，随页面生灭，不用全局 provider——同时开两个号不会串数据。
+/// 数据来自 WebView 内注入脚本经 `FusInbox` 通道回传的 JSON。
 library;
 
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:freedium_mobile/features/inbox/domain/inbox_message.dart';
 
-class InboxNotifier() extends Notifier<InboxState> {
-  @override
-  InboxState build() => const InboxState();
+class InboxStore({this.onChanged}) {
+  final VoidCallback? onChanged;
 
-  /// 处理 JS 通道回传的一帧。
+  InboxState _state = const InboxState();
+  InboxState get state => _state;
+
+  /// 已经见过的消息 id。首屏之后新出现的才算「新」。
+  final Set<String> _seen = {};
+  bool _firstBatchDone = false;
+
+  void _emit(InboxState next) {
+    _state = next;
+    onChanged?.call();
+  }
+
+  /// 处理一帧 JS 通道消息。
   void ingestRaw(String raw) {
     if (raw.isEmpty) return;
-    late final Object? decoded;
+    Object? decoded;
     try {
       decoded = jsonDecode(raw);
     } catch (e) {
@@ -33,84 +43,103 @@ class InboxNotifier() extends Notifier<InboxState> {
     final type = payload['type'];
 
     if (type == 'status') {
-      state = state.copyWith(status: payload['text']?.toString() ?? '');
+      _emit(_state.copyWith(status: payload['text']?.toString() ?? ''));
       return;
     }
+    // 号码目录走原生 HTTP，这里忽略。
+    if (type == 'catalog') return;
 
     final items = payload['items'];
     if (items is! List) return;
 
-    // 按 key 去重合并：保留已有顺序，新条目排在最前。
-    final existing = {for (final m in state.messages) m.key: m};
-    final fresh = <InboxMessage>[];
-    for (final item in items) {
-      if (item is! Map) continue;
-      final msg = InboxMessage.fromJson(Map<String, dynamic>.from(item));
-      if (msg.key.isEmpty) continue;
-      final old = existing[msg.key];
-      if (old == null) {
-        fresh.add(msg);
-      } else {
-        // 时间/正文可能后到（先渲染占位再补内容），用新值覆盖旧的。
-        existing[msg.key] = InboxMessage(
-          key: old.key,
-          code: msg.code.isNotEmpty ? msg.code : old.code,
-          text: msg.text.isNotEmpty ? msg.text : old.text,
-          time: msg.time.isNotEmpty ? msg.time : old.time,
-          phone: msg.phone.isNotEmpty ? msg.phone : old.phone,
-          isNew: old.isNew,
-        );
-      }
+    // 逐条归一化 + 按 id 去重（同 id 后到的覆盖先到的，正文可能分批抵达）。
+    final byId = <String, InboxMessage>{};
+    final order = <String>[];
+    for (final m in _state.messages) {
+      byId[m.id] = m;
+      order.add(m.id);
     }
 
-    final merged = <InboxMessage>[...fresh, ...existing.values];
-    final src = payload['src']?.toString() ?? state.source;
+    var added = 0;
+    for (final raw in items) {
+      if (raw is! Map) continue;
+      final msg = InboxMessage.fromJson(Map<String, dynamic>.from(raw));
+      if (msg.id.isEmpty || (msg.text.isEmpty && !msg.hasCode)) continue;
+      final old = byId[msg.id];
+      if (old == null) {
+        order.insert(0, msg.id);
+        added++;
+      }
+      byId[msg.id] = InboxMessage(
+        id: msg.id,
+        text: msg.text.isNotEmpty ? msg.text : (old?.text ?? ''),
+        code: msg.hasCode ? msg.code : (old?.code ?? ''),
+        sender: msg.sender.isNotEmpty ? msg.sender : (old?.sender ?? ''),
+        receivedAt: msg.receivedAt.isNotEmpty
+            ? msg.receivedAt
+            : (old?.receivedAt ?? ''),
+        phone: msg.phone.isNotEmpty ? msg.phone : (old?.phone ?? ''),
+        isProtected: msg.isProtected,
+      );
+    }
+
+    final merged = <InboxMessage>[];
+    for (final id in order) {
+      final m = byId[id];
+      if (m == null) continue;
+      // 首屏已存在的算旧；之后新出现的标「新」。
+      final isNew = _firstBatchDone && !_seen.contains(m.id);
+      merged.add(m.copyWith(isNew: isNew));
+    }
+    if (!_firstBatchDone) _firstBatchDone = true;
+    for (final m in merged) {
+      _seen.add(m.id);
+    }
+
+    final src = payload['src']?.toString() ?? _state.source;
     final hits = payload['hits'] is int
         ? payload['hits'] as int
-        : int.tryParse('${payload['hits']}') ?? state.hits;
+        : int.tryParse('${payload['hits']}') ?? _state.hits;
+    final err = payload['err']?.toString();
 
-    state = InboxState(
-      messages: merged,
-      phase: merged.isEmpty ? InboxPhase.waiting : InboxPhase.ready,
-      source: src,
-      hits: hits,
-      status: merged.isEmpty
-          ? (payload['err'] != null
-                ? '截图失败：${payload['err']}'
-                : '页面已打开，等待短信…${hits > 0 ? '（已截获 $hits 个响应）' : ''}')
-          : '${merged.length} 条 · 来源 $src${hits > 0 ? ' · 截获 $hits' : ''}',
-      pageUrl: payload['url']?.toString() ?? state.pageUrl,
+    String status;
+    if (merged.isEmpty) {
+      status = err != null
+          ? '抓取出错：$err'
+          : '收件页已打开，等新短信…${hits > 0 ? '（已截获 $hits 次响应）' : ''}';
+    } else {
+      final codes = merged.where((m) => m.hasCode).length;
+      status =
+          '${merged.length} 条短信'
+          '${codes > 0 ? ' · $codes 条带验证码' : ''}'
+          '${src.isNotEmpty ? ' · 来自$src' : ''}';
+    }
+
+    _emit(
+      InboxState(
+        messages: merged,
+        phase: merged.isEmpty
+            ? (_state.phase == InboxPhase.failed
+                  ? InboxPhase.failed
+                  : InboxPhase.waiting)
+            : InboxPhase.ready,
+        source: src,
+        hits: hits,
+        status: status,
+        error: err,
+      ),
     );
   }
 
-  void markAllSeen() {
-    state = state.copyWith(
-      messages: [
-        for (final m in state.messages)
-          InboxMessage(
-            key: m.key,
-            code: m.code,
-            text: m.text,
-            time: m.time,
-            phone: m.phone,
-          ),
-      ],
-    );
-  }
+  void note(String text) => _emit(_state.copyWith(status: text));
 
-  void fail(String message) {
-    state = state.copyWith(
-      phase: InboxPhase.failed,
-      status: message,
-      error: message,
-    );
-  }
+  void fail(String message) => _emit(
+    _state.copyWith(phase: InboxPhase.failed, error: message, status: message),
+  );
 
   void reset() {
-    state = const InboxState();
+    _seen.clear();
+    _firstBatchDone = false;
+    _emit(const InboxState());
   }
 }
-
-final inboxProvider = NotifierProvider<InboxNotifier, InboxState>(
-  InboxNotifier.new,
-);
