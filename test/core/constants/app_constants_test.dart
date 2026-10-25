@@ -5,10 +5,7 @@ import 'package:freedium_mobile/core/utils/external_url_launcher.dart';
 void main() {
   group('AppConstants', () {
     test('points user-facing source links to the release repository', () {
-      expect(
-        AppConstants.appSourceUrl,
-        'https://github.com/dhrw444/fus-inbox',
-      );
+      expect(AppConstants.appSourceUrl, 'https://github.com/dhrw444/fus-inbox');
       expect(
         parseExternalHttpUrl(AppConstants.appSourceUrl),
         Uri.parse('https://github.com/dhrw444/fus-inbox'),
