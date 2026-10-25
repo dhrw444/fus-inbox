@@ -47,3 +47,6 @@ keystore.base64
 android/build/reports/problems/problems-report.html
 
 .planning/
+# 签名密钥只存于 GitHub Secrets，禁止入库
+android/app/my-release-key.keystore
+android/key.properties
