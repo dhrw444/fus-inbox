@@ -17,6 +17,7 @@ import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
+import 'package:fus_inbox/core/webview/browser_identity.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 /// 一页目录抓下来的结果。
@@ -128,15 +129,6 @@ class NumbersRepository({this.client}) {
 
   static const _base = 'https://freeussms.com';
 
-  /// 与 WebView 侧统一使用的 UA。
-  ///
-  /// 要和 index 页里的 setUserAgent 保持一致：同一台设备对同一站点
-  /// 出现两种 UA 才是最可疑的信号。原版少了 `; K` 型号段，
-  /// 结构上和真实 Chrome 对不上。
-  static const _ua =
-      'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 '
-      '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
-
   late final HttpClient _http = client ?? HttpClient()
     // Cloudflare 会给首次访问下发 cf_clearance / __cf_bm 这类 cookie，
     // 后续请求带上它们才像「同一个浏览器在连续访问」。
@@ -160,7 +152,11 @@ class NumbersRepository({this.client}) {
     try {
       final req = await _http.getUrl(uri).timeout(const Duration(seconds: 20));
       req.headers
-        ..set(HttpHeaders.userAgentHeader, _ua)
+        // 用当前浏览器身份里的 UA。
+        // 必须和收件箱 WebView 用同一个值——同一台设备对同一站点
+        // 呈现两种 UA 是最可疑的信号。用户点「换浏览器身份」后，
+        // 这里也会自动跟着变。
+        ..set(HttpHeaders.userAgentHeader, currentUserAgent)
         // 请求头要凑齐一整套：只有 UA 一个头本身就是特征。
         // 真实 Chrome 发目录页时至少带这些。
         ..set(

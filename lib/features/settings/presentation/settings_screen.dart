@@ -4,93 +4,106 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
-import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
+import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 
 /// 设置页。
 ///
-/// 分组方式照 freedium 原项目的设置页：小标题 + 列表项，一组组往下排。
-/// 只保留对短信 App 有意义的项——原项目的镜像源、弹窗拦截都是阅读器专用，
-/// 搬过来只会让人困惑。
+/// 视觉语言参考 Yomiru：分组标题外面不加框，每个分组包一张
+/// elevation:0 + 16dp 圆角的卡片，卡内条目去掉逐条分隔线，靠留白分层。
+/// 之前是裸 ListTile + Divider，和系统设置页长得一样，没有辨识度。
 class const SettingsScreen({super.key}) extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final prefs = ref.watch(prefsProvider);
-    final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(title: const Text('设置'), centerTitle: false),
       body: ListView(
-        padding: const EdgeInsets.only(bottom: 32),
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 36),
         children: [
-          const _SectionHeader(title: '外观'),
-          _ThemeModeTile(prefs: prefs),
-          _FontSizeTile(prefs: prefs),
-          const Divider(height: 24),
+          const _GroupLabel('外观'),
+          _GroupCard(
+            children: [
+              const _ThemeModeRow(),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              _FontSizeRow(prefs: prefs),
+            ],
+          ),
 
-          const _SectionHeader(title: '短信'),
-          SwitchListTile(
-            title: const Text('实时翻译'),
-            subtitle: const Text('把英文短信自动翻成中文，译文显示在原文位置'),
-            value: prefs.translate,
-            onChanged: (v) => ref.read(prefsProvider.notifier).setTranslate(v),
+          const _GroupLabel('短信'),
+          _GroupCard(
+            children: [
+              SwitchListTile(
+                title: const Text('实时翻译'),
+                subtitle: const Text('英文短信自动翻成中文'),
+                value: prefs.translate,
+                onChanged: (v) =>
+                    ref.read(prefsProvider.notifier).setTranslate(v),
+              ),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              SwitchListTile(
+                title: const Text('保留原文'),
+                subtitle: Text(prefs.translate ? '译文下方同时显示英文原文' : '需先打开实时翻译'),
+                value: prefs.showOriginal,
+                onChanged: prefs.translate
+                    ? (v) => ref.read(prefsProvider.notifier).setShowOriginal(v)
+                    : null,
+              ),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              _LanguageRow(prefs: prefs),
+            ],
           ),
-          SwitchListTile(
-            title: const Text('译文下方保留原文'),
-            subtitle: const Text('打开后卡片会更高，但能对照原文'),
-            value: prefs.showOriginal,
-            onChanged: prefs.translate
-                ? (v) => ref.read(prefsProvider.notifier).setShowOriginal(v)
-                : null,
-          ),
-          _LanguageTile(prefs: prefs),
-          const Divider(height: 24),
 
-          const _SectionHeader(title: '存储'),
-          ListTile(
-            leading: const Icon(Icons.cleaning_services_outlined),
-            title: const Text('清除翻译缓存'),
-            subtitle: Text(
-              '已缓存 ${ref.watch(translationStoreProvider).length} 条译文',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _clearTranslationCache(context, ref),
+          const _GroupLabel('存储'),
+          _GroupCard(
+            children: [
+              ListTile(
+                leading: const Icon(Icons.translate),
+                title: const Text('翻译缓存'),
+                subtitle: Text(
+                  '${ref.watch(translationStoreProvider).length} 条译文',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _clearTranslationCache(context, ref),
+              ),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              ListTile(
+                leading: const Icon(Icons.storage_outlined),
+                title: const Text('号码目录缓存'),
+                subtitle: Text(
+                  ref.watch(numberDirectoryProvider).all.isEmpty
+                      ? '暂无缓存'
+                      : '${ref.watch(numberDirectoryProvider).all.length} 个号码',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _clearDirectoryCache(context, ref),
+              ),
+            ],
           ),
-          ListTile(
-            leading: const Icon(Icons.storage_outlined),
-            title: const Text('清除号码目录缓存'),
-            subtitle: Text(
-              ref.watch(numberDirectoryProvider).all.isEmpty
-                  ? '暂无缓存'
-                  : '已缓存 ${ref.watch(numberDirectoryProvider).all.length} 个号码',
-            ),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => _clearDirectoryCache(context, ref),
-          ),
-          const Divider(height: 24),
 
-          const _SectionHeader(title: '关于'),
-          const ListTile(
-            leading: Icon(Icons.info_outline),
-            title: Text('数据来源'),
-            subtitle: Text('freeussms.com 的公开号码与短信'),
+          const _GroupLabel('关于'),
+          _GroupCard(
+            children: [
+              const ListTile(
+                leading: Icon(Icons.cloud_outlined),
+                title: Text('数据来源'),
+                subtitle: Text('freeussms.com'),
+              ),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              const ListTile(
+                leading: Icon(Icons.description_outlined),
+                title: Text('许可'),
+                subtitle: Text('MIT'),
+              ),
+            ],
           ),
-          const ListTile(
-            leading: Icon(Icons.code),
-            title: Text('架构'),
-            subtitle: Text('原生 HTTP 抓号码目录，WebView 只做后台取数引擎'),
-          ),
-          const ListTile(
-            leading: Icon(Icons.description_outlined),
-            title: Text('许可'),
-            subtitle: Text('MIT'),
-          ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 20),
           Center(
             child: Text(
               'v${AppConstants.appVersion}',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
               ),
             ),
           ),
@@ -99,7 +112,6 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
     );
   }
 
-  /// 清目录缓存。清完下次启动就要重新抓一遍。
   Future<void> _clearDirectoryCache(BuildContext context, WidgetRef ref) async {
     final n = ref.read(numberDirectoryProvider).all.length;
     await ref.read(numberDirectoryProvider.notifier).clearCache();
@@ -109,64 +121,75 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
       ..showSnackBar(SnackBar(content: Text('已清除 $n 个号码的目录缓存')));
   }
 
-  /// 清翻译缓存。内部无 await，不需要 Future。
   void _clearTranslationCache(BuildContext context, WidgetRef ref) {
     final n = ref.read(translationStoreProvider).length;
     ref.read(translationStoreProvider.notifier).clear();
-    if (!context.mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
       ..showSnackBar(SnackBar(content: Text('已清除 $n 条翻译缓存')));
   }
 }
 
-/// 分组小标题。缩进和列表项文字对齐，字号比正文小一号。
-class const _SectionHeader({required this.title}) extends StatelessWidget {
-  final String title;
+/// 分组标题。放在卡片外面，缩进对齐卡片内文字。
+class const _GroupLabel({required this.text}) extends StatelessWidget {
+  final String text;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 18, 16, 6),
+      padding: const EdgeInsets.fromLTRB(4, 20, 4, 8),
       child: Text(
-        title,
-        style: theme.textTheme.labelMedium?.copyWith(
+        text,
+        style: theme.textTheme.labelLarge?.copyWith(
           color: theme.colorScheme.primary,
           fontWeight: FontWeight.w700,
-          letterSpacing: 0.4,
+          letterSpacing: 0.3,
         ),
       ),
     );
   }
 }
 
-/// 主题模式：跟随系统 / 浅色 / 深色。
-///
-/// 用 SegmentedButton 而不是下拉框：只有三个选项，摊开比点两次更快。
-class const _ThemeModeTile({required this.prefs}) extends ConsumerWidget {
-  final Prefs prefs;
+/// 分组卡片：无阴影、16dp 圆角、淡色底。
+class const _GroupCard({required this.children}) extends StatelessWidget {
+  final List<Widget> children;
 
   @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      margin: EdgeInsets.zero,
+      color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      clipBehavior: Clip.antiAlias,
+      child: Column(mainAxisSize: MainAxisSize.min, children: children),
+    );
+  }
+}
+
+/// 主题三选一。
+class const _ThemeModeRow() extends ConsumerWidget {
+  @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text('主题'),
+          Text('主题', style: theme.textTheme.titleSmall),
           const SizedBox(height: 10),
           SizedBox(
             width: double.infinity,
             child: SegmentedButton<ThemeMode>(
-              // 三个选项挤在 1080 宽里，「跟随系统」+ 图标会被压成两行
-              // （「跟随系」/「统」）。去掉图标只留文字，字够短就不会换行；
-              // 同时允许单行不换行，长文案宁可缩字号也别折行。
+              // 三个选项挤在 1080 宽里，「跟随系统」+ 图标会被压成两行。
+              // 去掉图标只留文字，并锁死单行。
               segments: const [
                 ButtonSegment(
                   value: ThemeMode.system,
                   label: Text('跟随系统', maxLines: 1),
-                  tooltip: '跟随系统的深色/浅色设置',
                 ),
                 ButtonSegment(
                   value: ThemeMode.light,
@@ -178,6 +201,7 @@ class const _ThemeModeTile({required this.prefs}) extends ConsumerWidget {
                 ),
               ],
               selected: {ref.watch(themeModeProvider)},
+              showSelectedIcon: false,
               onSelectionChanged: (picked) {
                 ref.read(themeModeProvider.notifier).set(picked.first);
               },
@@ -189,16 +213,11 @@ class const _ThemeModeTile({required this.prefs}) extends ConsumerWidget {
   }
 }
 
-/// 字号：四档，0.85 ~ 1.30 倍。
-///
-/// 不用连续滑块——短信正文的阅读舒适区很窄，给固定几档比让用户拖更实际。
-class const _FontSizeTile({required this.prefs}) extends ConsumerWidget {
+/// 字号四档 + 实时预览。
+class const _FontSizeRow({required this.prefs}) extends ConsumerWidget {
   final Prefs prefs;
 
-  /// 档位倍率。
   static const steps = <double>[0.85, 1.0, 1.15, 1.30];
-
-  /// 与 [steps] 一一对应的档名。
   static const labels = <String>['小', '标准', '大', '特大'];
 
   @override
@@ -217,28 +236,37 @@ class const _FontSizeTile({required this.prefs}) extends ConsumerWidget {
     }
 
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 8),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const Text('短信字号'),
+              Text('短信字号', style: theme.textTheme.titleSmall),
               const Spacer(),
               Text(
                 '${(steps[idx] * 100).round()}%',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+                style: theme.textTheme.labelMedium?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.w600,
                 ),
               ),
             ],
           ),
-          const SizedBox(height: 2),
-          // 实时预览：改档位立刻能看到效果，不用切回去看短信。
-          Text(
-            '验证码 123456',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontSize: 15 * steps[idx],
+          const SizedBox(height: 10),
+          // 实时预览：改档位立刻看到效果，不用切回短信页。
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              'Your code is 123456',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontSize: 14 * steps[idx],
+              ),
             ),
           ),
           Slider(
@@ -247,7 +275,6 @@ class const _FontSizeTile({required this.prefs}) extends ConsumerWidget {
             divisions: steps.length - 1,
             label: labels[idx],
             // 拖动中只改内存（实时预览字号），松手才落盘。
-            // 否则一次拖动会触发几十次 SharedPreferences 写入。
             onChanged: (v) {
               ref
                   .read(prefsProvider.notifier)
@@ -264,10 +291,7 @@ class const _FontSizeTile({required this.prefs}) extends ConsumerWidget {
 }
 
 /// 翻译目标语言。
-///
-/// 只给两个：简体中文是默认，繁体给习惯繁体的人。再加英文会变成
-/// 「把英文翻成英文」，没有意义。
-class const _LanguageTile({required this.prefs}) extends ConsumerWidget {
+class const _LanguageRow({required this.prefs}) extends ConsumerWidget {
   final Prefs prefs;
 
   @override
@@ -279,8 +303,8 @@ class const _LanguageTile({required this.prefs}) extends ConsumerWidget {
         value: prefs.targetLang,
         underline: const SizedBox.shrink(),
         items: const [
-          DropdownMenuItem(value: 'zh-CN', child: Text('简体中文')),
-          DropdownMenuItem(value: 'zh-TW', child: Text('繁體中文')),
+          DropdownMenuItem(value: 'zh-CN', child: Text('简体')),
+          DropdownMenuItem(value: 'zh-TW', child: Text('繁體')),
         ],
         onChanged: (v) {
           if (v == null) return;

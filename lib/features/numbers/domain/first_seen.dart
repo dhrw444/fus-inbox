@@ -18,6 +18,8 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:fus_inbox/core/webview/browser_identity.dart';
+
 const _kCacheKey = 'number_first_seen_v1';
 
 final _rowRe = RegExp(
@@ -84,8 +86,6 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
       // 缓存坏了当没有，不影响任何功能。
     }
   }
-
-  bool has(String number) => state.containsKey(number);
 
   DateTime? get(String number) => state[number];
 
@@ -161,9 +161,6 @@ class FirstSeenFiller() {
   bool _running = false;
   bool _cancelled = false;
 
-  /// 正在跑。
-  bool get running => _running;
-
   /// 停掉当前这一轮。下一轮会从头扫「还缺哪些」。
   void cancel() => _cancelled = true;
 
@@ -224,7 +221,8 @@ Future<DateTime?> fetchFirstSeen(String e164, {HttpClient? client}) async {
         .getUrl(Uri.parse('https://freeussms.com/numbers/$e164/'))
         .timeout(const Duration(seconds: 15));
     req.headers
-      ..set(HttpHeaders.userAgentHeader, _ua)
+      // 同一身份：与 WebView / 目录抓取用同一个 UA。
+      ..set(HttpHeaders.userAgentHeader, currentUserAgent)
       ..set(
         HttpHeaders.acceptHeader,
         'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -243,7 +241,3 @@ Future<DateTime?> fetchFirstSeen(String e164, {HttpClient? client}) async {
     if (own) http.close(force: true);
   }
 }
-
-const _ua =
-    'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 '
-    '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';

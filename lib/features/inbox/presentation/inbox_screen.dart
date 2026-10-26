@@ -17,6 +17,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
+import 'package:fus_inbox/core/webview/browser_identity.dart';
 import 'package:fus_inbox/core/webview/webview_widget.dart';
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
@@ -102,14 +103,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   WebViewController _buildController() {
     return WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
-      // 默认 UA 里带 "wv" 和 "Android ... ; ... Build/..."，是 WebView 的
-      // 指纹。站点在 Cloudflare 后面，这类 UA 很容易被单独盯上（更严的
-      // 挑战、更慢的放行，甚至直接不发数据）。换成移动版 Chrome 的写法，
-      // 和真实手机浏览器一致。
-      ..setUserAgent(
-        'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-      )
+      // UA 由 browser_identity 统一管理：平时是稳定的默认值，
+      // 用户点「换浏览器身份」时才换成随机的新组合，并且和号码目录
+      // 那条原生 HTTP 保持同一个值。
+      ..setUserAgent(currentUserAgent)
       // 引擎看不见，背景给个深色免得加载瞬间闪白。
       ..setBackgroundColor(const Color(0xFF10131A))
       ..addJavaScriptChannel(
@@ -169,6 +166,57 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     } catch (_) {
       // 正常情况：document 还没建好。onPageFinished 会重试。
     }
+  }
+
+  /// 换一个浏览器身份并重新打开收件页。
+  ///
+  /// 站点会判断「是不是同一个浏览器」：UA 固定会让 Cloudflare 的挑战变严，
+  /// 表现就是一直转圈拿不到短信。
+  ///
+  /// **只换 UA，不碰任何本地数据**：
+  ///   - 不清 cookie / 缓存 / localStorage —— 那会把用户的收藏、
+  ///     已缓存的号码和译文缓存一起洗掉
+  ///   - 只做两件事：设新 UA + 重新加载这个收件页
+  ///
+  /// 换完只影响这一个 WebView 实例的请求特征，App 自己的磁盘缓存原封不动。
+  Future<void> _rotateIdentity() async {
+    final messenger = ScaffoldMessenger.of(context);
+    _store.note('正在更换浏览器身份…');
+
+    try {
+      final ua = rotateUserAgent();
+      await _controller.setUserAgent(ua);
+
+      // 重置的只是这个页面的内存状态（已抓到的消息、看门狗），
+      // 和磁盘上的目录缓存 / 收录时间缓存无关。
+      _store.reset();
+      _armWatchdog();
+      await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
+
+      if (!mounted) return;
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(
+          SnackBar(
+            content: Text('已换新身份：${_shortUa(ua)}'),
+            duration: const Duration(milliseconds: 1800),
+          ),
+        );
+    } catch (e) {
+      debugPrint('换身份失败: $e');
+      if (!mounted) return;
+      messenger
+        ..clearSnackBars()
+        ..showSnackBar(SnackBar(content: Text('换身份失败：$e')));
+    }
+  }
+
+  /// UA 太长，提示里只留关键片段。
+  static String _shortUa(String ua) {
+    final m = RegExp(r'Android ([\d.]+); ([^)]+)\)').firstMatch(ua);
+    final c = RegExp(r'Chrome/([\d.]+)').firstMatch(ua);
+    if (m == null) return ua;
+    return '${m.group(2)!.trim()} · Chrome ${c?.group(1) ?? ''}';
   }
 
   /// 重扫当前页面 DOM。不发网络请求，纯粹是把已经渲染出来的内容再读一遍。
@@ -248,6 +296,21 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           ],
         ),
         actions: [
+          // 换浏览器身份：站点会按 UA 判断是不是同一个浏览器，
+          // 卡验证时点一下换新身份比反复重载有用。
+          IconButton(
+            tooltip: '换浏览器身份',
+            onPressed: _rotateIdentity,
+            icon: const Icon(Icons.person_sync_outlined),
+          ),
+          // 常驻入口：之前只有「加载失败」时才露出这个按钮，
+          // 一旦消息列表出来了就再也找不到它——而风控恰恰可能在
+          // 列表出来后再次触发（翻页、刷新都会重新走站点会话）。
+          IconButton(
+            tooltip: '打开浏览器过验证',
+            onPressed: () => setState(() => _showChallenge = true),
+            icon: const Icon(Icons.shield_outlined),
+          ),
           IconButton(
             tooltip: '重新扫描',
             onPressed: _rescan,
