@@ -154,26 +154,17 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
   ///
   /// 目录一次要连抓 5 页（100+ 个号），站点在 Cloudflare 后面，
   /// 反复下拉刷新就是风控的直接来源。所以 `force: true` 也必须过这道闸——
-  /// 想绕开只能等冷却结束，或者重启 App。
-  ///
-  /// 90 秒：一次全量加载要连抓 5 页、约 10 秒，太短的冷却等于没拦；
-  /// 但 5 分钟又会让「下拉刷新」变成按了没反应的按钮。
-  static const _cooldown = Duration(seconds: 90);
-
   /// 拉取目录。
   ///
-  /// 返回 false 表示这次被跳过了（正在加载中、已有数据且非强制、
-  /// 或还在冷却期），调用方可据此给用户一个明确提示——
-  /// 之前是静默 return，用户点刷新什么都不发生，像坏了一样。
-  Future<bool> load({bool force = false}) async {
-    if (state.loading) return false;
-    if (!force && state.all.isNotEmpty) return false;
-
-    final last = state.lastLoadedAt;
-    if (last != null && DateTime.now().difference(last) < _cooldown) {
-      debugPrint('目录刚加载过，冷却中，跳过这次请求');
-      return false;
-    }
+  /// 拉取目录。
+  ///
+  /// 只在「已经在加载中」或「已有数据且非强制」时提前返回——
+  /// 曾经加过 90 秒冷却期来省请求，那是把风控问题转嫁成限制用户。
+  /// 用户点刷新是明确的意图，不该被 App 拦住；真遇到站点限流，
+  /// 让请求失败并报出来，比假装按钮坏了要好。
+  Future<void> load({bool force = false}) async {
+    if (state.loading) return;
+    if (!force && state.all.isNotEmpty) return;
 
     state = state.copyWith(
       loading: true,
@@ -203,7 +194,7 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
           error: '目录是空的——站点结构可能变了',
           progress: '',
         );
-        return true;
+        return;
       }
       state = state.copyWith(
         all: list,
@@ -215,9 +206,7 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
       debugPrint('目录加载完成：${list.length} 个号，${state.states.length} 个州');
     } catch (e) {
       state = state.copyWith(loading: false, error: '目录拉取失败：$e', progress: '');
-      return true;
     }
-    return true;
   }
 
   void setTab(NumberTab tab) => state = state.copyWith(tab: tab);

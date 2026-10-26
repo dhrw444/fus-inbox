@@ -13,6 +13,8 @@ class const NumberCard({
   required this.saved,
   required this.onTap,
   required this.onToggleSave,
+  required this.onCopy,
+  this.firstSeen,
   this.now,
   super.key,
 }) extends StatelessWidget {
@@ -20,6 +22,16 @@ class const NumberCard({
   final bool saved;
   final VoidCallback onTap;
   final VoidCallback onToggleSave;
+
+  /// 复制号码。
+  final VoidCallback onCopy;
+
+  /// 号码首次被站点收录的时间。
+  ///
+  /// 站点只把这个字段放在详情页，缓存里没有时就是 null —— 这时不显示，
+  /// 不占位置也不显示「未知」这种东西。
+  final DateTime? firstSeen;
+
   final DateTime? now;
 
   @override
@@ -114,8 +126,43 @@ class const NumberCard({
                       ],
                     ],
                   ),
+                  // 收录时间单独一行。
+                  //
+                  // 塞进第二行会和州名/条数/最后时间挤在一起——四个字段
+                  // 加右侧两个按钮，1080 宽放不下，必然出现省略号。
+                  // 放第三行既清楚，也只在抓到过时间时才多这一行。
+                  if (firstSeen != null) ...[
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.playlist_add_check,
+                          size: 13,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 3),
+                        Text(
+                          '收录于 ${relativeTime(firstSeen!.toIso8601String(), now)}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
+            ),
+            IconButton(
+              tooltip: '复制号码',
+              onPressed: onCopy,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 40, height: 44),
+              iconSize: 18,
+              icon: Icon(Icons.copy_rounded, color: scheme.outline),
             ),
             // 紧凑按钮：默认 48×48 会把行撑高、星标和文字基线错位。
             // 这里给 44 —— Material 建议 48，但整行高度会因此多 8px；
