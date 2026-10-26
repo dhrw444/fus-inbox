@@ -44,7 +44,7 @@ void main() {
     'release CLI writes prerelease classification to GITHUB_OUTPUT',
     () async {
       final directory = await Directory.systemTemp.createTemp(
-        'freedium-release-output-',
+        'fus-inbox-release-output-',
       );
       addTearDown(() => directory.delete(recursive: true));
       final pubspec = File('${directory.path}/pubspec.yaml');
@@ -69,7 +69,7 @@ void main() {
 
   test('invalid CLI input leaves the pubspec untouched', () async {
     final directory = await Directory.systemTemp.createTemp(
-      'freedium-release-',
+      'fus-inbox-release-',
     );
     addTearDown(() => directory.delete(recursive: true));
     final pubspec = File('${directory.path}/pubspec.yaml');

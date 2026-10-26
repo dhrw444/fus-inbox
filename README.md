@@ -1,310 +1,61 @@
-# Freedium Mobile
+# SMS 收件箱
 
-<p align="center">
-   <img src="https://github.com/AmanSikarwar/freedium_mobile/blob/main/assets/icon/icon.png?raw=true" alt="Freedium Mobile Logo" width="148px"/>
-</p>
+一个安卓应用，打开就能看到 [freeussms.com](https://freeussms.com) 公共美国号码池的最新短信。原生界面，不套网页，不显示站点广告。
 
-<p align="center">
-    <a href="https://github.com/AmanSikarwar/freedium_mobile/blob/main/LICENSE"><img src="https://img.shields.io/github/license/AmanSikarwar/freedium_mobile?style=flat-square" alt="License"></a>
-    <a href="https://github.com/AmanSikarwar/freedium_mobile/releases/latest"><img src="https://img.shields.io/github/v/release/AmanSikarwar/freedium_mobile?style=flat-square" alt="Latest Release"></a>
-    <a href="https://github.com/AmanSikarwar/freedium_mobile/releases/latest"><img src="https://img.shields.io/github/downloads/AmanSikarwar/freedium_mobile/total?style=flat-square" alt="Downloads"></a>
-    <a href="https://github.com/AmanSikarwar/freedium_mobile/stargazers"><img src="https://img.shields.io/github/stars/AmanSikarwar/freedium_mobile?style=flat-square" alt="Stars"></a>
-    <img src="https://img.shields.io/badge/Flutter-3.47.5+-02569B?style=flat-square&logo=flutter" alt="Flutter">
-    <img src="https://img.shields.io/badge/Platform-Android-3DDC84?style=flat-square&logo=android" alt="Android">
-</p>
+## 它做什么
 
-<p align="center">
-  <strong>Read articles from seven leading publishers without a subscription</strong>
-</p>
+- **号码目录**：直接抓站点服务端渲染的 `/numbers/` 页面，原生解析成列表。不走 WebView。
+- **筛选与搜索**：按州、按区号、按「最近活跃」「有短信」筛选，支持号码/州名/区号搜索，可排序。
+- **收件箱**：点进号码看该号收到的全部短信。验证码会被单独放大，一点即复制。
+- **收藏**：把常用的号存下来。
 
-<p align="center">
-  <em>Medium, NYT, WaPo, Bloomberg, Reuters, The Economist, and Financial Times</em>
-</p>
+## 为什么收件箱要用一个隐藏的 WebView
 
----
+站点的 `/sms-api/v1/*` 接口要求浏览器会话 + 每请求的 WebCrypto 签名，签名私钥只存在于页面上下文里，外部 HTTP 客户端签不出来。所以收件箱底下常驻一个**始终不可见**的 WebView 当引擎，靠注入脚本截获它自己的接口响应，再把结果交给原生界面渲染。
 
-## Overview
+站点有广告，但本应用不渲染页面，只从接口响应里挑字段重建列表，广告节点被显式跳过。只有在站点弹出人机验证、需要人工过一次时，界面才会临时露出一次页面（列表底部「卡在人机验证？」）。
 
-Freedium Mobile is an Android reader for paywalled articles from Medium, The New York Times, The Washington Post, Bloomberg, Reuters, The Economist, and Financial Times. It sends supported article links through [Freedium Mirror](https://freedium-mirror.cfd) and presents the result in a native reading experience.
-
-Built with **Flutter** and featuring **Material You** design, Freedium Mobile offers a native reading experience with dynamic theming and dark mode support.
-
-## Supported Sources
-
-- **Medium**, including many custom publication domains
-- **The New York Times**
-- **The Washington Post**
-- **Bloomberg**
-- **Reuters**
-- **The Economist**
-- **Financial Times**
-
-## Demo
-
-<div align="center">
-  <video loop muted autoplay="True" width="300" src="https://github.com/user-attachments/assets/83e7bd99-aea1-4fc8-9672-c122a795572b"></video>
-</div>
-
----
-
-## Features
-
-- **Seven Supported Sources** - Read articles from Medium, NYT, WaPo, Bloomberg, Reuters, The Economist, and Financial Times
-- **Share and Open With** - Share or open supported links directly in Freedium from Android browsers and apps
-- **Clipboard Detection** - Automatically detects article URLs in your clipboard for quick access
-- **Continue Reading** - Resume unfinished articles from the home screen at your saved reading position, plus finished stories for re-reading
-- **Bookmarks** - Save articles locally, organize them into folders, and search or manage them from the Bookmarks screen
-- **Bookmark Export/Import** - Share versioned JSON backups and restore them on any device
-- **Reading History** - Track article progress, completion state, and recently opened stories locally, with configurable retention
-- **Configurable Mirrors** - Multiple Freedium server mirrors with automatic failover
-- **Material You Theming** - Dynamic app colors and matching light or dark article styling
-- **Site Popup Control** - Optionally hide Freedium announcement popups while reading
-- **Font Size Control** - Adjust text size for better readability
-- **Auto-Update Checker** - Get notified when new versions are available
-
----
-
-## Installation
-
-### Quick Install
-
-1. Go to the [**Releases page**](https://github.com/AmanSikarwar/freedium_mobile/releases/latest)
-2. Download the latest APK file
-3. Install on your Android device
-4. Launch the app and start reading!
-
-> **Note:** You may need to enable "Install from unknown sources" in your device settings.
-
-### How to Use
-
-<details>
-<summary><strong>Method 1: Paste URL (Recommended)</strong></summary>
-
-1. Copy a supported article URL
-2. Open Freedium Mobile
-3. The URL will be auto-detected in the input field
-4. Tap **"Read Article"**
-
-</details>
-
-<details>
-<summary><strong>Method 2: Share from Browser or App</strong></summary>
-
-1. Open a supported article in any browser or app
-2. Tap the **Share** button
-3. Select **"Freedium"** from the share menu
-4. Article opens automatically
-
-</details>
-
-<details>
-<summary><strong>Method 3: Manual Entry</strong></summary>
-
-1. Open Freedium Mobile
-2. Type or paste a supported article URL
-3. Tap **"Read Article"**
-
-</details>
-
----
-
-## Development
-
-### Prerequisites
-
-- **Flutter SDK** 3.47.5 or higher; CI and releases use 3.47.5
-- **Dart SDK** 3.13.0 or higher (included with Flutter; tested with 3.13.4)
-- Android Studio or VS Code with Flutter extensions
-- Git
-
-### Quick Start
-
-```bash
-# Clone the repository
-git clone https://github.com/AmanSikarwar/freedium_mobile.git
-cd freedium_mobile
-
-# Install dependencies
-flutter pub get
-
-flutter run
-```
-
-### Build Commands
-
-```bash
-# Debug build
-flutter run
-
-# Release APK
-flutter build apk --release
-
-# Release APK with obfuscation (recommended for production)
-flutter build apk --release --obfuscate --split-debug-info=obfuscate
-
-# Format code
-dart format .
-
-# Analyze code
-flutter analyze
-```
-
-> **Output location:** `build/app/outputs/flutter-apk/`
-
-### Project Structure
+## 架构
 
 ```
 lib/
-├── app.dart                          # App widget, intent handling, global navigator
-├── main.dart                         # Entry point
+├── app.dart                     应用外壳：主题 + 首页
 ├── core/
-│   ├── constants/
-│   │   └── app_constants.dart        # App metadata, package name, default mirrors
-│   ├── services/
-│   │   ├── clipboard_service.dart    # Clipboard URL detection
-│   │   ├── font_size_service.dart    # Font size persistence
-│   │   ├── intent_service.dart       # Share-to-app handling
-│   │   └── update_service.dart       # GitHub release checker
-│   ├── theme/
-│   │   ├── app_theme.dart            # Material You theme config
-│   │   ├── theme_provider.dart       # Dynamic color provider
-│   │   └── util.dart                 # Theme utilities
-│   └── utils/
-│       ├── article_url_parser.dart   # Shared URL extraction
-│       ├── external_url_launcher.dart
-│       └── http_url_normalizer.dart
-├── features/
-│   ├── bookmarks/
-│   │   ├── application/
-│   │   │   ├── bookmarks_provider.dart   # Bookmarks + BookmarkFolders + import
-│   │   │   ├── bookmark_io.dart          # JSON backup export/import
-│   │   │   └── bookmarks_service.dart
-│   │   ├── domain/
-│   │   │   ├── bookmarked_article.dart   # ...with folder field
-│   │   │   └── bookmark_folder.dart      # Folder rules (normalize/merge)
-│   │   └── presentation/
-│   │       ├── bookmarks_screen.dart     # Filter chips, export/import menu
-│   │       └── widgets/
-│   │           ├── move_to_folder_sheet.dart
-│   │           └── manage_folders_sheet.dart
-│   ├── history/
-│   │   ├── application/
-│   │   │   ├── history_provider.dart     # History + HistoryLimit
-│   │   │   └── history_service.dart      # Retention limit persistence
-│   │   ├── domain/
-│   │   │   └── reading_history.dart
-│   │   └── presentation/
-│   │       └── history_screen.dart       # Retention options menu
-│   ├── home/
-│   │   ├── application/
-│   │   │   └── home_provider.dart    # Home state management
-│   │   ├── domain/
-│   │   │   └── home_state.dart
-│   │   └── presentation/
-│   │       ├── home_screen.dart
-│   │       └── widgets/
-│   ├── onboarding/
-│   │   ├── application/
-│   │   │   └── onboarding_provider.dart
-│   │   └── presentation/
-│   │       └── onboarding_screen.dart
-│   ├── settings/
-│   │   ├── application/
-│   │   │   ├── settings_service.dart
-│   │   │   └── settings_provider.dart   # Settings state & mirror management
-│   │   ├── domain/
-│   │   │   └── settings_state.dart      # Settings & FreediumMirror models
-│   │   └── presentation/
-│   │       └── settings_screen.dart
-│   └── webview/
-│       ├── application/
-│       │   ├── freedium_article_url_builder.dart
-│       │   ├── initial_mirror_resolver.dart
-│       │   ├── theme_injector_service.dart  # CSS injection for theming
-│       │   └── webview_provider.dart        # WebView controller & state
-│       ├── domain/
-│       │   └── webview_state.dart
-│       └── presentation/
-│           ├── webview_screen.dart
-│           └── widgets/
-└── shared/
-    ├── utils/
-    │   └── date_utils.dart
-    └── widgets/
-        └── article_card.dart
+│   ├── constants/               应用常量
+│   ├── theme/                   主题（Material You 动态取色）
+│   ├── utils/                   URL 归一化、串行任务队列
+│   └── webview/                 跨平台 WebViewWidget 工厂
+└── features/
+    ├── main/                    底部导航壳
+    ├── numbers/                 号码目录：抓取 / 解析 / 筛选 / 列表
+    ├── inbox/                   收件箱：注入脚本截获 + 原生渲染
+    └── saved/                   收藏
+assets/
+└── js/fus_inbox.js              收件箱注入脚本（挂钩 fetch / XHR）
 ```
 
-### Architecture
+**号码目录不依赖 WebView**：`/numbers/` 是 WordPress 服务端直出的静态 HTML，站点自己把会话签名只锁在短信正文接口上。
 
-The app follows a **feature-based architecture** with **Riverpod 3.0** for state management:
+## 构建
 
-- **Features** - Organized by functionality (`bookmarks`, `history`, `home`, `onboarding`, `settings`, `webview`)
-- **Application** - Riverpod Notifiers and business logic
-- **Presentation** - UI screens and widgets
-- **Domain** - State classes with `copyWith()`
-- **Core** - Shared services, constants, and theming
+需要 Flutter 3.47+ / Dart 3.13+。
 
-#### Key Patterns
+```bash
+flutter pub get
+flutter run                       # 调试
+flutter build apk --release       # 出包
+```
 
-- **State Management:** Riverpod 3.x `@Riverpod` codegen (regenerate with `dart run build_runner build --delete-conflicting-outputs`)
-- **Theme Injection:** Flutter → CSS variables → WebView DOM
-- **Intent Handling:** Two-phase (initial + streaming) with duplicate prevention
+发布流水线在 `.github/workflows/release.yml`，由 tag 或手动触发，签名信息从 GitHub Secrets 读取。
 
----
+## 测试
 
-## Contributing
+```bash
+flutter test
+```
 
-Contributions are welcome! Here's how you can help:
+号码目录解析有真实页面快照做夹具（`test/fixtures/numbers_directory.html`），站点改模板时测试会先失败，而不是线上静默显示空列表。
 
-1. **Fork** the repository
-2. **Create** a feature branch (`git checkout -b feature/amazing-feature`)
-3. **Make** your changes following the existing code style
-4. **Test** your changes on Android devices
-5. **Commit** with clear messages (`git commit -m 'Add amazing feature'`)
-6. **Push** to your fork (`git push origin feature/amazing-feature`)
-7. **Open** a Pull Request
+## 许可
 
-### Development Guidelines
-
-- Follow the existing code architecture and patterns
-- Use **`@Riverpod` codegen** for state management (not hand-written providers)
-- Always use `copyWith()` for state updates
-- Use `debugPrint()` instead of `print()` for logging
-- Test changes thoroughly on Android devices
-- Keep pull requests focused on a single feature or fix
-
-Android emulator and manual device checks: [Android validation](docs/android-validation.md).
-
-### Reporting Issues
-
-Found a bug? [Open an issue](https://github.com/AmanSikarwar/freedium_mobile/issues/new) with:
-
-- Steps to reproduce
-- Expected vs actual behavior
-- Screenshots if applicable
-- Device model and Android version
-
----
-
-## License
-
-This project is licensed under the **MIT License**. See the [LICENSE](LICENSE) file for details.
-
----
-
-## Support
-
-- **Report bugs:** [GitHub Issues](https://github.com/AmanSikarwar/freedium_mobile/issues)
-- **Star this repo** if you find it useful!
-
----
-
-<p align="center">
-  Made with ❤️ by <a href="https://github.com/AmanSikarwar">Aman Sikarwar</a>
-</p>
-
-<p align="center">
-  <sub>
-    <strong>Keywords:</strong> Freedium Android, Medium reader, NYT reader, Washington Post reader, Bloomberg reader, Reuters reader, Economist reader, Financial Times reader, Flutter app, open source article reader
-  </sub>
-</p>
+MIT。本项目由 [freedium_mobile](https://github.com/AmanSikarwar/freedium_mobile)（MIT）改造而来，原始版权声明保留在 `LICENSE` 中。

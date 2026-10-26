@@ -1,158 +1,39 @@
 import 'package:material_3_expressive/material_3_expressive.dart';
 
-import 'dart:async';
-
-export 'core/routing/app_navigation.dart'
-    show
-        CurrentRouteNameObserver,
-        currentRouteNameObserver,
-        incomingWebviewRouteName,
-        navigateToWebview,
-        navigatorKey,
-        shouldSkipIncomingWebviewNavigation;
-
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'package:fus_inbox/core/constants/app_constants.dart';
-import 'package:fus_inbox/core/routing/app_navigation.dart'
-    show
-        currentRouteNameObserver,
-        navigateToWebview,
-        navigatorKey,
-        shouldSkipIncomingWebviewNavigation;
-import 'package:fus_inbox/core/services/intent_service.dart';
-import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/core/theme/expressive_theme.dart';
-import 'package:fus_inbox/core/utils/article_url_parser.dart';
+import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/features/main/presentation/main_screen.dart';
-import 'package:fus_inbox/features/onboarding/application/onboarding_provider.dart';
 
-part 'app.g.dart';
-
-@Riverpod(keepAlive: true)
-class InitialIntentHandled() extends _$InitialIntentHandled {
-  @override
-  bool build() => false;
-
-  void setHandled() {
-    state = true;
-  }
-}
-
-@Riverpod(keepAlive: true)
-class PendingIntentUrl() extends _$PendingIntentUrl {
-  @override
-  String? build() => null;
-
-  void stash(String url) {
-    state = url;
-  }
-
-  void clear() {
-    state = null;
-  }
-}
-
+/// 应用外壳：只负责主题与首页。
+///
+/// 号码目录与收件箱之间的跳转由 [MainScreen] 自己处理，这里不再持有任何
+/// 全局导航或路由状态。
 class const App({super.key}) extends ConsumerWidget {
-  void _handleIncomingIntent(WidgetRef ref, String value) {
-    final url = extractArticleUrl(value);
-    if (url == null) return;
-    ref.read(pendingIntentUrlProvider.notifier).stash(url);
-  }
-
-  Future<void> _processInitialIntent(
-    BuildContext context,
-    WidgetRef ref,
-  ) async {
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    if (!context.mounted) return;
-
-    try {
-      // Single consumption: the plugin replays the launching intent.
-      final intent = await ref.read(intentServiceProvider).getInitialIntent();
-      if (!context.mounted) return;
-
-      final text = intentShareText(intent);
-      if (text == null) return;
-
-      _handleIncomingIntent(ref, text);
-    } catch (e) {
-      debugPrint('Failed to process initial intent: $e');
-    }
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeAsync = ref.watch(dynamicThemeProvider);
     final themeMode = ref.watch(themeModeProvider);
-    final hasHandledInitialIntent = ref.watch(initialIntentHandledProvider);
-    final onboarding = ref.watch(onboardingProvider);
-    final hasSeenOnboarding = onboarding.hasSeenOnboarding;
-    final pendingUrl = ref.watch(pendingIntentUrlProvider);
-
-    if (pendingUrl != null &&
-        themeAsync.hasValue &&
-        !onboarding.isLoading &&
-        hasSeenOnboarding) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!context.mounted ||
-            ref.read(pendingIntentUrlProvider) != pendingUrl) {
-          return;
-        }
-        final alreadyOpen = shouldSkipIncomingWebviewNavigation(
-          currentRouteName: currentRouteNameObserver.currentRouteName,
-          targetUrl: pendingUrl,
-        );
-        if (alreadyOpen || navigateToWebview(pendingUrl)) {
-          ref.read(pendingIntentUrlProvider.notifier).clear();
-        }
-      });
-    }
-
-    ref.listen<AsyncValue<String>>(intentStreamProvider, (previous, next) {
-      next.whenData((url) {
-        _handleIncomingIntent(ref, url);
-      });
-    });
-
-    if (!hasHandledInitialIntent) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!context.mounted) return;
-        ref.read(initialIntentHandledProvider.notifier).setHandled();
-        unawaited(_processInitialIntent(context, ref));
-      });
-    }
 
     return themeAsync.when(
       data: (theme) => MaterialApp(
-        navigatorKey: navigatorKey,
         title: AppConstants.appName,
         theme: theme.lightTheme,
         darkTheme: theme.darkTheme,
         themeMode: themeMode,
-        navigatorObservers: [currentRouteNameObserver],
-        builder: (context, child) {
-          return ExpressiveTheme(child: child!);
-        },
-        home: onboarding.isLoading
-            ? const Scaffold(
-                body: Center(child: M3EProgressIndicator.circularWavy()),
-              )
-            : const MainScreen(),
+        builder: (context, child) => ExpressiveTheme(child: child!),
+        home: const MainScreen(),
       ),
       loading: () => MaterialApp(
-        builder: (context, child) {
-          return ExpressiveTheme(child: child!);
-        },
+        builder: (context, child) => ExpressiveTheme(child: child!),
         home: const Scaffold(
           body: Center(child: M3EProgressIndicator.circularWavy()),
         ),
       ),
       error: (err, stack) => MaterialApp(
-        builder: (context, child) {
-          return ExpressiveTheme(child: child!);
-        },
+        builder: (context, child) => ExpressiveTheme(child: child!),
         home: Scaffold(body: Center(child: Text('Error: $err'))),
       ),
     );

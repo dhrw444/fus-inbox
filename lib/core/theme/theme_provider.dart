@@ -2,7 +2,6 @@ import 'package:dynamic_color/dynamic_color.dart';
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:fus_inbox/features/settings/application/settings_provider.dart';
 import 'package:fus_inbox/core/theme/app_theme.dart';
 import 'package:fus_inbox/core/theme/android_color_schemes.dart';
 import 'package:fus_inbox/core/theme/dynamic_color_scheme.dart';
@@ -15,11 +14,12 @@ class AppThemeProvider({required this.lightTheme, required this.darkTheme}) {
   final ThemeData darkTheme;
 }
 
+/// 外观跟随系统。
+///
+/// 应用内没有主题设置入口，所以不需要持久化偏好；系统深色模式变化时
+/// [MaterialApp] 会自行重建。
 @Riverpod(keepAlive: true)
-ThemeMode themeMode(Ref ref) {
-  final settings = ref.watch(settingsProvider).value;
-  return settings?.themeMode ?? ThemeMode.system;
-}
+ThemeMode themeMode(Ref ref) => ThemeMode.system;
 
 @Riverpod(keepAlive: true)
 AppThemeProvider theme(Ref ref) {

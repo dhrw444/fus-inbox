@@ -22,8 +22,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Test injected page scripts
-        run: node --test test/js/*.mjs
+      - name: Check injected page script syntax
+        run: node --check assets/js/fus_inbox.js
 
       - name: Set up Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2

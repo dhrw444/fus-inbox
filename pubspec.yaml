@@ -60,13 +60,6 @@ flutter:
   assets:
     - assets/icon/icon.png
     - assets/js/
-    - assets/css/
-  fonts:
-    - family: PlayfairDisplay
-      fonts:
-        - asset: assets/fonts/PlayfairDisplay-Regular.ttf
-        - asset: assets/fonts/PlayfairDisplay-Bold.ttf
-          weight: 700
 
 flutter_launcher_icons:
   android: "ic_launcher"

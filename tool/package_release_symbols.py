@@ -44,7 +44,7 @@ def main():
     temporary_archive = archive.with_suffix('.zip.tmp')
 
     manifest = [
-        'Freedium Android release symbols',
+        'SMS 收件箱 Android release symbols',
         f'Version: {version}',
         f'Build number: {build_number}',
         f'Source commit: {commit}',
