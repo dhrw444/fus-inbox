@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:material_color_utilities/material_color_utilities.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:fus_inbox/core/theme/app_theme.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
 
 void main() {
@@ -89,15 +90,18 @@ void main() {
       addTearDown(container.dispose);
 
       final dynamicTheme = await container.read(dynamicThemeProvider.future);
-      final staticTheme = container.read(themeProvider);
+      // 兜底用的是 AppTheme 内置的两套配色（不依赖动态取色）。
+      // 注意 AppTheme 需要 textTheme，这里给一个空的就行——
+      // 断言只看 colorScheme，不看字体。
+      final fallback = AppTheme(ThemeData.light().textTheme);
 
       expect(
         dynamicTheme.lightTheme.colorScheme.primary,
-        staticTheme.lightTheme.colorScheme.primary,
+        fallback.light().colorScheme.primary,
       );
       expect(
         dynamicTheme.darkTheme.colorScheme.primary,
-        staticTheme.darkTheme.colorScheme.primary,
+        fallback.dark().colorScheme.primary,
       );
     });
 

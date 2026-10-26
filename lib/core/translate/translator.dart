@@ -122,13 +122,16 @@ class Translator({this.client, this.toLang = 'zh-CN'}) {
   }
 
   Future<Translation> _request(String text) async {
-    final uri = Uri.https('translate.googleapis.com', '/translate_a/single', {
-      'client': 'gtx',
-      'sl': 'auto',
-      'tl': toLang,
-      'dt': 't',
-      'q': text,
-    });
+    // 用 _endpoint 拼 URI，保证常量和实际请求是同一处定义。
+    final uri = Uri.parse(_endpoint).replace(
+      queryParameters: {
+        'client': 'gtx',
+        'sl': 'auto',
+        'tl': toLang,
+        'dt': 't',
+        'q': text,
+      },
+    );
 
     try {
       final req = await _http.getUrl(uri).timeout(const Duration(seconds: 12));

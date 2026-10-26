@@ -124,7 +124,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 文档就绪后才注入；onPageStarted 阶段 document 还不存在。
           onPageFinished: (url) => unawaited(_inject()),
           onWebResourceError: (error) {
-            if (!error.isForMainFrame) return;
+            // isForMainFrame 是 bool?：null 表示不确定，别当成主框架失败。
+            if (error.isForMainFrame == false) return;
             _store.fail('页面加载失败（${error.errorCode}）：${error.description}');
           },
         ),
@@ -168,14 +169,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _store.note('正在加载更早的消息…');
     _store.markLoadingMore();
     try {
-      // runJavaScript 回的是字符串形式的返回值：'true'/'false'/'null'。
-      // false 表示还没拿到号码 id 或已经到底，收回状态别让用户干等。
-      final res = (await _controller.runJavaScript(
+      // runJavaScript 返回 Future<void>，拿不到返回值。
+      // 所以这里只负责发起；结束状态由 JS 的 moreDone/moreEnd/moreFail 回传。
+      await _controller.runJavaScript(
         'window.__fusInbox && window.__fusInbox.loadMore();',
-      ))?.trim();
-      if (res != 'true') {
-        _store.markLoadingMore(done: true);
-      }
+      );
     } catch (e) {
       debugPrint('加载更多失败: $e');
       _store.markLoadingMore(done: true);
@@ -607,7 +605,7 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
     }
 
     return InkWell(
-      onLongPress: onCopyAll,
+      onLongPress: widget.onCopyAll,
       child: Container(
         color: message.isNew
             ? scheme.primaryContainer.withValues(alpha: 0.22)
@@ -663,7 +661,7 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
                 child: FilledButton.tonalIcon(
-                  onPressed: () => onCopyCode(message.code),
+                  onPressed: () => widget.onCopyCode(message.code),
                   icon: const Icon(Icons.copy_all, size: 18),
                   label: Text(
                     message.code,

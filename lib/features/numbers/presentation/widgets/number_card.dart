@@ -8,14 +8,14 @@ import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 /// 布局要点：整行用 [CrossAxisAlignment.center] 让星标与两行文字垂直居中。
 /// 之前的 `start` 对齐 + 默认 [IconButton]（48×48 最小点击区）把行撑高，
 /// 星标看起来浮在下方、和号码基线错位。这里改成紧凑图标按钮 + center 对齐。
-class NumberCard({
+class const NumberCard({
   required this.number,
   required this.saved,
   required this.onTap,
   required this.onToggleSave,
   this.now,
   super.key,
-}) {
+}) extends StatelessWidget {
   final AvailableNumber number;
   final bool saved;
   final VoidCallback onTap;
@@ -139,12 +139,12 @@ class NumberCard({
 }
 
 /// 小圆角标签，用于条数、州名这类附注。
-class _Pill({
+class const _Pill({
   required this.text,
   required this.bg,
   required this.fg,
   required this.theme,
-}) {
+}) extends StatelessWidget {
   final String text;
   final Color bg;
   final Color fg;
