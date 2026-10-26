@@ -187,6 +187,15 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
         onProgress: (loaded, page) {
           state = state.copyWith(progress: '已加载 $loaded 个号（第 $page 页）');
         },
+        // 每页先上屏：第一页通常 1 秒内就回来了，不必等到 5 页全抓完
+        // （那要 13 秒）。先给用户能点的列表，后续页面静默补齐。
+        onPage: (soFar) {
+          state = state.copyWith(
+            all: soFar,
+            loading: false,
+            progress: '已加载 ${soFar.length} 个号，继续拉取中…',
+          );
+        },
       );
       if (list.isEmpty) {
         state = state.copyWith(

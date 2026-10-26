@@ -102,6 +102,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   WebViewController _buildController() {
     return WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      // 默认 UA 里带 "wv" 和 "Android ... ; ... Build/..."，是 WebView 的
+      // 指纹。站点在 Cloudflare 后面，这类 UA 很容易被单独盯上（更严的
+      // 挑战、更慢的放行，甚至直接不发数据）。换成移动版 Chrome 的写法，
+      // 和真实手机浏览器一致。
+      ..setUserAgent(
+        'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 '
+        '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      )
       // 引擎看不见，背景给个深色免得加载瞬间闪白。
       ..setBackgroundColor(const Color(0xFF10131A))
       ..addJavaScriptChannel(
@@ -121,7 +129,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             }
             return NavigationDecision.prevent;
           },
-          // 文档就绪后才注入；onPageStarted 阶段 document 还不存在。
+          // 注入要抢在站点自己发首屏请求之前，否则只能等 DOM 扫描，
+          // 那就是几秒起的延迟。onPageStarted 时 document 可能还没建好，
+          // 注入失败无所谓——onLoadStop 会再补一次；JS 有 __fusInboxHooked
+          // 守卫，重复注入不会叠加定时器。
+          onPageStarted: (url) => unawaited(_injectQuietly()),
+          onLoadStop: (url) => unawaited(_inject()),
           onPageFinished: (url) => unawaited(_inject()),
           onWebResourceError: (error) {
             // isForMainFrame 是 bool?：null 表示不确定，别当成主框架失败。
@@ -145,6 +158,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       await _controller.runJavaScript(script);
     } catch (e) {
       debugPrint('注入失败: $e');
+    }
+  }
+
+  /// 早期注入：onPageStarted 时文档可能还不存在，失败是常态，不打印噪音。
+  Future<void> _injectQuietly() async {
+    final script = await _scriptFuture;
+    if (script.isEmpty) return;
+    try {
+      await _controller.runJavaScript(script);
+    } catch (_) {
+      // 正常情况：document 还没建好。onLoadStop 会重试。
     }
   }
 

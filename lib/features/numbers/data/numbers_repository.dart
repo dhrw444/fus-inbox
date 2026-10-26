@@ -127,11 +127,24 @@ class NumbersRepository({this.client}) {
   final HttpClient? client;
 
   static const _base = 'https://freeussms.com';
+
+  /// 与 WebView 侧统一使用的 UA。
+  ///
+  /// 要和 index 页里的 setUserAgent 保持一致：同一台设备对同一站点
+  /// 出现两种 UA 才是最可疑的信号。原版少了 `; K` 型号段，
+  /// 结构上和真实 Chrome 对不上。
   static const _ua =
-      'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
+      'Mozilla/5.0 (Linux; Android 13; K) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  late final HttpClient _http = client ?? HttpClient();
+  late final HttpClient _http = client ?? HttpClient()
+    // Cloudflare 会给首次访问下发 cf_clearance / __cf_bm 这类 cookie，
+    // 后续请求带上它们才像「同一个浏览器在连续访问」。
+    // dart:io 的 HttpClient 默认就带 cookie 罐，但连接复用和空闲超时
+    // 默认值偏小，翻页间隔 1.5~2.4 秒时容易重新建连接 + 丢 cookie，
+    // 服务端看到的就是「一批互不相关的陌生请求」。
+    ..connectionTimeout = const Duration(seconds: 15)
+    ..idleTimeout = const Duration(seconds: 30);
 
   String _pageUrl(int page) =>
       page <= 1 ? '$_base/numbers/' : '$_base/numbers/page/$page/';
@@ -148,9 +161,26 @@ class NumbersRepository({this.client}) {
       final req = await _http.getUrl(uri).timeout(const Duration(seconds: 20));
       req.headers
         ..set(HttpHeaders.userAgentHeader, _ua)
-        ..set(HttpHeaders.acceptHeader, 'text/html,application/xhtml+xml')
+        // 请求头要凑齐一整套：只有 UA 一个头本身就是特征。
+        // 真实 Chrome 发目录页时至少带这些。
+        ..set(
+          HttpHeaders.acceptHeader,
+          'text/html,application/xhtml+xml,application/xml;q=0.9,'
+          'image/avif,image/webp,*/*;q=0.8',
+        )
         ..set(HttpHeaders.acceptLanguageHeader, 'en-US,en;q=0.9')
-        ..set(HttpHeaders.refererHeader, '$_base/numbers/');
+        ..set(HttpHeaders.refererHeader, '$_base/numbers/')
+        ..set(
+          'sec-ch-ua',
+          '"Chromium";v="120", "Google Chrome";v="120", "Not?A_Brand";v="99"',
+        )
+        ..set('sec-ch-ua-mobile', '?1')
+        ..set('sec-ch-ua-platform', '"Android"')
+        ..set('sec-fetch-dest', 'document')
+        ..set('sec-fetch-mode', 'navigate')
+        ..set('sec-fetch-site', 'same-origin')
+        ..set('sec-fetch-user', '?1')
+        ..set('upgrade-insecure-requests', '1');
       res = await req.close().timeout(const Duration(seconds: 20));
     } on Exception catch (e) {
       throw NumberFetchException('网络请求失败：$e');
@@ -204,9 +234,11 @@ class NumbersRepository({this.client}) {
   /// 而站点自己在最后一页就会给出不足 24 条的结果，循环自然结束。
   ///
   /// [onProgress] 每页抓完后回调一次，用于界面显示「已加载 N 个号」。
+  /// [onPage] 每页抓完把「当前已有的完整列表快照」交出去，供上层立刻渲染。
   Future<List<AvailableNumber>> fetchAll({
     int? maxPages,
     void Function(int loaded, int page)? onProgress,
+    void Function(List<AvailableNumber> soFar)? onPage,
   }) async {
     final out = <AvailableNumber>[];
     final seen = <String>{};
@@ -259,6 +291,10 @@ class NumbersRepository({this.client}) {
       if (out.length == before) break;
 
       onProgress?.call(out.length, page);
+      // 每页都给一次快照：首页拿到就能上屏，不用等 5 页全抓完。
+      // List.unmodifiable 是必需的——上层会直接把这个 list 塞进 state，
+      // 后续 add 会让界面看到正在变化的同一个对象。
+      onPage?.call(List<AvailableNumber>.unmodifiable(out));
 
       // 不足一页 = 这是最后一页，不用再猜。
       if (batch.numbers.length < _pageSize) break;

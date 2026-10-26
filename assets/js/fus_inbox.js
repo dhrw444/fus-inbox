@@ -454,28 +454,67 @@
   /* ---------------- 启动 ---------------- */
   function boot() {
     status('抓取层已就绪');
-    // 站点自己的渲染节奏：先接口，后 DOM。多打几次保底。
-    // 只在前 10 秒补打——再往后站点要是还没渲染，靠 MutationObserver 兜着就行，
-    // 后面的定时器纯属空转（每个都会算一遍全页 DOM）。
-    var delays = [1200, 3000, 6000, 10000];
-    for (var i = 0; i < delays.length; i++) setTimeout(domScan, delays[i]);
+
+    // 自适应扫描节奏 —— 之前是固定 [1200,3000,6000,10000] 敲四次，
+    // 不管有没有消息都按同一个间隔打，快了浪费、慢了又错过第一屏。
+    //
+    // 现在改成：从 300ms 起步、逐次退避到 4s，一旦扫到消息立刻停表。
+    // 首屏通常 300~900ms 内就命中，比原来固定等 1.2s 快一倍以上；
+    // 页面一直不出数据时也不会无限快扫，间隔自动拉开。
+    // 参数是实测出来的（/tmp/scan2.js 模拟过五种到达时刻）：
+    //   前 6 次固定 250ms → 覆盖前 1.5 秒，这段是首屏渲染最可能完成的窗口；
+    //   之后指数退避（×1.8，上限 4s）→ 页面迟迟不出数据时不至于高频空扫。
+    // 实测：消息 600ms 到 → 750ms 命中；900ms 到 → 1000ms 命中。
+    // 之前写成 300ms 起、每次 ×1.7 退避，900ms 的消息要等到 1677ms 才扫到，
+    // 比原来的固定节奏还慢——退避必须在密集期之后才开始。
+    var DENSE_GAP = 250;
+    var DENSE_COUNT = 6;
+    var scanDelay = DENSE_GAP;
+    var scanCount = 0;
+    var scanTimer = 0;
+    var stopped = false;
+
+    function scheduleScan() {
+      if (stopped) return;
+      if (scanTimer) clearTimeout(scanTimer);
+      scanTimer = setTimeout(function () {
+        scanTimer = 0;
+        if (stopped) return;
+        domScan();
+        if (messages.length) {
+          // 拿到了就收工：别再空扫，省电也省 CPU。
+          stopped = true;
+          return;
+        }
+        scanCount++;
+        if (scanCount >= DENSE_COUNT) {
+          scanDelay = Math.min(Math.round(scanDelay * 1.8), 4000);
+        }
+        scheduleScan();
+      }, scanDelay);
+    }
+
+    scheduleScan();
+
     try {
       var mo = new MutationObserver(function () {
+        if (messages.length) return;
         // 站点有广告轮播和倒计时，DOM 一直在变。不节流的话这里一天能跑几万次，
         // 每次都要遍历全页——手机发烫、耗电，而且完全没有收益。
         // 冷却是必需的：3 秒内最多重扫一次，且只在还没拿到消息时才扫。
-        if (messages.length) return;
         clearTimeout(mo.__t);
         mo.__t = setTimeout(domScan, 3000);
       });
       mo.observe(document.documentElement, { childList: true, subtree: true });
     } catch (e) {}
-    // 兜底轮询也拉长：30 秒一次，而且拿到消息后就彻底停掉，
-    // 别让页面开着的时候永远在空转。
+
+    // 兜底轮询：拿到消息就停。间隔从 30s 收到 10s——
+    // 前面自适应扫描已在扫到后停下，这里只在「一直没数据」时兜着，
+    // 10 秒一次对站点压力可以忽略，但用户少等 20 秒。
     var tick = setInterval(function () {
-      if (messages.length) { clearInterval(tick); return; }
+      if (messages.length || stopped) { clearInterval(tick); return; }
       domScan();
-    }, 30000);
+    }, 10000);
   }
 
   if (document.readyState === 'loading') {
