@@ -63,6 +63,15 @@ class _InboxScreenState() extends State<InboxScreen> {
     _controller = _buildController();
     _webViewFuture = createPlatformWebView(_controller);
     unawaited(_controller.loadRequest(Uri.parse(widget.number.inboxUrl)));
+    _armWatchdog();
+  }
+
+  /// 重新武装 25 秒看门狗。
+  ///
+  /// 只设一次不够：用户点「重新加载」后页面若又卡在风控，就再也没有提示了，
+  /// 而那恰恰是最需要提示的场景。
+  void _armWatchdog() {
+    _watchdog?.cancel();
     _watchdog = Timer(const Duration(seconds: 25), _onWatchdog);
   }
 
@@ -185,6 +194,7 @@ class _InboxScreenState() extends State<InboxScreen> {
             tooltip: '重新加载',
             onPressed: () {
               _store.reset();
+              _armWatchdog();
               unawaited(_controller.reload());
             },
             icon: const Icon(Icons.restart_alt),

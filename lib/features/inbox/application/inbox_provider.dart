@@ -12,6 +12,9 @@ import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 
 class InboxStore({this.onChanged}) {
+  /// 列表保留的最大条数。站点侧同样有上限，超出的旧消息对用户已无意义。
+  static const _maxMessages = 60;
+
   /// 页面销毁时置空：引擎可能比页面活得久，回传不该再触发已卸载页面的刷新。
   VoidCallback? onChanged;
 
@@ -103,6 +106,11 @@ class InboxStore({this.onChanged}) {
     if (!_firstBatchDone) _firstBatchDone = true;
     for (final m in merged) {
       _seen.add(m.id);
+    }
+    // 站点自己也有条数上限（live.js 的 messageSize），这里同样裁一下，
+    // 否则收件页开着跑一整天，列表和无界增长的 _seen 一起吃掉内存。
+    if (merged.length > _maxMessages) {
+      merged.removeRange(_maxMessages, merged.length);
     }
 
     final src = payload['src']?.toString() ?? _state.source;

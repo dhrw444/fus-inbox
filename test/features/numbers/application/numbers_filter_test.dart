@@ -35,8 +35,6 @@ AvailableNumber number({
   areaCode: areaCode,
   state: state,
   lastTextAt: '2026-10-25T21:31:46',
-  messageCount: 0,
-  isFresh: false,
 );
 
 void main() {

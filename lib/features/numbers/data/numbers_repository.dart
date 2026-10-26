@@ -159,20 +159,31 @@ class NumbersRepository({this.client}) {
     return parseDirectory(res.body);
   }
 
+  /// 站点模板固定每页 24 条（实测）。
+  static const _pageSize = 24;
+
+  /// 纯保险丝：号码池异常膨胀时别把请求数堆成无穷。
+  static const _pageCap = 40;
+
   /// 顺序抓完整个目录。
   ///
   /// 站点每页 24 条、总数约百来条，所以顺序抓即可，不并发轰它。
   /// 任何一页失败且还没有数据时才抛错；已经拿到数据就保留已抓到的部分。
   ///
+  /// 页数由「站点自报总数」推导，[maxPages] 只用来收紧上限——
+  /// 站点 `N available numbers` 是准的，写死一个魔数会在池子变大时静默截断。
+  ///
   /// [onProgress] 每页抓完后回调一次，用于界面显示「已加载 N 个号」。
   Future<List<AvailableNumber>> fetchAll({
-    int maxPages = 15,
+    int? maxPages,
     void Function(int loaded, int page)? onProgress,
   }) async {
     final out = <AvailableNumber>[];
     final seen = <String>{};
+    var limit = maxPages ?? _pageCap;
+    if (limit <= 0 || limit > _pageCap) limit = _pageCap;
 
-    for (var page = 1; page <= maxPages; page++) {
+    for (var page = 1; page <= limit; page++) {
       late final NumberPage batch;
       try {
         batch = await fetchPage(page);
@@ -183,6 +194,13 @@ class NumbersRepository({this.client}) {
       }
       if (batch.numbers.isEmpty) break;
 
+      // 首页拿到总数后收紧上限：多留一页余量，防站点计数与分页存在偏差。
+      final total = batch.total;
+      if (page == 1 && total != null && total > 0) {
+        final needed = (total / _pageSize).ceil() + 1;
+        if (needed < limit) limit = needed;
+      }
+
       final before = out.length;
       for (final n in batch.numbers) {
         if (seen.add(n.number)) out.add(n);
@@ -192,7 +210,7 @@ class NumbersRepository({this.client}) {
 
       onProgress?.call(out.length, page);
 
-      if (page < maxPages) {
+      if (page < limit) {
         await Future<void>.delayed(const Duration(milliseconds: 120));
       }
     }
