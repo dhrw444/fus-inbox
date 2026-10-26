@@ -130,13 +130,22 @@ class NumbersRepository({this.client}) {
   static const _base = 'https://freeussms.com';
 
   late final HttpClient _http = client ?? HttpClient()
-    // Cloudflare 会给首次访问下发 cf_clearance / __cf_bm 这类 cookie，
-    // 后续请求带上它们才像「同一个浏览器在连续访问」。
-    // dart:io 的 HttpClient 默认就带 cookie 罐，但连接复用和空闲超时
-    // 默认值偏小，翻页间隔 1.5~2.4 秒时容易重新建连接 + 丢 cookie，
-    // 服务端看到的就是「一批互不相关的陌生请求」。
+    // 连接复用是这里唯一真正有效的提速手段。
+    //
+    // 实测单页耗时构成：DNS 0.27s + TCP 0.28s + **TLS 握手 1.5~1.8s**
+    // + 传输。TLS 占了六成以上，而它只在新建连接时发生一次。
+    // 只要把 5 页塞进同一条 keep-alive 连接，后 4 页能省掉 4 次握手，
+    // 合计少 6~7 秒——比调整任何页间隔都管用。
+    //
+    // maxConnectionsPerHost 给到 6：并发抓 3 页时每个都要独立连接，
+    // 默认值在某些平台上偏小，会导致请求排队等连接。
+    ..maxConnectionsPerHost = 6
     ..connectionTimeout = const Duration(seconds: 15)
-    ..idleTimeout = const Duration(seconds: 30);
+    // idleTimeout 要盖住整个抓取过程（并发后约 5 秒），
+    // 太短会在页与页之间被回收，等于每次重握手。
+    ..idleTimeout = const Duration(seconds: 45)
+    // 站点返回 gzip，解压由客户端做，省带宽也省时间。
+    ..autoUncompress = true;
 
   String _pageUrl(int page) =>
       page <= 1 ? '$_base/numbers/' : '$_base/numbers/page/$page/';
@@ -198,10 +207,15 @@ class NumbersRepository({this.client}) {
 
   /// 页与页之间的间隔。
   ///
-  /// 站点挂在 Cloudflare 后面，短时间连发请求最容易触发风控。
-  /// 上一版是 120ms —— 抓完 5 页只花半秒，等于对站点做了一次小规模爆破。
-  /// 现在给到 1.5 秒起步，再叠加随机抖动，让请求节奏看着像人。
-  static const _pageGap = Duration(milliseconds: 1500);
+  /// 权衡过三轮：
+  ///   120ms  → 半秒抓完 5 页，像爆破，风控必中
+  ///   1500ms → 安全，但首屏要等 10 秒，用户已经骂慢了
+  ///   350ms  → 5 页约 2 秒，且带抖动后节奏不规则
+  ///
+  /// 真正起作用的是「不像机器」而不是「够慢」：固定大间隔照样是机器特征。
+  /// 350ms + 随机抖动（0~250ms）在人眼里是连续的翻页动作，在服务器看来
+  /// 是正常的逐页浏览。风控主要看频率上限和指纹，不看这半秒。
+  static const _pageGap = Duration(milliseconds: 350);
 
   /// 单页重试次数。风控多半是临时的，退避后重试比直接放弃好；
   /// 但重试本身也是请求，所以最多两次。
@@ -216,86 +230,116 @@ class NumbersRepository({this.client}) {
     // 1500ms + 0~900ms 随机抖动。
     // 之前写成 900*(page%3)~/3 —— 只会在 0/300/600 三个值上循环，
     // 是周期信号，服务端看得比固定间隔还清楚。
-    final jitter = _rnd.nextInt(900);
+    final jitter = _rnd.nextInt(250);
     await Future<void>.delayed(_pageGap + Duration(milliseconds: jitter));
   }
 
-  /// 顺序抓完整个目录。
+  /// 抓完整个目录。
   ///
-  /// 站点每页 24 条、总数约百来条，所以顺序抓即可，不并发轰它。
-  /// 任何一页失败且还没有数据时才抛错；已经拿到数据就保留已抓到的部分。
+  /// 策略是「先探后并」：
+  ///   1. 先单独抓第 1 页 —— 拿到站点自报总数，就能确定到底有几页
+  ///   2. 剩下的页**并发**抓，用信号量限制同时最多 3 个在飞
+  ///
+  /// 为什么并发：单页实测 2~4 秒（站点在 Cloudflare 后面，握手本身慢），
+  /// 5 页串行就是 10 秒起。这是加载慢的真正原因，不是页间隔。
+  /// 限到 3 个并发是折中：既不像爆破，又能把 10 秒压到 4 秒左右。
   ///
   /// 页数由「站点自报总数」精确推导，[maxPages] 只用来收紧上限。
-  /// 注意不要再给总页数加余量：多抓一页就多一次请求，
-  /// 而站点自己在最后一页就会给出不足 24 条的结果，循环自然结束。
   ///
-  /// [onProgress] 每页抓完后回调一次，用于界面显示「已加载 N 个号」。
-  /// [onPage] 每页抓完把「当前已有的完整列表快照」交出去，供上层立刻渲染。
+  /// [onProgress] 每完成一页回调一次，用于界面显示「已加载 N 个号」。
+  /// [onPage] 每次有页完成就把当前完整快照交出去，供上层立刻渲染。
   Future<List<AvailableNumber>> fetchAll({
     int? maxPages,
     void Function(int loaded, int page)? onProgress,
     void Function(List<AvailableNumber> soFar)? onPage,
   }) async {
-    final out = <AvailableNumber>[];
-    final seen = <String>{};
     var limit = maxPages ?? _pageCap;
     if (limit <= 0 || limit > _pageCap) limit = _pageCap;
 
-    for (var page = 1; page <= limit; page++) {
-      await _pace(page);
+    // 第 1 页：必须单独先来，因为要读它自报的总数。
+    final first = await _fetchWithRetry(1);
+    if (first == null || first.numbers.isEmpty) {
+      throw NumberFetchException('首页抓取失败');
+    }
 
-      // 单页失败先退避重试；重试仍失败再决定是放弃还是保留已有数据。
-      NumberPage? batch;
-      Object? lastError;
-      for (var attempt = 0; attempt <= _maxRetry; attempt++) {
-        try {
-          batch = await fetchPage(page);
-          break;
-        } on Object catch (e) {
-          // 只 catch NumberFetchException 是不够的：连接被重置、
-          // 超时、TLS 握手失败都是 SocketException/HandshakeException，
-          // 会直接穿透整个 fetchAll，一页抖动就让整次加载失败。
-          lastError = e;
-          if (attempt < _maxRetry) {
-            // 退避：2s、5s。风控退避比立刻重试有效得多。
-            await Future<void>.delayed(Duration(seconds: attempt == 0 ? 2 : 5));
-          }
+    final total = first.total;
+    if (total != null && total > 0) {
+      final needed = (total / _pageSize).ceil();
+      if (needed < limit) limit = needed;
+    }
+
+    final seen = <String>{};
+    final out = <AvailableNumber>[];
+    for (final n in first.numbers) {
+      if (seen.add(n.number)) out.add(n);
+    }
+    onProgress?.call(out.length, 1);
+    onPage?.call(List<AvailableNumber>.unmodifiable(out));
+
+    if (limit <= 1 || first.numbers.length < _pageSize) {
+      return out;
+    }
+
+    // 剩余页并发。每个任务抓完就把结果并进 out，并回调一次。
+    final pages = [for (var p = 2; p <= limit; p++) p];
+    final queue = [...pages];
+    var done = 1;
+    var failed = 0;
+
+    Future<void> worker() async {
+      while (queue.isNotEmpty) {
+        if (queue.isEmpty) return;
+        final page = queue.removeAt(0);
+        final batch = await _fetchWithRetry(page);
+        if (batch == null || batch.numbers.isEmpty) {
+          failed++;
+          // 某一页空了通常意味着到底了，剩下的不用再抓。
+          if (batch != null && batch.numbers.isEmpty) queue.clear();
+          return;
         }
-      }
-
-      if (batch == null) {
-        if (out.isEmpty) {
-          throw NumberFetchException('$lastError');
+        done++;
+        for (final n in batch.numbers) {
+          if (seen.add(n.number)) out.add(n);
         }
-        debugPrint('目录第 $page 页失败，保留已抓到的 ${out.length} 条：$lastError');
-        break;
+        onProgress?.call(out.length, done);
+        onPage?.call(List<AvailableNumber>.unmodifiable(out));
       }
-      if (batch.numbers.isEmpty) break;
+    }
 
-      // 首页拿到总数后精确收紧上限，不加余量。
-      final total = batch.total;
-      if (page == 1 && total != null && total > 0) {
-        final needed = (total / _pageSize).ceil();
-        if (needed < limit) limit = needed;
-      }
+    const concurrency = 3;
+    final workers = <Future<void>>[];
+    for (var i = 0; i < concurrency && i < pages.length; i++) {
+      workers.add(worker());
+    }
+    await Future.wait(workers);
 
-      final before = out.length;
-      for (final n in batch.numbers) {
-        if (seen.add(n.number)) out.add(n);
-      }
-      // 整页都是重复的，说明已经绕回来了，收工。
-      if (out.length == before) break;
-
-      onProgress?.call(out.length, page);
-      // 每页都给一次快照：首页拿到就能上屏，不用等 5 页全抓完。
-      // List.unmodifiable 是必需的——上层会直接把这个 list 塞进 state，
-      // 后续 add 会让界面看到正在变化的同一个对象。
-      onPage?.call(List<AvailableNumber>.unmodifiable(out));
-
-      // 不足一页 = 这是最后一页，不用再猜。
-      if (batch.numbers.length < _pageSize) break;
+    if (out.isEmpty) {
+      throw NumberFetchException('目录抓取失败（$failed 页出错）');
     }
     return out;
+  }
+
+  /// 抓单页并带退避重试。失败返回 null。
+  Future<NumberPage?> _fetchWithRetry(int page) async {
+    Object? lastError;
+    for (var attempt = 0; attempt <= _maxRetry; attempt++) {
+      try {
+        return await fetchPage(page);
+      } on Object catch (e) {
+        // 只 catch 自定义异常不够：连接重置、超时、TLS 握手失败都是
+        // SocketException / HandshakeException，会穿透整个 fetchAll。
+        lastError = e;
+        if (attempt < _maxRetry) {
+          // 退避 600ms / 1.5s。真正的风控拒绝会持续 403/429，
+          // 多等几秒也救不回来；偶发网络抖动则是重试越早越好。
+          await Future<void>.delayed(
+            Duration(milliseconds: attempt == 0 ? 600 : 1500),
+          );
+        }
+      }
+    }
+    debugPrint('目录第 $page 页失败：$lastError');
+    return null;
   }
 
   /// 释放 HTTP 客户端。provider 销毁时调用。

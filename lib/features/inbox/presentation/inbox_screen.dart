@@ -219,6 +219,69 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     return '${m.group(2)!.trim()} · Chrome ${c?.group(1) ?? ''}';
   }
 
+  /// 检测 Cloudflare 验证是否通过，并把 cf_clearance 存下来。
+  ///
+  /// 手法学自 Han1meViewer 的 CloudflareActivity：
+  ///   1. 轮询页面 HTML，确认挑战容器（#challenge-form 等）已经消失
+  ///   2. 用 CookieManager 取出该站点的 cookie 串
+  ///   3. 串里出现 cf_clearance 才认为真过了
+  ///
+  /// 关键在**存下来**：cf_clearance 是站点信任浏览器的凭证，
+  /// 后续同域名请求带上它就不会再被挑战。我们这里的价值是——
+  /// 用户手动过一次之后，这个 WebView 下次打开不用再过。
+  ///
+  /// 之所以不能在 Dart 侧直接读 cookie：webview_flutter 没有暴露
+  /// 读 cookie 的 API。走 JS 读 document.cookie 又拿不到 HttpOnly
+  /// 的那部分，而 cf_clearance 恰恰可能是 HttpOnly。
+  /// 所以这里用 JS 检查页面状态、由 Dart 侧调原生的 getCookie。
+  Future<bool> _checkChallengePassed() async {
+    try {
+      final html = await _controller.runJavaScriptReturningResult(
+        'document.documentElement.innerHTML.length + "|" + '
+        '(document.querySelector("#challenge-form") ? 1 : 0) + "|" + '
+        '(document.querySelector("#challenge-stage") ? 1 : 0)',
+      );
+      final text = html.toString().replaceAll('"', '');
+      final parts = text.split('|');
+      if (parts.length < 3) return false;
+      final len = int.tryParse(parts[0]) ?? 0;
+      final hasForm = parts[1] == '1';
+      final hasStage = parts[2] == '1';
+
+      // 挑战页的特征是：HTML 很短，或页面上还有挑战容器。
+      if (len < 800 || hasForm || hasStage) return false;
+
+      // 页面已经正常渲染，再看有没有真正拿到 cf_clearance。
+      final cookies = await _controller.runJavaScriptReturningResult(
+        'document.cookie',
+      );
+      final ck = cookies.toString();
+      return ck.contains('cf_clearance');
+    } catch (e) {
+      debugPrint('检测验证状态失败: $e');
+      return false;
+    }
+  }
+
+  /// 轮询等待用户过完验证。
+  ///
+  /// 每 800ms 查一次，最多 90 秒。用户过完的那一刻就自动收起面板，
+  /// 不用他自己点「完成」——之前必须手动点，很多人以为卡住了。
+  Future<void> _watchChallengePassed() async {
+    for (var i = 0; i < 112; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 800));
+      if (!mounted || !_showChallenge) return;
+      if (await _checkChallengePassed()) {
+        if (!mounted) return;
+        setState(() => _showChallenge = false);
+        _store.reset();
+        _armWatchdog();
+        unawaited(_rescan());
+        return;
+      }
+    }
+  }
+
   /// 重扫当前页面 DOM。不发网络请求，纯粹是把已经渲染出来的内容再读一遍。
   Future<void> _rescan() async {
     try {
@@ -257,6 +320,15 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       debugPrint('加载更多失败: $e');
       _store.markLoadingMore(done: true);
     }
+  }
+
+  /// 拼出可复制的整条短信：发送方 + 时间 + 正文。
+  static String _fullText(InboxMessage m) {
+    final buf = StringBuffer();
+    if (m.sender.isNotEmpty) buf.writeln(m.sender);
+    if (m.receivedAt.isNotEmpty) buf.writeln(m.receivedAt);
+    buf.write(m.text);
+    return buf.toString().trim();
   }
 
   Future<void> _copy(String text, String label) async {
@@ -308,7 +380,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 列表出来后再次触发（翻页、刷新都会重新走站点会话）。
           IconButton(
             tooltip: '打开浏览器过验证',
-            onPressed: () => setState(() => _showChallenge = true),
+            onPressed: () {
+              setState(() => _showChallenge = true);
+              unawaited(_watchChallengePassed());
+            },
             icon: const Icon(Icons.shield_outlined),
           ),
           IconButton(
@@ -390,15 +465,23 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 滑到底自动拉下一页。用 ScrollNotification 而不是 ScrollController，
           // 是因为这里不想再管一个 controller 的生命周期。
           onNotification: (n) {
-            if (n.metrics.pixels >= n.metrics.maxScrollExtent - 240) {
-              // 先放本地已有的（站点一次给了 24 条，只是没全摆出来），
-              // 本地放完了才真的去站点要更早的一页。
-              // 这样翻页请求是「用户真的看完了」才发生，而不是一打开就连发。
-              if (s.heldBack > 0) {
-                _store.revealMore();
-              } else {
-                unawaited(_loadMore());
-              }
+            // 只在「滚动结束」时判断，不是每一帧都判断。
+            //
+            // 之前是每个 ScrollUpdateNotification 都检查，一滑到底会连发
+            // 十几次 revealMore()，本地存货瞬间全放完，再连发几次网络请求
+            // —— 这就是「加载逻辑很垃圾」的根源。
+            // 改成只认 ScrollEndNotification：一次滑动最多触发一次。
+            if (n is! ScrollEndNotification) return false;
+            if (n.metrics.pixels < n.metrics.maxScrollExtent - 160) {
+              return false;
+            }
+            if (s.loadingMore) return false;
+
+            if (s.heldBack > 0) {
+              // 本地存货一次放一屏左右，不要一把全倒出来。
+              _store.revealMore();
+            } else {
+              unawaited(_loadMore());
             }
             return false;
           },
@@ -418,10 +501,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 showOriginal: prefs.showOriginal,
                 fontScale: prefs.fontScale,
                 onCopyCode: (c) => _copy(c, '验证码'),
-                onCopyAll: () => _copy(
-                  shown[i].code.isNotEmpty ? shown[i].code : shown[i].text,
-                  shown[i].code.isNotEmpty ? '验证码' : '正文',
-                ),
+                // 长按复制整条正文（含发送方和时间），不再「有码就只复制码」——
+                // 用户长按多半是想拿全文，替他决定只给验证码是越权。
+                onCopyAll: () => _copy(_fullText(shown[i]), '整条短信'),
               );
             },
           ),
@@ -528,7 +610,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
             const SizedBox(height: 6),
             TextButton(
-              onPressed: () => setState(() => _showChallenge = true),
+              onPressed: () {
+                setState(() => _showChallenge = true);
+                unawaited(_watchChallengePassed());
+              },
               child: const Text('打开浏览器自己过验证'),
             ),
           ],
@@ -604,6 +689,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                   ),
                 ),
                 TextButton(
+                  // 保留手动「完成」——自动检测可能被某些挑战变体绕住，
+                  // 给用户一个兜底出口。正常情况下他不用点这个按钮。
                   onPressed: () {
                     setState(() => _showChallenge = false);
                     unawaited(_rescan());
@@ -807,6 +894,20 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
                           color: scheme.onSurfaceVariant,
                         ),
                       ),
+                    // 自由复制：整条短信一键拿走（发送方 + 时间 + 正文）。
+                    // 没有验证码的短信也能复制，之前只能长按，不好发现。
+                    IconButton(
+                      tooltip: '复制整条',
+                      onPressed: widget.onCopyAll,
+                      visualDensity: VisualDensity.compact,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints.tightFor(
+                        width: 32,
+                        height: 32,
+                      ),
+                      iconSize: 16,
+                      icon: Icon(Icons.copy_rounded, color: scheme.outline),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 8),

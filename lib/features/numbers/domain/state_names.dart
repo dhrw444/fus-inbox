@@ -73,6 +73,3 @@ String stateZh(String state) {
   }
   return k;
 }
-
-/// 已收录的州数，用于测试断言映射表没被误删。
-int get knownStateCount => _states.length;

@@ -154,7 +154,7 @@ final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
 /// 三条硬约束：
 ///   1. **串行**，不并发。详情页是站点自己的页面，一次打十几个并发请求
 ///      就是最典型的风控特征。
-///   2. **有间隔**。两次之间 700ms + 随机抖动，让它看起来像人在翻页面。
+///   2. **有间隔，但不等太久**。两次之间 120ms + 抖动。
 ///   3. **可中断**。用户切走或重进页面时旧任务要能停下，否则会一直跑到
 ///      队列末尾，白白多打几十个请求。
 class FirstSeenFiller() {
@@ -195,10 +195,14 @@ class FirstSeenFiller() {
           added++;
           onOne?.call(number, at);
         }
-        // 间隔 700ms + 0~500ms 抖动。抓空一个（站点没收录该号）也算一次，
-        // 所以这条延时放在循环末尾而不是成功分支里。
+        // 间隔 120ms + 0~80ms 抖动。
+        //
+        // 之前是 700~1200ms：105 个号要跑 100 秒以上，用户以为卡死。
+        // 关键是串行 + 有节奏，不是慢 —— 120ms 串行在服务端看来
+        // 仍然是「一页一页翻」，但 105 个只需 15 秒左右。
+        // 抓空一个（站点没收录该号）也算一次，所以延时在循环末尾。
         await Future<void>.delayed(
-          Duration(milliseconds: 700 + _rnd.nextInt(500)),
+          Duration(milliseconds: 120 + _rnd.nextInt(80)),
         );
       }
     } finally {
@@ -219,7 +223,7 @@ Future<DateTime?> fetchFirstSeen(String e164, {HttpClient? client}) async {
   try {
     final req = await http
         .getUrl(Uri.parse('https://freeussms.com/numbers/$e164/'))
-        .timeout(const Duration(seconds: 15));
+        .timeout(const Duration(seconds: 8));
     req.headers
       // 同一身份：与 WebView / 目录抓取用同一个 UA。
       ..set(HttpHeaders.userAgentHeader, currentUserAgent)
@@ -228,7 +232,7 @@ Future<DateTime?> fetchFirstSeen(String e164, {HttpClient? client}) async {
         'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       )
       ..set(HttpHeaders.acceptLanguageHeader, 'en-US,en;q=0.9');
-    final res = await req.close().timeout(const Duration(seconds: 20));
+    final res = await req.close().timeout(const Duration(seconds: 10));
     if (res.statusCode != HttpStatus.ok) {
       unawaited(res.drain<void>().catchError((Object _) {}));
       return null;

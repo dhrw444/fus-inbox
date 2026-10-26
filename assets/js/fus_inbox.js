@@ -82,9 +82,27 @@
   // 保号不保格式——站点显示什么就抄什么，用户要照着填。
   function codeFrom(text) {
     var t = str(text);
-    if (!/(code|verif|otp|passcode|验证码|验证)/i.test(t)) return '';
-    // 1) 带分隔符：890-864 / 123 456 / 1234 5678
-    // 全局扫描：命中的可能是年份对或不等长片段，要跳过并继续往后找。
+    if (!t) return '';
+
+    // 语义门：没有这些词就不当验证码，否则「订单 12345 已发货」会被放大。
+    // 补了几个真实短信里常见但之前漏掉的词：one-time / confirmation /
+    // sign-in / verification / activation / pin。
+    var hasCodeWord = /(code|verif|otp|passcode|one[ -]?time|confirmation|sign[ -]?in|activation|pin\b|验证码|驗證碼|动态码|动态密码)/i.test(t);
+    if (!hasCodeWord) return '';
+
+    // 已知的固定格式优先，这些是真实服务专用的，误判率最低。
+    //   Google:      G-123456   或  G-123 456
+    //   WhatsApp:    123-456
+    //   通用方括号:  [123456]
+    // 注意不能加 \b：G- 后面是连字符，\b 在那里不成立，会整体漏掉。
+    var known = t.match(/G-(\d{3}[ -]?\d{3})(?![\d])/i);
+    if (known) return ('G-' + known[1]).replace(/\s/g, '-');
+
+    var bracketed = t.match(/[\[【(（]\s*(\d{4,8})\s*[\]】)）]/);
+    if (bracketed) return bracketed[1];
+
+    // 带分隔符的码：890-864 / 123 456 / 1234 5678
+    // 全局扫描：命中的可能是年份对或不等长片段，要跳过继续往后找。
     var re = /(?:^|[^\d])(\d{2,4}(?:[-\s]\d{2,4}){1,3})(?=[^\d]|$)/g;
     var mm;
     while ((mm = re.exec(t)) !== null) {
@@ -93,12 +111,33 @@
       var sameLen = parts.every(function (p) { return p.length === parts[0].length; });
       var yearPair = parts.length === 2 && parts[0].length === 4 &&
           parts[1].length === 4 && /^20\d\d$/.test(parts[0]) && /^20\d\d$/.test(parts[1]);
-      if (joined.length >= 4 && joined.length <= 10 && sameLen && !yearPair) {
+      // 排除像是日期/电话的片段：3-4-4 这种是电话号码形状。
+      var phoneLike = parts.length === 3 && parts[0].length === 3 &&
+          parts[1].length === 3 && parts[2].length === 4;
+      if (joined.length >= 4 && joined.length <= 10 && sameLen && !yearPair && !phoneLike) {
         return mm[1];
       }
     }
-    // 2) 连续数字。先把年份剔掉，否则 "expired in 2024" 会被当成验证码。
+
+    // 连续数字。先把年份剔掉，否则 "expired in 2024" 会被当成验证码。
     var rest = t.replace(/\b20\d\d\b/g, ' ');
+
+    // 新版：先在「验证码词」附近找，再退回全文找。
+    // 真实短信经常写成：
+    //   "Your code is 123456"
+    //   "123456 is your verification code"
+    //   "Use 123456 to sign in"
+    // 前两种都能被「附近」这一招覆盖。
+    var near = rest.match(
+      /(?:code|verif|otp|passcode|one[ -]?time|confirmation|sign[ -]?in|activation|pin|验证码|驗證碼)[^\d]{0,24}(\d{4,8})/i
+    );
+    if (near) return near[1];
+    var before = rest.match(
+      /(\d{4,8})[^\d]{0,24}(?:code|verif|otp|passcode|one[ -]?time|confirmation|sign[ -]?in|activation|pin|验证码|驗證碼)/i
+    );
+    if (before) return before[1];
+
+    // 最后退回全文第一个 4~8 位数字。
     var m = rest.match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
     return m ? m[1] : '';
   }

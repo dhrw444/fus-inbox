@@ -172,26 +172,27 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
   /// 让请求失败并报出来，比假装按钮坏了要好。
   ///
   /// [force] 为 true 时无视「已有数据」，但仍然复用缓存做即时显示。
+  /// 只把磁盘缓存读进 state，不发任何网络请求。
+  ///
+  /// 拆出来是为了让启动顺序可控：先 hydrate（第一帧就有列表），
+  /// 再并行跑 load 和收录时间补齐。之前塞在 load 内部，导致
+  /// 补齐必须等 load 整个跑完才能开始。
+  Future<void> hydrateFromCache() async {
+    if (state.all.isNotEmpty) return;
+    final cached = await loadDirectoryCache();
+    if (cached == null || state.all.isNotEmpty) return;
+    state = state.copyWith(
+      all: cached.numbers,
+      status: '显示缓存（${_ageLabel(cached.savedAt)}），正在取最新…',
+    );
+  }
+
   Future<void> load({bool force = false}) async {
     if (state.loading) return;
     if (!force && state.all.isNotEmpty) return;
 
-    // 1) 先上缓存：冷启动时不必干等网络。缓存只负责「立刻有东西看」，
-    //    后面照常去站点取最新，不替代刷新。
-    if (state.all.isEmpty) {
-      final cached = await loadDirectoryCache();
-      // 注意：Notifier 没有 mounted 概念（那是 State 的）。
-      // 用它编译不过；这里也不需要——真要有并发，下面的 loading 重入
-      // 检查已经挡住第二次 load 了。
-      if (cached != null && state.all.isEmpty) {
-        state = state.copyWith(
-          all: cached.numbers,
-          // 缓存命中时不算「加载中」，否则还会盖一层转圈。
-          // 用一条状态文案告诉用户手上是旧数据。
-          status: '显示缓存（${_ageLabel(cached.savedAt)}），正在取最新…',
-        );
-      }
-    }
+    // 先上缓存（如果调用方还没 hydrate 过）。
+    await hydrateFromCache();
 
     state = state.copyWith(
       loading: true,

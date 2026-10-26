@@ -41,9 +41,28 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   /// 只补缓存里没有的：已经有时间的号码直接跳过，不会重复请求。
   /// 首次启动会补一批（串行 + 间隔，不并发轰站点），之后就只剩新号。
   Future<void> _boot() async {
-    await ref.read(numberDirectoryProvider.notifier).load();
+    final notifier = ref.read(numberDirectoryProvider.notifier);
+
+    // 先读缓存：命中就立刻有列表可点，不用等网络。
+    // （load() 内部也会读，但那是在它自己的 await 链里，
+    //   这里先读一次是为了让「第一帧就有内容」尽早发生。）
+    await notifier.hydrateFromCache();
     if (!mounted) return;
 
+    // 缓存到位后立刻开始补收录时间，和网络刷新并行。
+    //
+    // 之前是 `await load()` 之后才补 —— 而 load 要跑完 5 页（约 2 秒，
+    // 改之前是 10 秒），等于把补齐硬生生推迟到那之后。
+    // 现在两件事同时跑：网络在后台拿新数据，补齐用的是缓存里已有的号，
+    // 两者互不阻塞。
+    unawaited(_fillFirstSeen());
+
+    // 网络刷新放到最后，不 await。
+    unawaited(notifier.load(force: true));
+  }
+
+  /// 补齐收录时间。已有缓存的不再请求。
+  Future<void> _fillFirstSeen() async {
     final numbers = [
       for (final n in ref.read(numberDirectoryProvider).all) n.number,
     ];
@@ -52,12 +71,10 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     final store = ref.read(firstSeenStoreProvider.notifier);
 
     // 先对齐：只保留当前目录里还在的号。
-    // 站点会轮换号池，今天下架的号留着它的收录时间毫无用处，
-    // 不清就是只增不减。这一步让两个缓存的内容始终是同一批号码。
     await store.retainOnly(numbers.toSet());
+    if (!mounted) return;
 
     // 再补齐：缺的那些逐个抓，一条一条上屏。
-    // 已有时间的号在这里被差集排除，一次请求都不会发。
     await ref.read(firstSeenFillerProvider).fillMissing(store, numbers);
   }
 
@@ -193,7 +210,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
                 ],
               ),
             ),
-          Expanded(child: _body(dir, items, saved, query, theme)),
+          Expanded(child: _body(dir, items, saved, firstSeen, query, theme)),
         ],
       ),
     );
@@ -203,6 +220,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     NumberDirectoryState dir,
     List<AvailableNumber> items,
     Set<String> saved,
+    Map<String, DateTime> firstSeen,
     String query,
     ThemeData theme,
   ) {
@@ -260,7 +278,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     }
 
     if (dir.tab == NumberTab.byState) {
-      return _stateGrouped(items, saved, theme);
+      return _stateGrouped(items, saved, firstSeen, theme);
     }
 
     return RefreshIndicator(
@@ -287,6 +305,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   Widget _stateGrouped(
     List<AvailableNumber> items,
     Set<String> saved,
+    Map<String, DateTime> firstSeen,
     ThemeData theme,
   ) {
     final groups = <String, List<AvailableNumber>>{};
