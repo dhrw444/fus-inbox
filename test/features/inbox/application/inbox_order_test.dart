@@ -112,20 +112,23 @@ void main() {
       expect(ids.last, 'noTime');
     });
 
-    test('超过上限时裁掉最旧的，保留最新 60 条', () {
+    test('超过上限时裁掉最旧的，保留最新 240 条', () {
       final store = InboxStore();
       final many = <Map<String, dynamic>>[];
-      for (var i = 0; i < 90; i++) {
-        // id0 最新、id89 最旧，时间严格单调递减。
-        final minute = 89 - i;
+      // 上限是 240：造 300 条，验证裁掉的是尾部（最旧）而不是头部。
+      // 这个上限必须容得下翻页——列表新→旧排列，砍尾部等于砍最老的，
+      // 若上限只有一页的量，翻页拉回的历史会立刻被裁光。
+      for (var i = 0; i < 300; i++) {
+        // id0 最新、id299 最旧，时间严格单调递减。
+        final minute = 299 - i;
         final hh = (minute ~/ 60).toString().padLeft(2, '0');
         final mm = (minute % 60).toString().padLeft(2, '0');
         many.add(msg('id$i', '2026-10-25T$hh:$mm:00Z'));
       }
       store.ingest(payload(many));
-      expect(store.state.messages.length, 60);
+      expect(store.state.messages.length, 240);
       expect(store.state.messages.first.id, 'id0');
-      expect(store.state.messages.last.id, 'id59');
+      expect(store.state.messages.last.id, 'id239');
     });
   });
 
