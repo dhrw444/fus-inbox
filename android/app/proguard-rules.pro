@@ -17,26 +17,13 @@
 # Keep webview_flutter classes
 -keep class io.flutter.plugins.webviewflutter.** { *; }
 
-# Keep share_plus classes
--keep class dev.fluttercommunity.plus.share.** { *; }
-
-# Keep url_launcher classes
--keep class io.flutter.plugins.urllauncher.** { *; }
-
-# Keep receive_intent classes
--keep class com.bhikadia.receive_intent.** { *; }
-
 # Keep shared_preferences classes
 -keep class io.flutter.plugins.sharedpreferences.** { *; }
 
 # Keep dynamic_color classes
 -keep class io.material.materialcolorplugin.** { *; }
 
-# Keep Google Fonts (if using HTTP to fetch fonts)
--keep class com.google.android.gms.** { *; }
-
-# Suppress warnings for missing classes
--dontwarn com.google.android.gms.**
+# Suppress warnings for optional plugin classes we do not ship.
 -dontwarn io.flutter.embedding.**
 
 # Keep Kotlin metadata

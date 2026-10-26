@@ -5,14 +5,16 @@
 /// 只放在 `/sms-api/v1/*`（短信正文）上，目录页自己留了活口——它自己的
 /// live.js 里写着 "This gate controls SMS bodies only."
 ///
-/// 为什么不用 html 包：CI 用 `flutter pub get --enforce-lockfile`，新增依赖
-/// 会让 lockfile 失配直接失败。这段模板固定、字段固定，正则足够且已在真实
-/// 页面上验证 24/24 命中。站点改模板时这里会返回空列表 —— 上层会显示错误，
+/// 为什么不用 html 包：这段模板固定、字段固定，正则足够，且已在真实页面上
+/// 验证 24/24 命中。站点改模板时这里会返回空列表 —— 上层会显示错误，
 /// 不会静默给错数据。
 library;
 
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
 
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
@@ -118,45 +120,47 @@ NumberPage parseDirectory(String html) {
 
 /// 目录数据源。
 ///
-/// 不能是 `const` 主构造：[_http] 是 `late final`，需要非 const 初始化。
+/// 不能是 `const` 主构造：[client] 是 `late final`，需要非 const 初始化。
 class NumbersRepository({this.client}) {
-  final http.Client? client;
+  /// 可注入的 HTTP 客户端；为空时自建一个，由本实例负责关闭。
+  final HttpClient? client;
 
   static const _base = 'https://freeussms.com';
   static const _ua =
       'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 '
       '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
-  /// 未注入时自建一个，由本实例负责关闭——共用静态客户端的话
-  /// [dispose] 会把别人的连接一起关掉。
-  late final http.Client _http = client ?? http.Client();
+  late final HttpClient _http = client ?? HttpClient();
 
   String _pageUrl(int page) =>
       page <= 1 ? '$_base/numbers/' : '$_base/numbers/page/$page/';
 
   /// 抓一页。失败抛 [NumberFetchException]。
+  ///
+  /// 用 `dart:io` 而不是 `package:http`：这里只需要「GET 一个页面、按 UTF-8 解码」，
+  /// 内置客户端够用，还能少一个依赖。注意 [HttpClient] 不会自动带 User-Agent，
+  /// 站点按 UA 区分移动端模板，必须显式设。
   Future<NumberPage> fetchPage(int page) async {
     final uri = Uri.parse(_pageUrl(page));
-    late final http.Response res;
+    late final HttpClientResponse res;
     try {
-      res = await _http
-          .get(
-            uri,
-            headers: {
-              'User-Agent': _ua,
-              'Accept': 'text/html,application/xhtml+xml',
-              'Accept-Language': 'en-US,en;q=0.9',
-              'Referer': '$_base/numbers/',
-            },
-          )
-          .timeout(const Duration(seconds: 20));
+      final req = await _http.getUrl(uri).timeout(const Duration(seconds: 20));
+      req.headers
+        ..set(HttpHeaders.userAgentHeader, _ua)
+        ..set(HttpHeaders.acceptHeader, 'text/html,application/xhtml+xml')
+        ..set(HttpHeaders.acceptLanguageHeader, 'en-US,en;q=0.9')
+        ..set(HttpHeaders.refererHeader, '$_base/numbers/');
+      res = await req.close().timeout(const Duration(seconds: 20));
     } on Exception catch (e) {
       throw NumberFetchException('网络请求失败：$e');
     }
-    if (res.statusCode != 200) {
+    if (res.statusCode != HttpStatus.ok) {
+      // 响应体不读会占着连接不放。
+      unawaited(res.drain<void>().catchError((Object _) {}));
       throw NumberFetchException('目录返回 HTTP ${res.statusCode}');
     }
-    return parseDirectory(res.body);
+    final body = await res.transform(utf8.decoder).join();
+    return parseDirectory(body);
   }
 
   /// 站点模板固定每页 24 条（实测）。
@@ -218,7 +222,8 @@ class NumbersRepository({this.client}) {
   }
 
   /// 释放 HTTP 客户端。provider 销毁时调用。
-  void dispose() => _http.close();
+  /// 关掉连接池。`force: true` 顺手掐掉还在飞的请求，页面销毁时不必等。
+  void dispose() => _http.close(force: true);
 }
 
 class const NumberFetchException(this.message) implements Exception {
