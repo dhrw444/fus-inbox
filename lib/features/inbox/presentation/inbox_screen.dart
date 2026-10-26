@@ -402,12 +402,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             }
             return false;
           },
-          child: ListView.separated(
-            padding: const EdgeInsets.only(bottom: 24),
+          // 卡片自带 8dp 间距，不再画分隔线。
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
             // 只渲染 s.shown（首屏 5 条），不是全部 24 条。
             // 末尾多一项：翻页脚注。
             itemCount: shown.length + 1,
-            separatorBuilder: (context, i) => const Divider(height: 1),
             itemBuilder: (context, i) {
               if (i == shown.length) {
                 return _buildFooter(s, theme);
@@ -749,142 +749,155 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
       _ensureRequested(entry != null);
     }
 
-    return InkWell(
-      onLongPress: widget.onCopyAll,
-      child: Container(
+    // 卡片式，和号码列表/设置页同一套：elevation:0、16dp 圆角、
+    // surfaceContainerHighest 40% 底。「新消息」用一层淡主色叠上去，
+    // 而不是整块换色——那样在深色主题下会跳出来很刺眼。
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Card(
+        elevation: 0,
+        margin: EdgeInsets.zero,
         color: message.isNew
-            ? scheme.primaryContainer.withValues(alpha: 0.22)
-            : null,
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            // 顶行：发送方 + 时间 + 新标记
-            Row(
+            ? scheme.primaryContainer.withValues(alpha: 0.28)
+            : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onLongPress: widget.onCopyAll,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Expanded(
-                  child: Text(
-                    message.sender.isEmpty ? '未知发送方' : message.sender,
-                    style: theme.textTheme.labelLarge?.copyWith(
-                      color: scheme.onSurfaceVariant,
+                // 顶行：发送方 + 时间 + 新标记
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        message.sender.isEmpty ? '未知发送方' : message.sender,
+                        style: theme.textTheme.labelLarge?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                    if (message.isNew) ...[
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: scheme.primary,
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          '新',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: scheme.onPrimary,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                    ],
+                    if (message.receivedAt.isNotEmpty)
+                      Text(
+                        relativeTime(message.receivedAt, null),
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                  ],
                 ),
-                if (message.isNew) ...[
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 1,
-                    ),
-                    decoration: BoxDecoration(
-                      color: scheme.primary,
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      '新',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: scheme.onPrimary,
+                const SizedBox(height: 8),
+
+                // 验证码：有就放大成按钮，一点即复制。
+                if (message.hasCode)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: FilledButton.tonalIcon(
+                      onPressed: () => widget.onCopyCode(message.code),
+                      icon: const Icon(Icons.copy_all, size: 18),
+                      label: Text(
+                        message.code,
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 3,
+                        ),
+                      ),
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size(0, 52),
+                        padding: const EdgeInsets.symmetric(horizontal: 20),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 6),
+
+                // 正文：开了翻译就先给译文，原文按需保留。
+                if (message.text.isNotEmpty) ...[
+                  if (entry != null && entry.loading)
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: 11,
+                          height: 11,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.6,
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(width: 7),
+                        Text(
+                          '翻译中…',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: scheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    )
+                  else if (entry != null && entry.text.isNotEmpty) ...[
+                    Text(
+                      entry.text,
+                      style: _bodyStyle(theme, widget.fontScale),
+                      maxLines: 10,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    // 打开「保留原文」时才显示下面这段，否则卡片只是更高。
+                    if (widget.showOriginal &&
+                        !_sameText(entry.text, message.text))
+                      Padding(
+                        padding: const EdgeInsets.only(top: 6),
+                        child: Text(
+                          message.text,
+                          style: _bodyStyle(
+                            theme,
+                            widget.fontScale * 0.88,
+                          )?.copyWith(color: scheme.onSurfaceVariant),
+                          maxLines: 6,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ] else
+                    Text(
+                      message.text,
+                      style: _bodyStyle(theme, widget.fontScale),
+                      maxLines: 8,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                 ],
-                if (message.receivedAt.isNotEmpty)
-                  Text(
-                    relativeTime(message.receivedAt, null),
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
+
+                if (message.isProtected)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      '这条被站点临时标为不可读，稍后刷新。',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.error,
+                      ),
                     ),
                   ),
               ],
             ),
-            const SizedBox(height: 8),
-
-            // 验证码：有就放大成按钮，一点即复制。
-            if (message.hasCode)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: FilledButton.tonalIcon(
-                  onPressed: () => widget.onCopyCode(message.code),
-                  icon: const Icon(Icons.copy_all, size: 18),
-                  label: Text(
-                    message.code,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 3,
-                    ),
-                  ),
-                  style: FilledButton.styleFrom(
-                    minimumSize: const Size(0, 52),
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                  ),
-                ),
-              ),
-
-            // 正文：开了翻译就先给译文，原文按需保留。
-            if (message.text.isNotEmpty) ...[
-              if (entry != null && entry.loading)
-                Row(
-                  children: [
-                    SizedBox(
-                      width: 11,
-                      height: 11,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 1.6,
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                    const SizedBox(width: 7),
-                    Text(
-                      '翻译中…',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                )
-              else if (entry != null && entry.text.isNotEmpty) ...[
-                Text(
-                  entry.text,
-                  style: _bodyStyle(theme, widget.fontScale),
-                  maxLines: 10,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                // 打开「保留原文」时才显示下面这段，否则卡片只是更高。
-                if (widget.showOriginal && !_sameText(entry.text, message.text))
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Text(
-                      message.text,
-                      style: _bodyStyle(
-                        theme,
-                        widget.fontScale * 0.88,
-                      )?.copyWith(color: scheme.onSurfaceVariant),
-                      maxLines: 6,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-              ] else
-                Text(
-                  message.text,
-                  style: _bodyStyle(theme, widget.fontScale),
-                  maxLines: 8,
-                  overflow: TextOverflow.ellipsis,
-                ),
-            ],
-
-            if (message.isProtected)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Text(
-                  '这条被站点临时标为不可读，稍后刷新。',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: scheme.error,
-                  ),
-                ),
-              ),
-          ],
+          ),
         ),
       ),
     );

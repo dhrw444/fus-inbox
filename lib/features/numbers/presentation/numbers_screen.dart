@@ -265,9 +265,11 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
 
     return RefreshIndicator(
       onRefresh: _refresh,
-      child: ListView.separated(
+      // 卡片自带 8dp 外边距，列表不再画分隔线——两者一起用会出现
+      // 「卡片 + 细线」的双重边界，看着很脏。
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
         itemCount: items.length,
-        separatorBuilder: (context, i) => const Divider(height: 1, indent: 36),
         itemBuilder: (context, i) => NumberCard(
           number: items[i],
           saved: saved.contains(items[i].id),
@@ -299,6 +301,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     return RefreshIndicator(
       onRefresh: _refresh,
       child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
         itemCount: keys.length,
         itemBuilder: (context, i) {
           final key = keys[i];
@@ -306,20 +309,23 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
           return Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // 州名标题：和设置页的分组标题同一套样式（主色 + 加粗，
+              // 左边留一点缩进对齐卡片内文字），右边跟一个号码数。
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
                 child: Row(
                   children: [
                     Text(
                       key,
-                      style: theme.textTheme.titleSmall?.copyWith(
+                      style: theme.textTheme.labelLarge?.copyWith(
                         color: theme.colorScheme.primary,
                         fontWeight: FontWeight.w700,
+                        letterSpacing: 0.3,
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 6),
                     Text(
-                      '${list.length}',
+                      '${list.length} 个',
                       style: theme.textTheme.labelSmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -337,7 +343,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
                   onToggleSave: () =>
                       ref.read(savedNumbersProvider.notifier).toggle(n.id),
                 ),
-              const Divider(height: 1),
+              const SizedBox(height: 8),
             ],
           );
         },
