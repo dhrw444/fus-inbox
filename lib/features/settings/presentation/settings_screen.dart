@@ -21,12 +21,12 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.only(bottom: 32),
         children: [
-          const _SectionHeader('外观'),
+          const _SectionHeader(title: '外观'),
           _ThemeModeTile(prefs: prefs),
           _FontSizeTile(prefs: prefs),
           const Divider(height: 24),
 
-          const _SectionHeader('短信'),
+          const _SectionHeader(title: '短信'),
           SwitchListTile(
             title: const Text('实时翻译'),
             subtitle: const Text('把英文短信自动翻成中文，译文显示在原文位置'),
@@ -44,7 +44,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
           _LanguageTile(prefs: prefs),
           const Divider(height: 24),
 
-          const _SectionHeader('存储'),
+          const _SectionHeader(title: '存储'),
           ListTile(
             leading: const Icon(Icons.cleaning_services_outlined),
             title: const Text('清除翻译缓存'),
@@ -56,7 +56,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
           ),
           const Divider(height: 24),
 
-          const _SectionHeader('关于'),
+          const _SectionHeader(title: '关于'),
           const ListTile(
             leading: Icon(Icons.info_outline),
             title: Text('数据来源'),

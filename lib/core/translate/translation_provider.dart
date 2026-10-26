@@ -10,6 +10,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/translate/translator.dart';
 
 /// 翻译服务实例。整个 App 复用一个，连接池也复用。
