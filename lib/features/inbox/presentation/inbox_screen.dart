@@ -12,8 +12,11 @@ import 'dart:async';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
+import 'package:fus_inbox/core/prefs/prefs_provider.dart';
+import 'package:fus_inbox/core/translate/translation_provider.dart';
 import 'package:fus_inbox/core/webview/webview_widget.dart';
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
@@ -30,14 +33,14 @@ const _kChannel = 'FusInbox';
 const _kAllowedHost = 'freeussms.com';
 
 class const InboxScreen({required this.number, super.key})
-    extends StatefulWidget {
+    extends ConsumerStatefulWidget {
   final AvailableNumber number;
 
   @override
-  State<InboxScreen> createState() => _InboxScreenState();
+  ConsumerState<InboxScreen> createState() => _InboxScreenState();
 }
 
-class _InboxScreenState() extends State<InboxScreen> {
+class _InboxScreenState() extends ConsumerState<InboxScreen> {
   late final WebViewController _controller;
   late Future<WebViewWidget> _webViewFuture;
   late final InboxStore _store;
@@ -234,6 +237,7 @@ class _InboxScreenState() extends State<InboxScreen> {
   }
 
   Widget _buildList(InboxState s, ThemeData theme) {
+    final prefs = ref.watch(prefsProvider);
     if (s.messages.isEmpty) {
       final failed = s.phase == InboxPhase.failed;
       return ColoredBox(
@@ -296,6 +300,8 @@ class _InboxScreenState() extends State<InboxScreen> {
           separatorBuilder: (context, i) => const Divider(height: 1),
           itemBuilder: (context, i) => _MessageTile(
             message: s.messages[i],
+            translate: prefs.translate,
+            showOriginal: prefs.showOriginal,
             onCopyCode: (c) => _copy(c, '验证码'),
             onCopyAll: () => _copy(
               s.messages[i].code.isNotEmpty
@@ -349,20 +355,68 @@ class _InboxScreenState() extends State<InboxScreen> {
   }
 }
 
+/// 译文和原文是否实质相同。
+///
+/// 站点偶尔返回「翻译后跟原来一样」的结果（专有名词、已是中文等），
+/// 这种情况下再显示一遍原文只会让卡片变高、没有信息增量。
+bool _sameText(String a, String b) =>
+    a.trim().toLowerCase() == b.trim().toLowerCase();
+
 /// 一条短信。
 class const _MessageTile({
   required this.message,
   required this.onCopyCode,
   required this.onCopyAll,
-}) extends StatelessWidget {
+  required this.translate,
+  required this.showOriginal,
+}) extends ConsumerStatefulWidget {
   final InboxMessage message;
   final void Function(String) onCopyCode;
   final VoidCallback onCopyAll;
+  final bool translate;
+  final bool showOriginal;
+
+  @override
+  ConsumerState<_MessageTile> createState() => _MessageTileState();
+}
+
+class _MessageTileState() extends ConsumerState<_MessageTile> {
+  @override
+  void initState() {
+    super.initState();
+    if (widget.translate) _kick();
+  }
+
+  @override
+  void didUpdateWidget(_MessageTile old) {
+    super.didUpdateWidget(old);
+    // 用户刚在设置里打开翻译时，已经在屏幕上的那条也要开始翻。
+    if (widget.translate && !old.translate) _kick();
+  }
+
+  void _kick() {
+    final text = widget.message.text;
+    if (text.isEmpty) return;
+    // 在下一帧请求：initState 期间改 provider 状态会触发 Riverpod 警告。
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(translationStoreProvider.notifier).request(text);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
+    final message = widget.message;
+
+    // 只有开了翻译才 watch 翻译状态，关着的时候不订阅，省一次 rebuild。
+    TranslationEntry? entry;
+    if (widget.translate && message.text.isNotEmpty) {
+      entry = ref.watch(
+        translationStoreProvider.select((m) => m[message.text.trim()]),
+      );
+    }
 
     return InkWell(
       onLongPress: onCopyAll,
@@ -437,14 +491,57 @@ class const _MessageTile({
                 ),
               ),
 
-            // 正文：全部信息，不做筛选。
-            if (message.text.isNotEmpty)
-              Text(
-                message.text,
-                style: theme.textTheme.bodyMedium,
-                maxLines: 8,
-                overflow: TextOverflow.ellipsis,
-              ),
+            // 正文：开了翻译就先给译文，原文按需保留。
+            if (message.text.isNotEmpty) ...[
+              if (entry != null && entry.loading)
+                Row(
+                  children: [
+                    SizedBox(
+                      width: 11,
+                      height: 11,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.6,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Text(
+                      '翻译中…',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                )
+              else if (entry != null && entry.text.isNotEmpty) ...[
+                Text(
+                  entry.text,
+                  style: theme.textTheme.bodyMedium,
+                  maxLines: 10,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                // 打开「保留原文」时才显示下面这段，否则卡片只是更高。
+                if (widget.showOriginal && !_sameText(entry.text, message.text))
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Text(
+                      message.text,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        height: 1.45,
+                      ),
+                      maxLines: 6,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ] else
+                Text(
+                  message.text,
+                  style: theme.textTheme.bodyMedium,
+                  maxLines: 8,
+                  overflow: TextOverflow.ellipsis,
+                ),
+            ],
 
             if (message.isProtected)
               Padding(

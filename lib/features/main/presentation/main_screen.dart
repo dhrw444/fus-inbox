@@ -1,4 +1,4 @@
-/// 主壳：底部两个页签（号码 / 收藏）。
+/// 主壳：底部三个页签（号码 / 收藏 / 设置）。
 ///
 /// 用 IndexedStack 保活，切页签不丢滚动位置和已加载的目录。
 library;
@@ -7,6 +7,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'package:fus_inbox/features/numbers/presentation/numbers_screen.dart';
 import 'package:fus_inbox/features/saved/presentation/saved_screen.dart';
+import 'package:fus_inbox/features/settings/presentation/settings_screen.dart';
 
 class const MainScreen({super.key}) extends StatefulWidget {
   @override
@@ -21,7 +22,7 @@ class _MainScreenState() extends State<MainScreen> {
     return Scaffold(
       body: IndexedStack(
         index: _index,
-        children: const [NumbersScreen(), _SavedTab()],
+        children: const [NumbersScreen(), _SavedTab(), SettingsScreen()],
       ),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _index,
@@ -36,6 +37,11 @@ class _MainScreenState() extends State<MainScreen> {
             icon: Icon(Icons.star_border),
             selectedIcon: Icon(Icons.star),
             label: '收藏',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: '设置',
           ),
         ],
       ),
