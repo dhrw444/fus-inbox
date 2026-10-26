@@ -11,6 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fus_inbox/features/inbox/presentation/inbox_screen.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/domain/state_names.dart';
 import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart';
 import 'package:fus_inbox/features/saved/application/saved_provider.dart';
 
@@ -214,7 +215,9 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   ) {
     final groups = <String, List<AvailableNumber>>{};
     for (final n in items) {
-      final key = n.state.isEmpty ? '其他' : n.state;
+      // 分组标题直接用中文州名，否则「按州」页里全是 Georgia / Florida。
+      final zh = stateZh(n.state);
+      final key = zh.isEmpty ? '其他' : zh;
       groups.putIfAbsent(key, () => []).add(n);
     }
     final keys = groups.keys.toList()..sort();

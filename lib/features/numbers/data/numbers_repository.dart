@@ -169,13 +169,33 @@ class NumbersRepository({this.client}) {
   /// 纯保险丝：号码池异常膨胀时别把请求数堆成无穷。
   static const _pageCap = 40;
 
+  /// 页与页之间的间隔。
+  ///
+  /// 站点挂在 Cloudflare 后面，短时间连发请求最容易触发风控。
+  /// 上一版是 120ms —— 抓完 5 页只花半秒，等于对站点做了一次小规模爆破。
+  /// 现在给到 1.5 秒起步，再叠加随机抖动，让请求节奏看着像人。
+  static const _pageGap = Duration(milliseconds: 1500);
+
+  /// 单页重试次数。风控多半是临时的，退避后重试比直接放弃好；
+  /// 但重试本身也是请求，所以最多两次。
+  static const _maxRetry = 2;
+
+  /// 带抖动的页间隔。固定间隔在服务端看来同样可疑。
+  Future<void> _pace(int page) async {
+    if (page <= 1) return;
+    // 1500ms + 0~900ms 抖动。
+    final jitter = 900 * (page % 3) ~/ 3;
+    await Future<void>.delayed(_pageGap + Duration(milliseconds: jitter));
+  }
+
   /// 顺序抓完整个目录。
   ///
   /// 站点每页 24 条、总数约百来条，所以顺序抓即可，不并发轰它。
   /// 任何一页失败且还没有数据时才抛错；已经拿到数据就保留已抓到的部分。
   ///
-  /// 页数由「站点自报总数」推导，[maxPages] 只用来收紧上限——
-  /// 站点 `N available numbers` 是准的，写死一个魔数会在池子变大时静默截断。
+  /// 页数由「站点自报总数」精确推导，[maxPages] 只用来收紧上限。
+  /// 注意不要再给总页数加余量：多抓一页就多一次请求，
+  /// 而站点自己在最后一页就会给出不足 24 条的结果，循环自然结束。
   ///
   /// [onProgress] 每页抓完后回调一次，用于界面显示「已加载 N 个号」。
   Future<List<AvailableNumber>> fetchAll({
@@ -188,20 +208,39 @@ class NumbersRepository({this.client}) {
     if (limit <= 0 || limit > _pageCap) limit = _pageCap;
 
     for (var page = 1; page <= limit; page++) {
-      late final NumberPage batch;
-      try {
-        batch = await fetchPage(page);
-      } on NumberFetchException catch (e) {
-        if (out.isEmpty) rethrow;
-        debugPrint('目录第 $page 页失败，保留已抓到的 ${out.length} 条：$e');
+      await _pace(page);
+
+      // 单页失败先退避重试；重试仍失败再决定是放弃还是保留已有数据。
+      NumberPage? batch;
+      Object? lastError;
+      for (var attempt = 0; attempt <= _maxRetry; attempt++) {
+        try {
+          batch = await fetchPage(page);
+          break;
+        } on NumberFetchException catch (e) {
+          lastError = e;
+          if (attempt < _maxRetry) {
+            // 退避：2s、5s。风控退避比立刻重试有效得多。
+            await Future<void>.delayed(
+              Duration(seconds: attempt == 0 ? 2 : 5),
+            );
+          }
+        }
+      }
+
+      if (batch == null) {
+        if (out.isEmpty) {
+          throw NumberFetchException('$lastError');
+        }
+        debugPrint('目录第 $page 页失败，保留已抓到的 ${out.length} 条：$lastError');
         break;
       }
       if (batch.numbers.isEmpty) break;
 
-      // 首页拿到总数后收紧上限：多留一页余量，防站点计数与分页存在偏差。
+      // 首页拿到总数后精确收紧上限，不加余量。
       final total = batch.total;
       if (page == 1 && total != null && total > 0) {
-        final needed = (total / _pageSize).ceil() + 1;
+        final needed = (total / _pageSize).ceil();
         if (needed < limit) limit = needed;
       }
 
@@ -214,9 +253,8 @@ class NumbersRepository({this.client}) {
 
       onProgress?.call(out.length, page);
 
-      if (page < limit) {
-        await Future<void>.delayed(const Duration(milliseconds: 120));
-      }
+      // 不足一页 = 这是最后一页，不用再猜。
+      if (batch.numbers.length < _pageSize) break;
     }
     return out;
   }

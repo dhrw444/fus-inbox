@@ -4,6 +4,8 @@
 /// 所以这个模型完全由原生 HTTP + HTML 解析填充，不依赖 WebView。
 library;
 
+import 'package:fus_inbox/features/numbers/domain/state_names.dart';
+
 class const AvailableNumber({
   required this.id,
   required this.number,
@@ -43,18 +45,24 @@ class const AvailableNumber({
     return '+1 ($a) $b-$c';
   }
 
-  /// `Ohio · 419`
+  /// `俄亥俄 · 419`
+  ///
+  /// 界面全中文，州名走 [stateZh] 映射；未知州名原样返回。
   String get regionLabel {
-    if (state.isEmpty) return areaCode.isEmpty ? '' : areaCode;
-    if (areaCode.isEmpty) return state;
-    return '$state · $areaCode';
+    final zh = stateZh(state);
+    if (zh.isEmpty) return areaCode.isEmpty ? '' : areaCode;
+    if (areaCode.isEmpty) return zh;
+    return '$zh · $areaCode';
   }
 
   /// 打开该号收件页的 URL。
   String get inboxUrl => 'https://freeussms.com/numbers/$number/';
 
-  /// 搜索用：号码数字、州名、区号拼在一起。
-  String get searchBlob => '$number $state $areaCode'.toLowerCase();
+  /// 搜索用：号码数字、中文州名、英文州名、区号拼在一起。
+  ///
+  /// 两个州名都放进去，用户打「佛州」查不到，打 `Florida` 或 `佛罗里达` 都能中。
+  String get searchBlob =>
+      '$number $state ${stateZh(state)} $areaCode'.toLowerCase();
 
   @override
   bool operator ==(Object other) => other is AvailableNumber && other.id == id;

@@ -73,10 +73,30 @@
 
   // 站点给的 copy_code 是权威值；没有才从正文里兜。
   // 兜底必须带语义门：否则「订单 12345 已发货」这类正文会被当成验证码放大。
+  //
+  // 分隔符形式（`890-864` / `450-549`）必须先匹配：
+  // WhatsApp 的验证码就是三位-三位，早期只认连续数字，这类整条都被漏掉。
+  // 保号不保格式——站点显示什么就抄什么，用户要照着填。
   function codeFrom(text) {
     var t = str(text);
     if (!/(code|verif|otp|passcode|验证码|验证)/i.test(t)) return '';
-    var m = t.match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
+    // 1) 带分隔符：890-864 / 123 456 / 1234 5678
+    // 全局扫描：命中的可能是年份对或不等长片段，要跳过并继续往后找。
+    var re = /(?:^|[^\d])(\d{2,4}(?:[-\s]\d{2,4}){1,3})(?=[^\d]|$)/g;
+    var mm;
+    while ((mm = re.exec(t)) !== null) {
+      var parts = mm[1].split(/[-\s]/);
+      var joined = parts.join('');
+      var sameLen = parts.every(function (p) { return p.length === parts[0].length; });
+      var yearPair = parts.length === 2 && parts[0].length === 4 &&
+          parts[1].length === 4 && /^20\d\d$/.test(parts[0]) && /^20\d\d$/.test(parts[1]);
+      if (joined.length >= 4 && joined.length <= 10 && sameLen && !yearPair) {
+        return mm[1];
+      }
+    }
+    // 2) 连续数字。先把年份剔掉，否则 "expired in 2024" 会被当成验证码。
+    var rest = t.replace(/\b20\d\d\b/g, ' ');
+    var m = rest.match(/(?:^|[^\d])(\d{4,8})(?:[^\d]|$)/);
     return m ? m[1] : '';
   }
 
@@ -292,16 +312,27 @@
   function boot() {
     status('抓取层已就绪');
     // 站点自己的渲染节奏：先接口，后 DOM。多打几次保底。
-    var delays = [1200, 3000, 6000, 10000, 15000, 22000];
+    // 只在前 10 秒补打——再往后站点要是还没渲染，靠 MutationObserver 兜着就行，
+    // 后面的定时器纯属空转（每个都会算一遍全页 DOM）。
+    var delays = [1200, 3000, 6000, 10000];
     for (var i = 0; i < delays.length; i++) setTimeout(domScan, delays[i]);
     try {
       var mo = new MutationObserver(function () {
+        // 站点有广告轮播和倒计时，DOM 一直在变。不节流的话这里一天能跑几万次，
+        // 每次都要遍历全页——手机发烫、耗电，而且完全没有收益。
+        // 冷却是必需的：3 秒内最多重扫一次，且只在还没拿到消息时才扫。
+        if (messages.length) return;
         clearTimeout(mo.__t);
-        mo.__t = setTimeout(domScan, 800);
+        mo.__t = setTimeout(domScan, 3000);
       });
       mo.observe(document.documentElement, { childList: true, subtree: true });
     } catch (e) {}
-    setInterval(function () { if (!messages.length) domScan(); }, 12000);
+    // 兜底轮询也拉长：30 秒一次，而且拿到消息后就彻底停掉，
+    // 别让页面开着的时候永远在空转。
+    var tick = setInterval(function () {
+      if (messages.length) { clearInterval(tick); return; }
+      domScan();
+    }, 30000);
   }
 
   if (document.readyState === 'loading') {

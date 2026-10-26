@@ -128,13 +128,26 @@ class _InboxScreenState() extends State<InboxScreen> {
       );
   }
 
+  /// 注入中的标记。
+  ///
+  /// `onPageFinished` 在每次导航完成后都会触发——站点有重定向、风控跳转，
+  /// 一次打开可能触发三四次。没有这道闸，注入就叠三四遍，
+  /// 每遍都会重启一整套 setTimeout/setInterval，请求量直接乘上去。
+  bool _injecting = false;
+
   Future<void> _inject() async {
-    final script = await _scriptFuture;
-    if (script.isEmpty) return;
+    if (_injecting) return;
+    _injecting = true;
     try {
+      final script = await _scriptFuture;
+      if (script.isEmpty) return;
       await _controller.runJavaScript(script);
     } catch (e) {
       debugPrint('注入失败: $e');
+    } finally {
+      // 留一点余量再放开：页面内重定向往往在同一个 tick 里连着触发。
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      _injecting = false;
     }
   }
 

@@ -1,25 +1,25 @@
-/// 号码卡片。目录列表里一行一个号。
-library;
-
 import 'package:material_ui/material_ui.dart';
 
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
-class const NumberCard({
-  super.key,
+/// 号码卡片。
+///
+/// 布局要点：整行用 [CrossAxisAlignment.center] 让星标与两行文字垂直居中。
+/// 之前的 `start` 对齐 + 默认 [IconButton]（48×48 最小点击区）把行撑高，
+/// 星标看起来浮在下方、和号码基线错位。这里改成紧凑图标按钮 + center 对齐。
+class NumberCard({
   required this.number,
-  required this.onTap,
   required this.saved,
+  required this.onTap,
   required this.onToggleSave,
   this.now,
-}) extends StatelessWidget {
+  super.key,
+}) {
   final AvailableNumber number;
-  final VoidCallback onTap;
   final bool saved;
+  final VoidCallback onTap;
   final VoidCallback onToggleSave;
-
-  /// 注入当前时间便于测试相对时间。
   final DateTime? now;
 
   @override
@@ -31,79 +31,85 @@ class const NumberCard({
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+        padding: const EdgeInsets.fromLTRB(14, 10, 4, 10),
         child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // 活跃指示灯：绿点表示最近有短信进来。
-            Padding(
-              padding: const EdgeInsets.only(top: 6, right: 12),
-              child: Container(
-                width: 9,
-                height: 9,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: fresh
-                      ? const Color(0xFF34C759)
-                      : scheme.outlineVariant,
-                ),
+            Container(
+              width: 8,
+              height: 8,
+              margin: const EdgeInsets.only(right: 10),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: fresh ? const Color(0xFF34C759) : scheme.outlineVariant,
               ),
             ),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
+                  // 第一行只放号码。条数挪到第二行，避免和号码抢宽度——
+                  // 长号码 + 徽章挤在一起时，号码会被省略号截断。
+                  Text(
+                    number.pretty,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  // 第二行：州名 · 区号 · 条数 · 时间，一条水平线排开。
                   Row(
                     children: [
-                      Expanded(
-                        child: Text(
-                          number.pretty,
-                          style: theme.textTheme.titleMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            letterSpacing: 0.2,
+                      if (number.regionLabel.isNotEmpty) ...[
+                        Icon(
+                          Icons.place_outlined,
+                          size: 13,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                        const SizedBox(width: 3),
+                        Flexible(
+                          child: Text(
+                            number.regionLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
                           ),
                         ),
-                      ),
-                      if (number.messageCount > 0)
+                      ],
+                      if (number.messageCount > 0) ...[
+                        const SizedBox(width: 8),
                         _Pill(
                           text: '${number.messageCount} 条',
                           bg: scheme.secondaryContainer,
                           fg: scheme.onSecondaryContainer,
                           theme: theme,
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  Row(
-                    children: [
-                      if (number.regionLabel.isNotEmpty) ...[
-                        Icon(
-                          Icons.place_outlined,
-                          size: 14,
-                          color: scheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 3),
-                        Text(
-                          number.regionLabel,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: scheme.onSurfaceVariant,
-                          ),
-                        ),
-                        const SizedBox(width: 10),
                       ],
                       if (number.lastTextAt != null) ...[
+                        const SizedBox(width: 8),
                         Icon(
                           Icons.schedule,
-                          size: 14,
+                          size: 13,
                           color: scheme.onSurfaceVariant,
                         ),
                         const SizedBox(width: 3),
-                        Text(
-                          relativeTime(number.lastTextAt!, now),
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: fresh
-                                ? scheme.primary
-                                : scheme.onSurfaceVariant,
+                        Flexible(
+                          child: Text(
+                            relativeTime(number.lastTextAt!, now),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: fresh
+                                  ? scheme.primary
+                                  : scheme.onSurfaceVariant,
+                              fontWeight: fresh ? FontWeight.w600 : null,
+                            ),
                           ),
                         ),
                       ],
@@ -112,12 +118,17 @@ class const NumberCard({
                 ],
               ),
             ),
+            // 用 32×32 的紧凑按钮，避免默认 48 把行撑高。
             IconButton(
               tooltip: saved ? '取消收藏' : '收藏',
               onPressed: onToggleSave,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+              iconSize: 20,
               icon: Icon(
-                saved ? Icons.star : Icons.star_border,
-                color: saved ? scheme.primary : scheme.onSurfaceVariant,
+                saved ? Icons.star_rounded : Icons.star_border_rounded,
+                color: saved ? scheme.primary : scheme.outline,
               ),
             ),
           ],
@@ -127,12 +138,13 @@ class const NumberCard({
   }
 }
 
-class const _Pill({
+/// 小圆角标签，用于条数、州名这类附注。
+class _Pill({
   required this.text,
   required this.bg,
   required this.fg,
   required this.theme,
-}) extends StatelessWidget {
+}) {
   final String text;
   final Color bg;
   final Color fg;
@@ -141,12 +153,18 @@ class const _Pill({
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(20),
       ),
-      child: Text(text, style: theme.textTheme.labelSmall?.copyWith(color: fg)),
+      child: Text(
+        text,
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: fg,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
     );
   }
 }

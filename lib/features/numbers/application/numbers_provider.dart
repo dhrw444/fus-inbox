@@ -13,7 +13,6 @@ import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 enum NumberTab(this.label) {
   all('全部'),
   fresh('最新活跃'),
-  withMessages('有短信'),
   byState('按州');
 
   final String label;
@@ -88,8 +87,6 @@ class const NumberDirectoryState({
 
     if (tab == NumberTab.fresh) {
       items = items.where((n) => n.isFresh);
-    } else if (tab == NumberTab.withMessages) {
-      items = items.where((n) => n.messageCount > 0);
     }
 
     final list = items.toList();
@@ -118,8 +115,6 @@ class const NumberDirectoryState({
         return all.length;
       case NumberTab.fresh:
         return all.where((n) => n.isFresh).length;
-      case NumberTab.withMessages:
-        return all.where((n) => n.messageCount > 0).length;
       case NumberTab.byState:
         return states.length;
     }
@@ -153,9 +148,23 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
   @override
   NumberDirectoryState build() => const NumberDirectoryState();
 
+  /// 两次全量抓取之间的最短间隔。
+  ///
+  /// 目录一次要连抓 5 页（100+ 个号），站点在 Cloudflare 后面，
+  /// 反复下拉刷新就是风控的直接来源。所以 `force: true` 也必须过这道闸——
+  /// 想绕开只能等冷却结束，或者重启 App。
+  static const _cooldown = Duration(minutes: 5);
+
   Future<void> load({bool force = false}) async {
     if (state.loading) return;
     if (!force && state.all.isNotEmpty) return;
+
+    // force 也不能连点：冷却期内静默返回，不动界面状态。
+    final last = state.lastLoadedAt;
+    if (last != null && DateTime.now().difference(last) < _cooldown) {
+      debugPrint('目录刚加载过，冷却中，跳过这次请求');
+      return;
+    }
 
     state = state.copyWith(
       loading: true,
