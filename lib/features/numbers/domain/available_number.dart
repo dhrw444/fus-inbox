@@ -45,6 +45,43 @@ class const AvailableNumber({
     return '+1 ($a) $b-$c';
   }
 
+  /// 序列化成 JSON，供磁盘缓存使用。
+  ///
+  /// 手写而不是用 json_serializable：这个模型只有 7 个字段、结构固定，
+  /// 为一个 model 引入 build_runner 整条生成链不值得。
+  Map<String, Object?> toJson() => {
+    'id': id,
+    'n': number,
+    's': state,
+    'a': areaCode,
+    'c': messageCount,
+    't': lastTextAt,
+    'f': isFresh,
+  };
+
+  /// 从缓存 JSON 还原。字段缺失或类型不对时退回默认值，不抛异常——
+  /// 缓存是加速手段，坏了就当没有，绝不能因此让首页打不开。
+  ///
+  /// 键名用单字母是为了压体积：上百条号码的缓存每次启动都要读一遍。
+  static AvailableNumber? fromJson(Object? raw) {
+    if (raw is! Map) return null;
+    final id = raw['id'];
+    final number = raw['n'];
+    if (id is! String || number is! String) return null;
+    if (id.isEmpty || number.isEmpty) return null;
+    final count = raw['c'];
+    final last = raw['t'];
+    return AvailableNumber(
+      id: id,
+      number: number,
+      state: raw['s'] is String ? raw['s'] as String : '',
+      areaCode: raw['a'] is String ? raw['a'] as String : '',
+      messageCount: count is int ? count : int.tryParse('$count') ?? 0,
+      lastTextAt: last is String && last.isNotEmpty ? last : null,
+      isFresh: raw['f'] == true,
+    );
+  }
+
   /// `俄亥俄 · 419`
   ///
   /// 界面全中文，州名走 [stateZh] 映射；未知州名原样返回。

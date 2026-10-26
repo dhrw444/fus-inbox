@@ -12,6 +12,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -88,6 +89,31 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
 
   DateTime? get(String number) => state[number];
 
+  /// 只保留 [keep] 里出现过的号码，其余丢掉。
+  ///
+  /// 站点会轮换号池：今天下架的号在本地的收录时间就再也不会有用了，
+  /// 不清的话缓存只增不减。每次目录刷新后调用一次。
+  /// 数量没变就跳过，避免每次都白写一遍盘。
+  Future<void> retainOnly(Set<String> keep) async {
+    final next = <String, DateTime>{
+      for (final e in state.entries)
+        if (keep.contains(e.key)) e.key: e.value,
+    };
+    if (next.length == state.length) return;
+    state = next;
+    await _save();
+  }
+
+  /// 还缺哪些号码的收录时间。
+  ///
+  /// 目录缓存和收录时间缓存共用 [AvailableNumber.number] 这个键，
+  /// 两个缓存之间就是靠它对应的。这里直接算差集，
+  /// 于是「哪些要抓」这件事只由数据决定，不需要额外的标记位。
+  List<String> missingFrom(Iterable<String> numbers) => [
+    for (final n in numbers)
+      if (!state.containsKey(n)) n,
+  ];
+
   /// 写入一条并落盘。已经有的不重复写。
   Future<void> put(String number, DateTime at) async {
     if (state[number] == at) return;
@@ -112,6 +138,80 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
 
 final firstSeenStoreProvider =
     NotifierProvider<FirstSeenStore, Map<String, DateTime>>(FirstSeenStore.new);
+
+/// 全 App 一个填充器：两处同时跑会互相看不到对方的进度，
+/// 结果是对同一批号码重复发请求。
+final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
+  final f = FirstSeenFiller();
+  ref.onDispose(f.cancel);
+  return f;
+});
+
+/// 批量补齐收录时间。
+///
+/// 首次启动时把目录里还没有缓存的号逐个补上，之后每次只补新增的号。
+///
+/// 三条硬约束：
+///   1. **串行**，不并发。详情页是站点自己的页面，一次打十几个并发请求
+///      就是最典型的风控特征。
+///   2. **有间隔**。两次之间 700ms + 随机抖动，让它看起来像人在翻页面。
+///   3. **可中断**。用户切走或重进页面时旧任务要能停下，否则会一直跑到
+///      队列末尾，白白多打几十个请求。
+class FirstSeenFiller() {
+  bool _running = false;
+  bool _cancelled = false;
+
+  /// 正在跑。
+  bool get running => _running;
+
+  /// 停掉当前这一轮。下一轮会从头扫「还缺哪些」。
+  void cancel() => _cancelled = true;
+
+  /// 把 [numbers] 里所有还没有缓存的号补齐。
+  ///
+  /// [onOne] 每补到一条回调一次，让列表能逐行刷新，而不是最后一次性冒出来。
+  /// 返回这轮实际新补了多少条。
+  Future<int> fillMissing(
+    FirstSeenStore store,
+    List<String> numbers, {
+    void Function(String number, DateTime at)? onOne,
+    int limit = 200,
+  }) async {
+    if (_running) return 0;
+    _running = true;
+    _cancelled = false;
+    var added = 0;
+    try {
+      // 差集逻辑只有一处（store.missingFrom），这里不要再自己写一遍：
+      // 两份实现迟早会漂移，而「该不该抓」判断错了要么重复请求、
+      // 要么永远不补。
+      final missing = store.missingFrom(numbers);
+      final todo = missing.length > limit ? missing.sublist(0, limit) : missing;
+      if (todo.isEmpty) return 0;
+
+      for (final number in todo) {
+        if (_cancelled) break;
+        final at = await fetchFirstSeen(number);
+        if (_cancelled) break;
+        if (at != null) {
+          await store.put(number, at);
+          added++;
+          onOne?.call(number, at);
+        }
+        // 间隔 700ms + 0~500ms 抖动。抓空一个（站点没收录该号）也算一次，
+        // 所以这条延时放在循环末尾而不是成功分支里。
+        await Future<void>.delayed(
+          Duration(milliseconds: 700 + _rnd.nextInt(500)),
+        );
+      }
+    } finally {
+      _running = false;
+    }
+    return added;
+  }
+
+  static final _rnd = Random();
+}
 
 /// 抓单个号码详情页里的收录时间。
 ///

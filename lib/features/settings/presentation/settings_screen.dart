@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
+import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
 
 /// 设置页。
@@ -55,6 +56,17 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
             trailing: const Icon(Icons.chevron_right),
             onTap: () => _clearTranslationCache(context, ref),
           ),
+          ListTile(
+            leading: const Icon(Icons.storage_outlined),
+            title: const Text('清除号码目录缓存'),
+            subtitle: Text(
+              ref.watch(numberDirectoryProvider).all.isEmpty
+                  ? '暂无缓存'
+                  : '已缓存 ${ref.watch(numberDirectoryProvider).all.length} 个号码',
+            ),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => _clearDirectoryCache(context, ref),
+          ),
           const Divider(height: 24),
 
           const _SectionHeader(title: '关于'),
@@ -87,8 +99,17 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
     );
   }
 
-  /// 清缓存是同步操作，不需要 async —— 之前声明成 Future 但内部没有
-  /// 任何 await，属于假异步，读代码的人会以为它有 IO。
+  /// 清目录缓存。清完下次启动就要重新抓一遍。
+  Future<void> _clearDirectoryCache(BuildContext context, WidgetRef ref) async {
+    final n = ref.read(numberDirectoryProvider).all.length;
+    await ref.read(numberDirectoryProvider.notifier).clearCache();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(SnackBar(content: Text('已清除 $n 个号码的目录缓存')));
+  }
+
+  /// 清翻译缓存。内部无 await，不需要 Future。
   void _clearTranslationCache(BuildContext context, WidgetRef ref) {
     final n = ref.read(translationStoreProvider).length;
     ref.read(translationStoreProvider.notifier).clear();

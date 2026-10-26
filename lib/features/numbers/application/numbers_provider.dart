@@ -3,9 +3,12 @@
 /// 数据全部来自原生 HTTP 抓取（见 NumbersRepository），WebView 不参与。
 library;
 
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:fus_inbox/features/numbers/data/directory_cache.dart';
 import 'package:fus_inbox/features/numbers/data/numbers_repository.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
@@ -41,6 +44,7 @@ class const NumberDirectoryState({
   this.sort = NumberSort.recent,
   this.query = '',
   this.progress = '',
+  this.status = '',
   this.lastLoadedAt,
 }) {
   final List<AvailableNumber> all;
@@ -52,6 +56,12 @@ class const NumberDirectoryState({
 
   /// 加载中的进度文案，例如「已加载 48 个号（第 2 页）」。
   final String progress;
+
+  /// 状态提示，例如「显示缓存（3 分钟前），正在取最新…」。
+  ///
+  /// 和 [error] 分开：error 会让界面显示成失败页，status 只是列表上方一行附注。
+  final String status;
+
   final DateTime? lastLoadedAt;
 
   bool get isEmpty => all.isEmpty;
@@ -130,6 +140,7 @@ class const NumberDirectoryState({
     NumberSort? sort,
     String? query,
     String? progress,
+    String? status,
     DateTime? lastLoadedAt,
     bool clearError = false,
   }) {
@@ -141,6 +152,7 @@ class const NumberDirectoryState({
       sort: sort ?? this.sort,
       query: query ?? this.query,
       progress: progress ?? this.progress,
+      status: status ?? this.status,
       lastLoadedAt: lastLoadedAt ?? this.lastLoadedAt,
     );
   }
@@ -152,19 +164,34 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
 
   /// 两次全量抓取之间的最短间隔。
   ///
-  /// 目录一次要连抓 5 页（100+ 个号），站点在 Cloudflare 后面，
-  /// 反复下拉刷新就是风控的直接来源。所以 `force: true` 也必须过这道闸——
-  /// 拉取目录。
-  ///
-  /// 拉取目录。
+  /// 拉取号码目录。
   ///
   /// 只在「已经在加载中」或「已有数据且非强制」时提前返回——
   /// 曾经加过 90 秒冷却期来省请求，那是把风控问题转嫁成限制用户。
   /// 用户点刷新是明确的意图，不该被 App 拦住；真遇到站点限流，
   /// 让请求失败并报出来，比假装按钮坏了要好。
+  ///
+  /// [force] 为 true 时无视「已有数据」，但仍然复用缓存做即时显示。
   Future<void> load({bool force = false}) async {
     if (state.loading) return;
     if (!force && state.all.isNotEmpty) return;
+
+    // 1) 先上缓存：冷启动时不必干等网络。缓存只负责「立刻有东西看」，
+    //    后面照常去站点取最新，不替代刷新。
+    if (state.all.isEmpty) {
+      final cached = await loadDirectoryCache();
+      // 注意：Notifier 没有 mounted 概念（那是 State 的）。
+      // 用它编译不过；这里也不需要——真要有并发，下面的 loading 重入
+      // 检查已经挡住第二次 load 了。
+      if (cached != null && state.all.isEmpty) {
+        state = state.copyWith(
+          all: cached.numbers,
+          // 缓存命中时不算「加载中」，否则还会盖一层转圈。
+          // 用一条状态文案告诉用户手上是旧数据。
+          status: '显示缓存（${_ageLabel(cached.savedAt)}），正在取最新…',
+        );
+      }
+    }
 
     state = state.copyWith(
       loading: true,
@@ -178,8 +205,7 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
         onProgress: (loaded, page) {
           state = state.copyWith(progress: '已加载 $loaded 个号（第 $page 页）');
         },
-        // 每页先上屏：第一页通常 1 秒内就回来了，不必等到 5 页全抓完
-        // （那要 13 秒）。先给用户能点的列表，后续页面静默补齐。
+        // 每页先上屏：第一页通常 1 秒内回来，不必等 5 页全抓完。
         onPage: (soFar) {
           state = state.copyWith(
             all: soFar,
@@ -189,9 +215,10 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
         },
       );
       if (list.isEmpty) {
+        // 空结果不要覆盖缓存：站点偶尔返回空页，别把好数据洗掉。
         state = state.copyWith(
           loading: false,
-          error: '目录是空的——站点结构可能变了',
+          error: state.all.isEmpty ? '目录是空的——站点结构可能变了' : null,
           progress: '',
         );
         return;
@@ -200,13 +227,39 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
         all: list,
         loading: false,
         progress: '',
+        status: '',
         lastLoadedAt: DateTime.now(),
         clearError: true,
       );
+      // 2) 写回缓存：下次启动就能秒开。
+      unawaited(saveDirectoryCache(list));
       debugPrint('目录加载完成：${list.length} 个号，${state.states.length} 个州');
     } catch (e) {
-      state = state.copyWith(loading: false, error: '目录拉取失败：$e', progress: '');
+      // 有缓存时不要把错误糊到界面上——用户看着列表能用，
+      // 弹个「目录拉取失败」只会让人以为坏了。
+      final msg = state.all.isEmpty ? '目录拉取失败：$e' : null;
+      state = state.copyWith(
+        loading: false,
+        error: msg,
+        progress: '',
+        status: state.all.isEmpty ? '' : '最新数据没取到，先看缓存',
+      );
     }
+  }
+
+  /// 「3 分钟前」这类相对时间，只用于缓存提示。
+  static String _ageLabel(DateTime at) {
+    final d = DateTime.now().difference(at);
+    if (d.inMinutes < 1) return '刚刚';
+    if (d.inMinutes < 60) return '${d.inMinutes} 分钟前';
+    if (d.inHours < 24) return '${d.inHours} 小时前';
+    return '${d.inDays} 天前';
+  }
+
+  /// 清缓存。设置页用。
+  Future<void> clearCache() async {
+    await clearDirectoryCache();
+    state = state.copyWith(all: const [], status: '缓存已清除');
   }
 
   void setTab(NumberTab tab) => state = state.copyWith(tab: tab);

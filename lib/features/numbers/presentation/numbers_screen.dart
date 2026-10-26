@@ -32,8 +32,33 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(numberDirectoryProvider.notifier).load();
+      unawaited(_boot());
     });
+  }
+
+  /// 启动：先拉目录，目录到手后把还缺收录时间的号补齐。
+  ///
+  /// 只补缓存里没有的：已经有时间的号码直接跳过，不会重复请求。
+  /// 首次启动会补一批（串行 + 间隔，不并发轰站点），之后就只剩新号。
+  Future<void> _boot() async {
+    await ref.read(numberDirectoryProvider.notifier).load();
+    if (!mounted) return;
+
+    final numbers = [
+      for (final n in ref.read(numberDirectoryProvider).all) n.number,
+    ];
+    if (numbers.isEmpty) return;
+
+    final store = ref.read(firstSeenStoreProvider.notifier);
+
+    // 先对齐：只保留当前目录里还在的号。
+    // 站点会轮换号池，今天下架的号留着它的收录时间毫无用处，
+    // 不清就是只增不减。这一步让两个缓存的内容始终是同一批号码。
+    await store.retainOnly(numbers.toSet());
+
+    // 再补齐：缺的那些逐个抓，一条一条上屏。
+    // 已有时间的号在这里被差集排除，一次请求都不会发。
+    await ref.read(firstSeenFillerProvider).fillMissing(store, numbers);
   }
 
   @override
@@ -51,23 +76,8 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   }
 
   void _openInbox(AvailableNumber n) {
-    // 顺手抓一次这个号的收录时间。
-    //
-    // 站点只把这个字段放在详情页，列表页没有，所以只能按需抓、抓完缓存。
-    // 放在这里而不是 build 里，是因为打开收件箱意味着用户对这个号感兴趣，
-    // 一次额外请求是值得的；而在列表上预抓百来个号就是风控源头。
-    unawaited(_learnFirstSeen(n.number));
     Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => InboxScreen(number: n)));
-  }
-
-  /// 抓收录时间并写进缓存。已有缓存就直接跳过。
-  Future<void> _learnFirstSeen(String number) async {
-    final store = ref.read(firstSeenStoreProvider.notifier);
-    if (store.has(number)) return;
-    final at = await fetchFirstSeen(number);
-    if (at == null || !mounted) return;
-    await store.put(number, at);
   }
 
   /// 复制号码到剪贴板。给的是 E.164 纯数字，方便直接粘进注册框。
@@ -158,6 +168,31 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
           ),
           if (dir.loading)
             LinearProgressIndicator(minHeight: 2, semanticsLabel: dir.progress),
+          // 缓存/刷新附注。只在有内容时显示一行，不占列表位置。
+          if (dir.status.isNotEmpty && dir.all.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 6),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.bolt,
+                    size: 13,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      dir.status,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           Expanded(child: _body(dir, items, saved, query, theme)),
         ],
       ),
