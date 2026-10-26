@@ -46,7 +46,10 @@
   function status(text) { post({ type: 'status', text: text }); }
 
   function pushMessages(phase) {
-    var key = JSON.stringify(messages);
+    // key 必须把 hits / src / err 一起算进去：只比 messages 的话，
+    // 「消息没变但 hits 从 0 涨到 1」这种帧会被丢掉，
+    // 而 UI 正是靠 hits 判断挂钩有没有生效（否则一直显示「卡在人机验证」）。
+    var key = JSON.stringify([messages, hits, src, lastErr]);
     if (key === lastKey && !phase) return;
     lastKey = key;
     var p = {
@@ -109,7 +112,8 @@
     for (i = 0; i < list.length; i++) {
       n = list[i];
       if (!n) continue;
-      if (!byId[n.id]) order.unshift(n.id);
+      // 站点给的是「新→旧」，原序追加即可；unshift 会把整表翻转。
+      if (!byId[n.id]) order.push(n.id);
       var old = byId[n.id];
       byId[n.id] = {
         id: n.id,

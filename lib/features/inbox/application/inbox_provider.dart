@@ -8,6 +8,7 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 
 class InboxStore({this.onChanged}) {
@@ -82,6 +83,9 @@ class InboxStore({this.onChanged}) {
       );
     }
 
+    // 站点给的是「新→旧」，我们逐条收进 byId。统一按时间降序收尾，
+    // 而不是靠插入位置——insert(0) 会把整批翻成「旧→新」，最新的沉到最底。
+    // 同 id 的新帧带更完整正文时也留在原位，不会跳到头部。
     final merged = <InboxMessage>[];
     for (final id in order) {
       final m = byId[id];
@@ -90,6 +94,12 @@ class InboxStore({this.onChanged}) {
       final isNew = _firstBatchDone && !_seen.contains(m.id);
       merged.add(m.copyWith(isNew: isNew));
     }
+    merged.sort((a, b) {
+      final at = parseSiteTime(a.receivedAt);
+      final bt = parseSiteTime(b.receivedAt);
+      if (at == null || bt == null) return 0;
+      return bt.compareTo(at);
+    });
     if (!_firstBatchDone) _firstBatchDone = true;
     for (final m in merged) {
       _seen.add(m.id);

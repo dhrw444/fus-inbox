@@ -15,11 +15,10 @@ import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
 import 'package:fus_inbox/core/webview/webview_widget.dart';
+import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
-import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart'
-    show relativeTime;
 
 const _kInjectAsset = 'assets/js/fus_inbox.js';
 const _kChannel = 'FusInbox';

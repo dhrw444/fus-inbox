@@ -3,6 +3,7 @@ library;
 
 import 'package:material_ui/material_ui.dart';
 
+import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 class const NumberCard({
@@ -148,16 +149,4 @@ class const _Pill({
       child: Text(text, style: theme.textTheme.labelSmall?.copyWith(color: fg)),
     );
   }
-}
-
-/// 把 ISO 时间转成「3 分钟前」这类短文案。
-String relativeTime(String iso, DateTime? now) {
-  final t = DateTime.tryParse(iso);
-  if (t == null) return iso;
-  final delta = (now ?? DateTime.now()).difference(t);
-  if (delta.inSeconds < 60) return '刚刚';
-  if (delta.inMinutes < 60) return '${delta.inMinutes} 分钟前';
-  if (delta.inHours < 24) return '${delta.inHours} 小时前';
-  if (delta.inDays < 30) return '${delta.inDays} 天前';
-  return '${(delta.inDays / 30).floor()} 个月前';
 }

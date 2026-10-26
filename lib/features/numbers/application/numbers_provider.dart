@@ -75,8 +75,13 @@ class const NumberDirectoryState({
     if (q.isNotEmpty) {
       final digits = q.replaceAll(RegExp(r'[^\d]'), '');
       items = items.where((n) {
-        if (digits.isNotEmpty && n.number.contains(digits)) return true;
-        if (n.areaCode.isNotEmpty && n.areaCode.contains(digits)) return true;
+        // digits 为空时 contains('') 恒真，会把整库都放出来 —— 必须逐个守卫。
+        if (digits.isNotEmpty) {
+          if (n.number.contains(digits)) return true;
+          if (n.areaCode.isNotEmpty && n.areaCode.contains(digits)) {
+            return true;
+          }
+        }
         return n.state.toLowerCase().contains(q);
       });
     }
