@@ -87,8 +87,6 @@ jobs:
           name: release-apks-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
-            build/app/outputs/flutter-apk/app-x86_64-release.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -117,6 +115,4 @@ jobs:
           prerelease: ${{ needs.build-release.outputs.prerelease }}
           artifacts: |
             release-apks/app-arm64-v8a-release.apk
-            release-apks/app-armeabi-v7a-release.apk
-            release-apks/app-x86_64-release.apk
           generateReleaseNotes: true

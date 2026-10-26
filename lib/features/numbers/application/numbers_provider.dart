@@ -116,7 +116,9 @@ class const NumberDirectoryState({
       case NumberTab.fresh:
         return all.where((n) => n.isFresh).length;
       case NumberTab.byState:
-        return states.length;
+        // 和其他 chip 一样显示「号码数」，不是「州数」。
+        // 之前显示州数（20 个州），紧跟「全部 105」看着像对不上账。
+        return all.length;
     }
   }
 

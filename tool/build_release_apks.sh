@@ -23,8 +23,14 @@ flutter_args=(
   build apk
   --release
   --split-per-abi
-  # 只编两种真机架构：省掉 x86_64（只用于模拟器）的一次完整 AOT 编译
-  --target-platform=android-arm64,android-arm
+  # 只编 arm64（arm64-v8a）。
+  #
+  # 之前是 arm64 + arm 两种，--split-per-abi 会为每个 ABI 各做一次完整的
+  # release AOT 编译——两份 AOT 就是双倍构建时间，而 android-arm
+  # (armeabi-v7a) 是 32 位老架构，只服务 2016 年前的老机和少数 Android Go
+  # 机型，现代手机（含目标机）全是 arm64-v8a。
+  # 保留 --split-per-abi 是为了沿用 app-arm64-v8a-release.apk 这个产物名。
+  --target-platform=android-arm64
   --obfuscate
   --split-debug-info=build/debug-info
   -t lib/main.dart

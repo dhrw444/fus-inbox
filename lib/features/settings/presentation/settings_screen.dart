@@ -138,21 +138,22 @@ class const _ThemeModeTile({required this.prefs}) extends ConsumerWidget {
           SizedBox(
             width: double.infinity,
             child: SegmentedButton<ThemeMode>(
+              // 三个选项挤在 1080 宽里，「跟随系统」+ 图标会被压成两行
+              // （「跟随系」/「统」）。去掉图标只留文字，字够短就不会换行；
+              // 同时允许单行不换行，长文案宁可缩字号也别折行。
               segments: const [
                 ButtonSegment(
                   value: ThemeMode.system,
-                  label: Text('跟随系统'),
-                  icon: Icon(Icons.brightness_auto, size: 18),
+                  label: Text('跟随系统', maxLines: 1),
+                  tooltip: '跟随系统的深色/浅色设置',
                 ),
                 ButtonSegment(
                   value: ThemeMode.light,
-                  label: Text('浅色'),
-                  icon: Icon(Icons.light_mode, size: 18),
+                  label: Text('浅色', maxLines: 1),
                 ),
                 ButtonSegment(
                   value: ThemeMode.dark,
-                  label: Text('深色'),
-                  icon: Icon(Icons.dark_mode, size: 18),
+                  label: Text('深色', maxLines: 1),
                 ),
               ],
               selected: {ref.watch(themeModeProvider)},
