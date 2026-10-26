@@ -88,6 +88,8 @@ class const InboxState({
   this.hits = 0,
   this.status = '正在打开收件页…',
   this.error,
+  this.hasMore = true,
+  this.loadingMore = false,
 }) {
   final List<InboxMessage> messages;
   final InboxPhase phase;
@@ -100,6 +102,15 @@ class const InboxState({
 
   final String status;
   final String? error;
+
+  /// 站点还有更早的消息可以拉。
+  ///
+  /// 默认 true：首屏拿到后并不知道后面还有没有，先假设有，
+  /// 等 JS 明确说「到底了」才关掉——反过来会让用户永远看不到翻页入口。
+  final bool hasMore;
+
+  /// 正在拉更早的一页。用来防重复触发和显示「加载中」。
+  final bool loadingMore;
 
   int get newCount => messages.where((m) => m.isNew).length;
 
@@ -116,6 +127,8 @@ class const InboxState({
     bool clearError = false,
     bool clearStatus = false,
     bool clearSource = false,
+    bool? hasMore,
+    bool? loadingMore,
   }) {
     return InboxState(
       messages: messages ?? this.messages,
@@ -124,6 +137,8 @@ class const InboxState({
       hits: hits ?? this.hits,
       status: clearStatus ? '' : (status ?? this.status),
       error: clearError ? null : (error ?? this.error),
+      hasMore: hasMore ?? this.hasMore,
+      loadingMore: loadingMore ?? this.loadingMore,
     );
   }
 }

@@ -46,8 +46,8 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
               ],
               selected: {mode},
               showSelectedIcon: false,
-              onSelectionChanged: (set) {
-                ref.read(themeModeProvider.notifier).set(set.first);
+              onSelectionChanged: (picked) {
+                ref.read(themeModeProvider.notifier).set(picked.first);
               },
             ),
           ),
@@ -93,7 +93,6 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
             leading: const Icon(Icons.cloud_outlined),
             title: const Text('数据来源'),
             subtitle: const Text('freeussms.com'),
-            onTap: null,
           ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),

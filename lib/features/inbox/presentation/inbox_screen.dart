@@ -124,36 +124,30 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 文档就绪后才注入；onPageStarted 阶段 document 还不存在。
           onPageFinished: (url) => unawaited(_inject()),
           onWebResourceError: (error) {
-            if (error.isForMainFrame == false) return;
+            if (!error.isForMainFrame) return;
             _store.fail('页面加载失败（${error.errorCode}）：${error.description}');
           },
         ),
       );
   }
 
-  /// 注入中的标记。
+  /// 注入脚本。
   ///
-  /// `onPageFinished` 在每次导航完成后都会触发——站点有重定向、风控跳转，
-  /// 一次打开可能触发三四次。没有这道闸，注入就叠三四遍，
-  /// 每遍都会重启一整套 setTimeout/setInterval，请求量直接乘上去。
-  bool _injecting = false;
-
+  /// 不在这里做「同一页面只注入一次」的闸：JS 文件开头有
+  /// `if (window.__fusInboxHooked)` 守卫，同页面重复执行只会触发一次 rescan，
+  /// 不会重启定时器。而 Dart 侧加时间窗口反而危险——页面重定向后
+  /// 新文档需要重新注入，被窗口吞掉就彻底不工作了。
   Future<void> _inject() async {
-    if (_injecting) return;
-    _injecting = true;
+    final script = await _scriptFuture;
+    if (script.isEmpty) return;
     try {
-      final script = await _scriptFuture;
-      if (script.isEmpty) return;
       await _controller.runJavaScript(script);
     } catch (e) {
       debugPrint('注入失败: $e');
-    } finally {
-      // 留一点余量再放开：页面内重定向往往在同一个 tick 里连着触发。
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      _injecting = false;
     }
   }
 
+  /// 重扫当前页面 DOM。不发网络请求，纯粹是把已经渲染出来的内容再读一遍。
   Future<void> _rescan() async {
     try {
       await _controller.runJavaScript(
@@ -161,6 +155,30 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       );
     } catch (e) {
       debugPrint('重扫失败: $e');
+    }
+  }
+
+  /// 拉更早的一页。
+  ///
+  /// 由列表滑到底触发，一页一页来。用户没滑到底就绝不请求——
+  /// 站点在 Cloudflare 后面，多抓一页就多一分被风控的概率。
+  Future<void> _loadMore() async {
+    final s = _store.state;
+    if (s.loadingMore || !s.hasMore) return;
+    _store.note('正在加载更早的消息…');
+    _store.markLoadingMore();
+    try {
+      // runJavaScript 回的是字符串形式的返回值：'true'/'false'/'null'。
+      // false 表示还没拿到号码 id 或已经到底，收回状态别让用户干等。
+      final res = (await _controller.runJavaScript(
+        'window.__fusInbox && window.__fusInbox.loadMore();',
+      ))?.trim();
+      if (res != 'true') {
+        _store.markLoadingMore(done: true);
+      }
+    } catch (e) {
+      debugPrint('加载更多失败: $e');
+      _store.markLoadingMore(done: true);
     }
   }
 
@@ -219,17 +237,33 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       ),
       body: Stack(
         children: [
-          // 引擎层：常驻、永不卸载。整个页面树里**只有这一个** WebViewWidget
-          // 实例——同一个 controller 挂两处会崩，所以验证态靠"不盖列表"来露出它。
+          // 界面层铺满，永远可见。
+          _buildList(s, theme),
+
+          // 引擎层：整个页面树里**只有这一个** WebViewWidget 实例
+          // （同一个 controller 挂两处会崩）。
+          //
+          // 用 Offstage 藏起来，而不是缩小到 1×1：
+          //   - 布局照常跑完整尺寸，原生 WebView 拿到真实视口，媒体查询、
+          //     懒加载、IntersectionObserver 都按正常手机尺寸算
+          //   - 跳过绘制与命中测试，不占合成层，滚动不掉帧
+          //   - 依然在 widget 树上，页面正常加载、JS 正常执行、消息正常回传
+          //
+          // 缩到 1×1 会让站点按 1 像素视口渲染，布局塌成一条、懒加载永不触发，
+          // 反而拿不到数据——那是错的做法。
+          // 用户点「过验证」时 offstage 置 false，同一个实例原地露出来。
           Positioned.fill(
-            child: FutureBuilder<WebViewWidget>(
-              future: _webViewFuture,
-              builder: (context, snap) =>
-                  snap.hasData ? snap.data! : const SizedBox.shrink(),
+            child: Offstage(
+              offstage: !_showChallenge,
+              child: FutureBuilder<WebViewWidget>(
+                future: _webViewFuture,
+                builder: (context, snap) =>
+                    snap.hasData ? snap.data! : const SizedBox.shrink(),
+              ),
             ),
           ),
-          // 界面层：不透明，盖死引擎。验证态时不渲染，引擎自然露出来。
-          if (!_showChallenge) Positioned.fill(child: _buildList(s, theme)),
+
+          // 风控兜底：只在验证态浮一条顶栏，底下的引擎已经露出来了。
           if (_showChallenge) _buildChallengeBar(theme),
         ],
       ),
@@ -239,52 +273,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   Widget _buildList(InboxState s, ThemeData theme) {
     final prefs = ref.watch(prefsProvider);
     if (s.messages.isEmpty) {
-      final failed = s.phase == InboxPhase.failed;
       return ColoredBox(
         color: theme.colorScheme.surface,
-        child: Center(
-          child: Padding(
-            padding: const EdgeInsets.all(28),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                if (!failed)
-                  const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2.4),
-                  )
-                else
-                  Icon(
-                    Icons.error_outline,
-                    size: 36,
-                    color: theme.colorScheme.error,
-                  ),
-                const SizedBox(height: 16),
-                Text(
-                  s.status,
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 20),
-                Wrap(
-                  spacing: 8,
-                  alignment: WrapAlignment.center,
-                  children: [
-                    OutlinedButton.icon(
-                      onPressed: _rescan,
-                      icon: const Icon(Icons.refresh, size: 18),
-                      label: const Text('再试一次'),
-                    ),
-                    TextButton.icon(
-                      onPressed: () => setState(() => _showChallenge = true),
-                      icon: const Icon(Icons.verified_user_outlined, size: 18),
-                      label: const Text('卡在人机验证？'),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+        child: RefreshIndicator(
+          onRefresh: _rescan,
+          child: ListView(
+            // 可滚动，否则 RefreshIndicator 在内容不满一屏时拉不动。
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              SizedBox(height: MediaQuery.sizeOf(context).height * 0.10),
+              _buildEmptyState(s, theme),
+            ],
           ),
         ),
       );
@@ -294,48 +293,200 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       color: theme.colorScheme.surface,
       child: RefreshIndicator(
         onRefresh: _rescan,
-        child: ListView.separated(
-          padding: const EdgeInsets.only(bottom: 24),
-          itemCount: s.messages.length,
-          separatorBuilder: (context, i) => const Divider(height: 1),
-          itemBuilder: (context, i) => _MessageTile(
-            message: s.messages[i],
-            translate: prefs.translate,
-            showOriginal: prefs.showOriginal,
-            onCopyCode: (c) => _copy(c, '验证码'),
-            onCopyAll: () => _copy(
-              s.messages[i].code.isNotEmpty
-                  ? s.messages[i].code
-                  : s.messages[i].text,
-              s.messages[i].code.isNotEmpty ? '验证码' : '正文',
-            ),
+        child: NotificationListener<ScrollNotification>(
+          // 滑到底自动拉下一页。用 ScrollNotification 而不是 ScrollController，
+          // 是因为这里不想再管一个 controller 的生命周期。
+          onNotification: (n) {
+            if (n.metrics.pixels >= n.metrics.maxScrollExtent - 240) {
+              unawaited(_loadMore());
+            }
+            return false;
+          },
+          child: ListView.separated(
+            padding: const EdgeInsets.only(bottom: 24),
+            // 末尾多一项：翻页脚注（加载中 / 到底了 / 加载失败重试）。
+            itemCount: s.messages.length + 1,
+            separatorBuilder: (context, i) => const Divider(height: 1),
+            itemBuilder: (context, i) {
+              if (i == s.messages.length) {
+                return _buildFooter(s, theme);
+              }
+              return _MessageTile(
+                message: s.messages[i],
+                translate: prefs.translate,
+                showOriginal: prefs.showOriginal,
+                onCopyCode: (c) => _copy(c, '验证码'),
+                onCopyAll: () => _copy(
+                  s.messages[i].code.isNotEmpty
+                      ? s.messages[i].code
+                      : s.messages[i].text,
+                  s.messages[i].code.isNotEmpty ? '验证码' : '正文',
+                ),
+              );
+            },
           ),
         ),
       ),
     );
   }
 
+  /// 列表末尾的翻页脚注。
+  ///
+  /// 三种状态：正在拉（转圈）、到底了（一行灰字）、还能拉（给个明确的按钮，
+  /// 自动加载没触发时用户也能手动点）。
+  Widget _buildFooter(InboxState s, ThemeData theme) {
+    final scheme = theme.colorScheme;
+
+    if (s.loadingMore) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            SizedBox(
+              width: 13,
+              height: 13,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.8,
+                color: scheme.primary,
+              ),
+            ),
+            const SizedBox(width: 9),
+            Text(
+              '正在加载更早的消息…',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (!s.hasMore) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 20),
+        child: Center(
+          child: Text(
+            '没有更早的消息了',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Center(
+        child: TextButton(onPressed: _loadMore, child: const Text('加载更早的消息')),
+      ),
+    );
+  }
+
   /// 风控兜底：只在用户主动点「卡在人机验证？」时出现。
   ///
-  /// 只是一条顶栏——底下的引擎此时已经露出来了（列表层不渲染），
-  /// 用户可以在这里过验证。过完点「完成」回到短信列表。
+  /// 空状态：骨架卡片 + 一行状态 + 两个小按钮。
+  ///
+  /// 之前是整屏居中的转圈 + 一大段文字，视觉上像崩了。改成骨架屏——
+  /// 用户一眼就知道「消息正在来的路上」，而不是「这页面卡住了」。
+  Widget _buildEmptyState(InboxState s, ThemeData theme) {
+    final failed = s.phase == InboxPhase.failed;
+    final scheme = theme.colorScheme;
+
+    if (failed) {
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+        child: Column(
+          children: [
+            Icon(Icons.cloud_off, size: 40, color: scheme.error),
+            const SizedBox(height: 14),
+            Text(
+              s.status,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium,
+            ),
+            const SizedBox(height: 18),
+            FilledButton.tonalIcon(
+              onPressed: _rescan,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重试'),
+            ),
+            const SizedBox(height: 6),
+            TextButton(
+              onPressed: () => setState(() => _showChallenge = true),
+              child: const Text('打开浏览器自己过验证'),
+            ),
+          ],
+        ),
+      );
+    }
+
+    // 骨架：三条占位卡，形状和真实消息一致，来了就原地替换。
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 18, 16, 12),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 13,
+                height: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.8,
+                  color: scheme.primary,
+                ),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  s.status,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        for (var i = 0; i < 3; i++) _SkeletonTile(theme: theme),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+          child: Text(
+            '停在这是因为要等站点把消息推过来，通常几秒。',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: scheme.onSurfaceVariant,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 验证态的顶栏。
+  ///
+  /// 此时引擎已经通过 Offstage 露出来了（占满 body），用户可以直接在页面上
+  /// 过验证、点按钮。这里只叠一条提示，告诉他过完怎么回去——
+  /// 不要覆盖引擎区域，那样点不到底下的验证控件。
   Widget _buildChallengeBar(ThemeData theme) {
     return Positioned(
-      top: 0,
       left: 0,
       right: 0,
+      bottom: 0,
       child: Material(
         color: theme.colorScheme.surfaceContainerHigh,
-        elevation: 3,
+        elevation: 4,
         child: SafeArea(
-          bottom: false,
+          top: false,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
             child: Row(
               children: [
                 Expanded(
                   child: Text(
-                    '请在这里过掉站点的人机验证，完成后回短信列表。',
+                    '在上面过掉站点验证，完成后点右边回短信列表。',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
@@ -350,6 +501,43 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// 骨架卡：给「消息还没到」一个形状，而不是空白转圈。
+class const _SkeletonTile({required this.theme}) extends StatelessWidget {
+  final ThemeData theme;
+
+  @override
+  Widget build(BuildContext context) {
+    final base = theme.colorScheme.onSurface.withValues(alpha: 0.07);
+    Widget bar(double w, double h) => Container(
+      width: w,
+      height: h,
+      decoration: BoxDecoration(
+        color: base,
+        borderRadius: BorderRadius.circular(h / 2),
+      ),
+    );
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(child: bar(110, 11)),
+              bar(52, 10),
+            ],
+          ),
+          const SizedBox(height: 12),
+          bar(double.infinity, 11),
+          const SizedBox(height: 7),
+          bar(220, 11),
+        ],
       ),
     );
   }

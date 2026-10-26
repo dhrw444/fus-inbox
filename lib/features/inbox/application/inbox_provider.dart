@@ -54,6 +54,22 @@ class InboxStore({this.onChanged}) {
     // 号码目录走原生 HTTP，这里忽略。
     if (type == 'catalog') return;
 
+    // 翻页结果：只更新「还有没有更早的」，消息本身随 messages 帧一起到。
+    if (type == 'moreDone') {
+      final exhausted = payload['exhausted'] == true;
+      _emit(_state.copyWith(hasMore: !exhausted, loadingMore: false));
+      return;
+    }
+    if (type == 'moreEnd') {
+      _emit(_state.copyWith(hasMore: false, loadingMore: false));
+      return;
+    }
+    if (type == 'moreFail') {
+      // 失败不等于没有更多：保留 hasMore，用户还能再试一次。
+      _emit(_state.copyWith(loadingMore: false));
+      return;
+    }
+
     final items = payload['items'];
     if (items is! List) return;
 
@@ -151,11 +167,22 @@ class InboxStore({this.onChanged}) {
         hits: hits,
         status: status,
         error: err,
+        // 这里必须显式带上翻页状态：直接 new 一个 InboxState 会把它重置成
+        // 默认值（hasMore=true），导致用户刚拉到底又被允许继续拉。
+        hasMore: _state.hasMore,
+        loadingMore: _state.loadingMore,
       ),
     );
   }
 
   void note(String text) => _emit(_state.copyWith(status: text));
+
+  /// 标记是否正在拉更早的一页。
+  ///
+  /// [done] 为 true 时清掉 loading 标记（请求结束，无论成功失败）。
+  /// 单独开一个方法是因为界面上要立刻显示「加载中」，不能等 JS 回话。
+  void markLoadingMore({bool done = false}) =>
+      _emit(_state.copyWith(loadingMore: !done));
 
   void fail(String message) => _emit(
     _state.copyWith(phase: InboxPhase.failed, error: message, status: message),

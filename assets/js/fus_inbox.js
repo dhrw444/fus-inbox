@@ -209,6 +209,8 @@
     if (origFetch && !origFetch.__fus) {
       var wrapped = function (input) {
         var url = typeof input === 'string' ? input : (input && input.url) || '';
+        // 先抄号码 id：首屏请求一定带，抄到就能自己翻页了。
+        if (interesting(url)) captureNumberId(url);
         var p = origFetch.apply(this, arguments);
         if (interesting(url)) {
           try {
@@ -235,6 +237,7 @@
     if (!origOpen.__fus) {
       var newOpen = function (method, url) {
         this.__fusUrl = url;
+        if (interesting(url)) captureNumberId(url);
         return origOpen.apply(this, arguments);
       };
       newOpen.__fus = 1;
@@ -302,10 +305,130 @@
     return found.length;
   }
 
+  /* ---------------- 按需翻页 ---------------- */
+  //
+  // 站点接口是游标分页：GET /sms-api/v1/inbox?id=<32hex>&before=<游标>。
+  // 首屏由站点自己请求，我们只抄；更早的消息必须由这里主动拉——
+  // 因为签名头 X-FUS-Proof 依赖页面上下文的私钥，纯 HTTP 拿不到（实测 401
+  // reader_session_required）。
+  //
+  // 之所以不一次抓完：站点在 Cloudflare 后面，连着抓多页就是风控的直接来源。
+  // 用户滑到底才拉一页，既省请求也让首屏更快。
+  var loadingMore = false;
+  var exhausted = false;   // 站点明确说没有更早的了
+  var pageSize = 0;        // 首屏条数，用来判断「这页是不是最后一页」
+
+  function oldestCursor() {
+    if (!messages.length) return '';
+    // messages 是「新→旧」，最后一条最老。
+    var last = messages[messages.length - 1];
+    return last && last.time ? last.time : '';
+  }
+
+  /* ---------------- 号码 id 捕获 ---------------- */
+  //
+  // inbox 接口要的是 32 位 hex 的号码 id，而页面 URL 里只有 10 位电话号码，
+  // 两者对不上。所以从站点自己的 /sms-api/ 请求里把它抄下来——
+  // 首屏那次请求一定带 id，抄到就不用猜了。
+  var numberId = '';
+
+  function captureNumberId(url) {
+    if (numberId) return;
+    var m = String(url).match(/[?&]id=([0-9a-f]{32})/i);
+    if (m) {
+      numberId = m[1];
+      return;
+    }
+    // 有的接口把 id 放在路径里
+    m = String(url).match(/\/numbers?\/([0-9a-f]{32})/i);
+    if (m) numberId = m[1];
+  }
+
+  function resolveNumberId() {
+    if (numberId) return numberId;
+    if (window.__fusNumberId) return window.__fusNumberId;
+
+    // 退路一：页面里的 data 属性
+    var el = document.querySelector('[data-number-id]');
+    if (el) {
+      var v = el.getAttribute('data-number-id');
+      if (v && /^[0-9a-f]{32}$/i.test(v)) return v;
+    }
+    // 退路二：页面脚本里的常量
+    try {
+      var html = document.documentElement.innerHTML;
+      var m = html.match(/"number_id"\s*:\s*"([0-9a-f]{32})"/i) ||
+              html.match(/data-number-id="([0-9a-f]{32})"/i);
+      if (m) return m[1];
+    } catch (e) {}
+    return '';
+  }
+
+  function loadMore() {
+    if (loadingMore || exhausted) return false;
+    var cursor = oldestCursor();
+    if (!cursor) return false;
+    if (!pageSize) pageSize = messages.length;
+
+    var numId = resolveNumberId();
+    if (!numId) {
+      status('还拿不到号码 id，等页面加载完再试');
+      return false;
+    }
+
+    loadingMore = true;
+    status('正在加载更早的消息…');
+
+    var url = '/sms-api/v1/inbox?id=' + encodeURIComponent(numId) +
+              '&before=' + encodeURIComponent(cursor);
+
+    fetch(url, { credentials: 'same-origin' })
+      .then(function (r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        return r.json();
+      })
+      .then(function (json) {
+        var raw = json && (json.items || json.messages || json.data);
+        if (!Array.isArray(raw) || !raw.length) {
+          exhausted = true;
+          status('没有更早的消息了');
+          post({ type: 'moreEnd', empty: true });
+          return;
+        }
+        var norms = [];
+        for (var i = 0; i < raw.length; i++) {
+          var n = normMessage(raw[i]);
+          if (n) norms.push(n);
+        }
+        if (!norms.length) {
+          exhausted = true;
+          post({ type: 'moreEnd', empty: true });
+          return;
+        }
+        var before = messages.length;
+        merge(norms);
+        var added = messages.length - before;
+        // 一页给不满 = 到底了，别再让用户空拉。
+        if (raw.length < pageSize) exhausted = true;
+        status(added > 0 ? '又加载了 ' + added + ' 条' : '没有更早的消息了');
+        post({ type: 'moreDone', added: added, exhausted: exhausted });
+        pushMessages('more');
+      })
+      .catch(function (e) {
+        status('加载更早消息失败：' + (e && e.message ? e.message : e));
+        post({ type: 'moreFail', err: String(e && e.message ? e.message : e) });
+      })
+      .then(function () { loadingMore = false; });
+    return true;
+  }
+
   window.__fusInbox = {
     rescan: function () { domScan(); pushMessages('rescan'); },
     digest: digest,
     dump: function () { return JSON.stringify(messages); },
+    loadMore: loadMore,
+    canLoadMore: function () { return !exhausted && !loadingMore; },
+    setNumberId: function (id) { window.__fusNumberId = str(id); },
   };
 
   /* ---------------- 启动 ---------------- */

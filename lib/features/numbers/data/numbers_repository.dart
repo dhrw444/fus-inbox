@@ -221,9 +221,7 @@ class NumbersRepository({this.client}) {
           lastError = e;
           if (attempt < _maxRetry) {
             // 退避：2s、5s。风控退避比立刻重试有效得多。
-            await Future<void>.delayed(
-              Duration(seconds: attempt == 0 ? 2 : 5),
-            );
+            await Future<void>.delayed(Duration(seconds: attempt == 0 ? 2 : 5));
           }
         }
       }
