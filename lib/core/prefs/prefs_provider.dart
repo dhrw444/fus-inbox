@@ -110,9 +110,15 @@ class PrefsNotifier() extends Notifier<Prefs> {
     await _saveBool(_kShowOriginal, v);
   }
 
-  Future<void> setFontScale(double v) async {
+  /// 改字号。
+  ///
+  /// [persist] 为 false 时只更新内存、不写盘——滑块拖动过程中会连续
+  /// 触发几十次回调，每次都落盘既浪费又会让 SharedPreferences 抖动。
+  /// 拖动结束再用默认值（true）落一次。
+  Future<void> setFontScale(double v, {bool persist = true}) async {
     final clamped = v.clamp(0.85, 1.4);
     state = state.copyWith(fontScale: clamped, restored: true);
+    if (!persist) return;
     try {
       final p = await SharedPreferences.getInstance();
       await p.setDouble(_kFontScale, clamped);

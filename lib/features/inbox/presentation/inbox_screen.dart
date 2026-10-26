@@ -174,6 +174,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       await _controller.runJavaScript(
         'window.__fusInbox && window.__fusInbox.loadMore();',
       );
+      // 看门狗：JS 可能因为拿不到号码 id、页面被风控、或注入没生效而
+      // 一声不吭。没有这道兜底，转圈会一直转到用户杀掉页面。
+      Timer(const Duration(seconds: 15), () {
+        if (!mounted) return;
+        if (!_store.state.loadingMore) return;
+        _store.markLoadingMore(done: true);
+        _store.note('翻页超时，稍后再试');
+      });
     } catch (e) {
       debugPrint('加载更多失败: $e');
       _store.markLoadingMore(done: true);
@@ -606,6 +614,20 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
     });
   }
 
+  /// 确保这条消息有一次翻译请求。
+  ///
+  /// 不能只在 initState 里踢一次：用户在设置里「清除翻译缓存」或切换
+  /// 目标语言之后，卡片还在屏幕上、state 里的条目已经没了，
+  /// 不补一次请求就永远停在原文。request() 自身按 key 去重，重复调用无害。
+  void _ensureRequested(bool hasEntry) {
+    if (!widget.translate || hasEntry) return;
+    if (widget.message.text.isEmpty) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ref.read(translationStoreProvider.notifier).request(widget.message.text);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -618,6 +640,7 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
       entry = ref.watch(
         translationStoreProvider.select((m) => m[message.text.trim()]),
       );
+      _ensureRequested(entry != null);
     }
 
     return InkWell(

@@ -12,8 +12,12 @@ import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 
 class InboxStore({this.onChanged}) {
-  /// 列表保留的最大条数。站点侧同样有上限，超出的旧消息对用户已无意义。
-  static const _maxMessages = 60;
+  /// 列表保留的最大条数。
+  ///
+  /// 必须容得下翻页拉回来的历史：列表是新→旧排列，裁剪时砍掉的是尾部
+  /// （最老的）。若这里等于一页的量，翻页拿到的消息会立刻被裁掉，
+  /// 功能看着有、实际永远是空。
+  static const _maxMessages = 240;
 
   /// 页面销毁时置空：引擎可能比页面活得久，回传不该再触发已卸载页面的刷新。
   VoidCallback? onChanged;
@@ -127,13 +131,19 @@ class InboxStore({this.onChanged}) {
       return bt.compareTo(at);
     });
     if (!_firstBatchDone) _firstBatchDone = true;
-    for (final m in merged) {
-      _seen.add(m.id);
-    }
     // 站点自己也有条数上限（live.js 的 messageSize），这里同样裁一下，
     // 否则收件页开着跑一整天，列表和无界增长的 _seen 一起吃掉内存。
     if (merged.length > _maxMessages) {
       merged.removeRange(_maxMessages, merged.length);
+    }
+    // _seen 必须跟着裁剪，否则它会永远膨胀——之前注释说「一起裁」，
+    // 但实际只裁了 merged，_seen 只增不减，开一整天就是稳定泄漏。
+    if (_seen.length > _maxMessages * 2) {
+      final keep = {for (final m in merged) m.id};
+      _seen.removeWhere((id) => !keep.contains(id));
+    }
+    for (final m in merged) {
+      _seen.add(m.id);
     }
 
     final src = payload['src']?.toString() ?? _state.source;

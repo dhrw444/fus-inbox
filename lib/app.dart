@@ -32,9 +32,38 @@ class const App({super.key}) extends ConsumerWidget {
           body: Center(child: M3EProgressIndicator.circularWavy()),
         ),
       ),
+      // 主题加载失败不该让用户面对一行英文堆栈。
+      // 动态取色只是锦上添花，降级到内置配色就能继续用。
       error: (err, stack) => MaterialApp(
         builder: (context, child) => ExpressiveTheme(child: child!),
-        home: Scaffold(body: Center(child: Text('Error: $err'))),
+        home: Consumer(
+          builder: (context, ref, _) => Scaffold(
+            body: Center(
+              child: Padding(
+                padding: const EdgeInsets.all(28),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.palette_outlined, size: 40),
+                    const SizedBox(height: 14),
+                    const Text('主题加载失败，已降级为默认配色'),
+                    const SizedBox(height: 4),
+                    Text(
+                      '$err',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.labelSmall,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.tonal(
+                      onPressed: () => ref.invalidate(dynamicThemeProvider),
+                      child: const Text('重新加载'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

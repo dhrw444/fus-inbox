@@ -35,7 +35,10 @@
   var lastKey = '';
   var messages = [];
   // 与 Dart 侧 InboxStore._maxMessages 保持一致。
-  var MAX_MESSAGES = 60;
+  // 上限要容得下「翻几页」。之前是 60，而翻页正是往尾部追加更早的消息，
+  // 追加完立刻被 slice(0,60) 砍掉——等于翻页功能从来没生效过。
+  // 240 = 10 页（每页 24），够用且每次推送的 JSON 仍在几十 KB 量级。
+  var MAX_MESSAGES = 240;
 
   function post(obj) {
     try {
@@ -319,10 +322,17 @@
   var pageSize = 0;        // 首屏条数，用来判断「这页是不是最后一页」
 
   function oldestCursor() {
-    if (!messages.length) return '';
-    // messages 是「新→旧」，最后一条最老。
-    var last = messages[messages.length - 1];
-    return last && last.time ? last.time : '';
+    // 不能直接取最后一条：merge() 对新到的实时消息是「追加到末尾」，
+    // 数组顺序并不保证新→旧（Dart 侧会按时间重排，但这里是 JS 自己的数组）。
+    // 取所有时间里最小的那个，与顺序无关，永远安全。
+    // ISO 8601 字符串可以直接字典序比较。
+    var min = '';
+    for (var i = 0; i < messages.length; i++) {
+      var t = messages[i] && messages[i].time;
+      if (!t) continue;
+      if (!min || t < min) min = t;
+    }
+    return min;
   }
 
   /* ---------------- 号码 id 捕获 ---------------- */
@@ -367,12 +377,17 @@
   function loadMore() {
     if (loadingMore || exhausted) return false;
     var cursor = oldestCursor();
-    if (!cursor) return false;
-    if (!pageSize) pageSize = messages.length;
+    if (!cursor) {
+      // 必须回一声：Dart 侧已经先把 loadingMore 置真了，
+      // 没有回音就一直转圈。
+      post({ type: 'moreFail', reason: 'no_cursor' });
+      return false;
+    }
 
     var numId = resolveNumberId();
     if (!numId) {
       status('还拿不到号码 id，等页面加载完再试');
+      post({ type: 'moreFail', reason: 'no_id' });
       return false;
     }
 
@@ -395,6 +410,11 @@
           post({ type: 'moreEnd', empty: true });
           return;
         }
+        // 「一页给不满就到底」的基准必须是接口实际返回的条数。
+        // 之前用 messages.length（含 DOM 扫到的条目）当基准，
+        // DOM 抓到 60 条时，接口返回 24 < 60 会被误判为最后一页。
+        if (!pageSize) pageSize = raw.length;
+
         var norms = [];
         for (var i = 0; i < raw.length; i++) {
           var n = normMessage(raw[i]);

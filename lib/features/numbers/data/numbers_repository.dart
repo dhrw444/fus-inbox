@@ -13,6 +13,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -180,11 +181,16 @@ class NumbersRepository({this.client}) {
   /// 但重试本身也是请求，所以最多两次。
   static const _maxRetry = 2;
 
+  /// 抖动用的随机源。每次进程启动换一个种子，不追求密码学随机。
+  static final _rnd = Random();
+
   /// 带抖动的页间隔。固定间隔在服务端看来同样可疑。
   Future<void> _pace(int page) async {
     if (page <= 1) return;
-    // 1500ms + 0~900ms 抖动。
-    final jitter = 900 * (page % 3) ~/ 3;
+    // 1500ms + 0~900ms 随机抖动。
+    // 之前写成 900*(page%3)~/3 —— 只会在 0/300/600 三个值上循环，
+    // 是周期信号，服务端看得比固定间隔还清楚。
+    final jitter = _rnd.nextInt(900);
     await Future<void>.delayed(_pageGap + Duration(milliseconds: jitter));
   }
 
@@ -217,7 +223,10 @@ class NumbersRepository({this.client}) {
         try {
           batch = await fetchPage(page);
           break;
-        } on NumberFetchException catch (e) {
+        } on Object catch (e) {
+          // 只 catch NumberFetchException 是不够的：连接被重置、
+          // 超时、TLS 握手失败都是 SocketException/HandshakeException，
+          // 会直接穿透整个 fetchAll，一页抖动就让整次加载失败。
           lastError = e;
           if (attempt < _maxRetry) {
             // 退避：2s、5s。风控退避比立刻重试有效得多。

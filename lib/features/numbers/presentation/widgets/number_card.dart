@@ -88,7 +88,6 @@ class const NumberCard({
                           text: '${number.messageCount} 条',
                           bg: scheme.secondaryContainer,
                           fg: scheme.onSecondaryContainer,
-                          theme: theme,
                         ),
                       ],
                       if (number.lastTextAt != null) ...[
@@ -118,13 +117,15 @@ class const NumberCard({
                 ],
               ),
             ),
-            // 用 32×32 的紧凑按钮，避免默认 48 把行撑高。
+            // 紧凑按钮：默认 48×48 会把行撑高、星标和文字基线错位。
+            // 这里给 44 —— Material 建议 48，但整行高度会因此多 8px；
+            // 44 是触摸目标与信息密度之间的折中。
             IconButton(
               tooltip: saved ? '取消收藏' : '收藏',
               onPressed: onToggleSave,
               visualDensity: VisualDensity.compact,
               padding: EdgeInsets.zero,
-              constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
               iconSize: 20,
               icon: Icon(
                 saved ? Icons.star_rounded : Icons.star_border_rounded,
@@ -139,19 +140,15 @@ class const NumberCard({
 }
 
 /// 小圆角标签，用于条数、州名这类附注。
-class const _Pill({
-  required this.text,
-  required this.bg,
-  required this.fg,
-  required this.theme,
-}) extends StatelessWidget {
+class const _Pill({required this.text, required this.bg, required this.fg})
+    extends StatelessWidget {
   final String text;
   final Color bg;
   final Color fg;
-  final ThemeData theme;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
       decoration: BoxDecoration(

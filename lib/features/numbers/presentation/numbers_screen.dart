@@ -38,6 +38,23 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     super.dispose();
   }
 
+  /// 下拉刷新 / 点刷新键的统一入口。
+  ///
+  /// `load` 在冷却期内会直接跳过，这里把「跳过了」明确告诉用户，
+  /// 否则按了刷新毫无反应，像是按钮坏了。
+  Future<void> _refresh() async {
+    final ok = await ref
+        .read(numberDirectoryProvider.notifier)
+        .load(force: true);
+    if (ok || !mounted) return;
+    final s = ref.read(numberDirectoryProvider);
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(
+        SnackBar(content: Text(s.loading ? '正在加载，稍等' : '刚拉过目录，90 秒后可再刷新')),
+      );
+  }
+
   void _openInbox(AvailableNumber n) {
     Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => InboxScreen(number: n)));
@@ -97,7 +114,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
             ),
             IconButton(
               tooltip: '刷新目录',
-              onPressed: dir.loading ? null : () => notifier.load(force: true),
+              onPressed: dir.loading ? null : _refresh,
               icon: const Icon(Icons.refresh),
             ),
           ],
@@ -143,12 +160,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
               const SizedBox(height: 14),
               Text(dir.error!, textAlign: TextAlign.center),
               const SizedBox(height: 16),
-              FilledButton.tonal(
-                onPressed: () => ref
-                    .read(numberDirectoryProvider.notifier)
-                    .load(force: true),
-                child: const Text('重试'),
-              ),
+              FilledButton.tonal(onPressed: _refresh, child: const Text('重试')),
             ],
           ),
         ),
@@ -191,8 +203,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     }
 
     return RefreshIndicator(
-      onRefresh: () =>
-          ref.read(numberDirectoryProvider.notifier).load(force: true),
+      onRefresh: _refresh,
       child: ListView.separated(
         itemCount: items.length,
         separatorBuilder: (context, i) => const Divider(height: 1, indent: 36),
@@ -223,8 +234,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     final keys = groups.keys.toList()..sort();
 
     return RefreshIndicator(
-      onRefresh: () =>
-          ref.read(numberDirectoryProvider.notifier).load(force: true),
+      onRefresh: _refresh,
       child: ListView.builder(
         itemCount: keys.length,
         itemBuilder: (context, i) {
@@ -283,32 +293,28 @@ class const _FilterBar({
 
   @override
   Widget build(BuildContext context) {
-    return SizedBox(
-      height: 52,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+    // 用 Wrap 而不是横向 ListView：固定高度 + 横向滚动在窄屏或大字号下
+    // 会把最后一个 chip 切掉一半，而且没有任何「还能滑」的提示。
+    // Wrap 会在放不下时自动换行，永远不会切。
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 2,
+        crossAxisAlignment: WrapCrossAlignment.center,
         children: [
-          for (final t in NumberTab.values) ...[
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: FilterChip(
-                selected: dir.tab == t,
-                onSelected: (_) => onTab(t),
-                showCheckmark: false,
-                label: Text('${t.label} ${dir.countFor(t)}'),
-              ),
+          for (final t in NumberTab.values)
+            FilterChip(
+              selected: dir.tab == t,
+              onSelected: (_) => onTab(t),
+              showCheckmark: false,
+              label: Text('${t.label} ${dir.countFor(t)}'),
             ),
-            const SizedBox(width: 8),
-          ],
           if (dir.query.trim().isNotEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 8),
-              child: ActionChip(
-                avatar: const Icon(Icons.close, size: 16),
-                label: Text('清除「${dir.query.trim()}」'),
-                onPressed: onClearQuery,
-              ),
+            ActionChip(
+              avatar: const Icon(Icons.close, size: 16),
+              label: Text('清除「${dir.query.trim()}」'),
+              onPressed: onClearQuery,
             ),
         ],
       ),

@@ -1,6 +1,7 @@
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
@@ -75,7 +76,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
           const SizedBox(height: 12),
           Center(
             child: Text(
-              'v0.1.0',
+              'v${AppConstants.appVersion}',
               style: theme.textTheme.labelSmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -86,10 +87,9 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
     );
   }
 
-  Future<void> _clearTranslationCache(
-    BuildContext context,
-    WidgetRef ref,
-  ) async {
+  /// 清缓存是同步操作，不需要 async —— 之前声明成 Future 但内部没有
+  /// 任何 await，属于假异步，读代码的人会以为它有 IO。
+  void _clearTranslationCache(BuildContext context, WidgetRef ref) {
     final n = ref.read(translationStoreProvider).length;
     ref.read(translationStoreProvider.notifier).clear();
     if (!context.mounted) return;
@@ -224,7 +224,14 @@ class const _FontSizeTile({required this.prefs}) extends ConsumerWidget {
             max: (steps.length - 1).toDouble(),
             divisions: steps.length - 1,
             label: labels[idx],
+            // 拖动中只改内存（实时预览字号），松手才落盘。
+            // 否则一次拖动会触发几十次 SharedPreferences 写入。
             onChanged: (v) {
+              ref
+                  .read(prefsProvider.notifier)
+                  .setFontScale(steps[v.round()], persist: false);
+            },
+            onChangeEnd: (v) {
               ref.read(prefsProvider.notifier).setFontScale(steps[v.round()]);
             },
           ),
