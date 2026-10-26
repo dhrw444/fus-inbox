@@ -96,6 +96,37 @@ void main() {
       });
       expect(store.state.messages.map((m) => m.id).toList(), ['new', 'old']);
     });
+
+    test('时间戳缺失的消息排在后面，不会打乱有序部分', () {
+      final store = storeWith((s) {
+        s.ingest(
+          payload([
+            msg('a', '2026-10-25T12:00:00Z'),
+            msg('noTime', ''),
+            msg('b', '2026-10-25T11:00:00Z'),
+          ]),
+        );
+      });
+      final ids = store.state.messages.map((m) => m.id).toList();
+      expect(ids.first, 'a');
+      expect(ids.last, 'noTime');
+    });
+
+    test('超过上限时裁掉最旧的，保留最新 60 条', () {
+      final store = InboxStore();
+      final many = <Map<String, dynamic>>[];
+      for (var i = 0; i < 90; i++) {
+        // id0 最新、id89 最旧，时间严格单调递减。
+        final minute = 89 - i;
+        final hh = (minute ~/ 60).toString().padLeft(2, '0');
+        final mm = (minute % 60).toString().padLeft(2, '0');
+        many.add(msg('id$i', '2026-10-25T$hh:$mm:00Z'));
+      }
+      store.ingest(payload(many));
+      expect(store.state.messages.length, 60);
+      expect(store.state.messages.first.id, 'id0');
+      expect(store.state.messages.last.id, 'id59');
+    });
   });
 
   group('ingestRaw', () {

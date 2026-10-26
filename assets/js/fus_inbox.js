@@ -34,6 +34,8 @@
   var lastErr = '';
   var lastKey = '';
   var messages = [];
+  // 与 Dart 侧 InboxStore._maxMessages 保持一致。
+  var MAX_MESSAGES = 60;
 
   function post(obj) {
     try {
@@ -127,6 +129,9 @@
     }
     var out = [];
     for (i = 0; i < order.length; i++) if (byId[order[i]]) out.push(byId[order[i]]);
+    // 与站点侧 messageSize 一致：超出上限的旧消息对用户没意义，
+    // 而且每一次推送都要把整个数组序列化过通道，不裁会越推越慢。
+    if (out.length > MAX_MESSAGES) out = out.slice(0, MAX_MESSAGES);
     messages = out;
   }
 

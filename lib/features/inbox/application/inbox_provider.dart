@@ -71,7 +71,9 @@ class InboxStore({this.onChanged}) {
       if (msg.id.isEmpty || (msg.text.isEmpty && !msg.hasCode)) continue;
       final old = byId[msg.id];
       if (old == null) {
-        order.insert(0, msg.id);
+        // 站点给的是「新→旧」，原序追加；最后的 sort 负责排序，
+        // 这里再 insert(0) 只会把整批翻转。
+        order.add(msg.id);
       }
       byId[msg.id] = InboxMessage(
         id: msg.id,
@@ -100,7 +102,12 @@ class InboxStore({this.onChanged}) {
     merged.sort((a, b) {
       final at = parseSiteTime(a.receivedAt);
       final bt = parseSiteTime(b.receivedAt);
-      if (at == null || bt == null) return 0;
+      // 时间戳可能缺失（protected 消息就没有时间）。缺失的排在后面，
+      // 两个都缺失时保持原序——比较器必须给出一致的偏序，
+      // 否则 List.sort 的结果不稳定，顺序会随点数漂移。
+      if (at == null && bt == null) return 0;
+      if (at == null) return 1;
+      if (bt == null) return -1;
       return bt.compareTo(at);
     });
     if (!_firstBatchDone) _firstBatchDone = true;
