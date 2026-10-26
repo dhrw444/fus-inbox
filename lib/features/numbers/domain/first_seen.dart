@@ -143,7 +143,12 @@ final firstSeenStoreProvider =
 /// 结果是对同一批号码重复发请求。
 final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
   final f = FirstSeenFiller();
-  ref.onDispose(f.cancel);
+  ref.onDispose(() {
+    // 两个都要做：cancel 让循环尽快退出，dispose 关掉连接池。
+    // 只 cancel 不 dispose 会泄漏 socket。
+    f.cancel();
+    f.dispose();
+  });
   return f;
 });
 
@@ -161,6 +166,19 @@ class FirstSeenFiller() {
   bool _running = false;
   bool _cancelled = false;
 
+  /// 整轮补齐复用同一个 HttpClient。
+  ///
+  /// 之前每个号都 new 一个 —— 105 个号就是 105 次 TLS 握手，
+  /// 而握手实测要 1.5 秒以上，光握手就吃掉一百多秒。
+  /// 复用一个客户端后走 keep-alive，第二个号开始几乎没有握手开销。
+  final HttpClient _http = HttpClient()
+    ..maxConnectionsPerHost = 2
+    ..connectionTimeout = const Duration(seconds: 8)
+    ..idleTimeout = const Duration(seconds: 30);
+
+  /// 关掉连接池。provider 销毁时调用。
+  void dispose() => _http.close(force: true);
+
   /// 停掉当前这一轮。下一轮会从头扫「还缺哪些」。
   void cancel() => _cancelled = true;
 
@@ -176,6 +194,8 @@ class FirstSeenFiller() {
   }) async {
     if (_running) return 0;
     _running = true;
+    // 每轮开始都清掉上一轮的取消标记，否则上一轮 cancel 过之后
+    // 这一轮会在第一个号之前就 break。
     _cancelled = false;
     var added = 0;
     try {
@@ -188,7 +208,7 @@ class FirstSeenFiller() {
 
       for (final number in todo) {
         if (_cancelled) break;
-        final at = await fetchFirstSeen(number);
+        final at = await fetchFirstSeen(number, client: _http);
         if (_cancelled) break;
         if (at != null) {
           await store.put(number, at);

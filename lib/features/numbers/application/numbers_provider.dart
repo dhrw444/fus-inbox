@@ -162,16 +162,6 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
   @override
   NumberDirectoryState build() => const NumberDirectoryState();
 
-  /// 两次全量抓取之间的最短间隔。
-  ///
-  /// 拉取号码目录。
-  ///
-  /// 只在「已经在加载中」或「已有数据且非强制」时提前返回——
-  /// 曾经加过 90 秒冷却期来省请求，那是把风控问题转嫁成限制用户。
-  /// 用户点刷新是明确的意图，不该被 App 拦住；真遇到站点限流，
-  /// 让请求失败并报出来，比假装按钮坏了要好。
-  ///
-  /// [force] 为 true 时无视「已有数据」，但仍然复用缓存做即时显示。
   /// 只把磁盘缓存读进 state，不发任何网络请求。
   ///
   /// 拆出来是为了让启动顺序可控：先 hydrate（第一帧就有列表），
@@ -187,6 +177,12 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
     );
   }
 
+  /// 拉取号码目录。
+  ///
+  /// 只在「已经在加载中」或「已有数据且非强制」时提前返回——
+  /// 曾经加过 90 秒冷却期来省请求，那是把风控问题转嫁成限制用户。
+  /// 用户点刷新是明确的意图，不该被 App 拦住；真遇到站点限流，
+  /// 让请求失败并报出来，比假装按钮坏了要好。
   Future<void> load({bool force = false}) async {
     if (state.loading) return;
     if (!force && state.all.isNotEmpty) return;
@@ -208,9 +204,10 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
         },
         // 每页先上屏：第一页通常 1 秒内回来，不必等 5 页全抓完。
         onPage: (soFar) {
+          // 注意不能把 loading 置 false：fetchAll 还在跑，
+          // 置 false 会让顶部的进度条中途消失，看着像加载完了又没完。
           state = state.copyWith(
             all: soFar,
-            loading: false,
             progress: '已加载 ${soFar.length} 个号，继续拉取中…',
           );
         },

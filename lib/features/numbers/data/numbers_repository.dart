@@ -13,7 +13,6 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 
@@ -205,35 +204,11 @@ class NumbersRepository({this.client}) {
   /// 纯保险丝：号码池异常膨胀时别把请求数堆成无穷。
   static const _pageCap = 40;
 
-  /// 页与页之间的间隔。
-  ///
-  /// 权衡过三轮：
-  ///   120ms  → 半秒抓完 5 页，像爆破，风控必中
-  ///   1500ms → 安全，但首屏要等 10 秒，用户已经骂慢了
-  ///   350ms  → 5 页约 2 秒，且带抖动后节奏不规则
-  ///
-  /// 真正起作用的是「不像机器」而不是「够慢」：固定大间隔照样是机器特征。
-  /// 350ms + 随机抖动（0~250ms）在人眼里是连续的翻页动作，在服务器看来
-  /// 是正常的逐页浏览。风控主要看频率上限和指纹，不看这半秒。
-  static const _pageGap = Duration(milliseconds: 350);
-
   /// 单页重试次数。风控多半是临时的，退避后重试比直接放弃好；
   /// 但重试本身也是请求，所以最多两次。
   static const _maxRetry = 2;
 
-  /// 抖动用的随机源。每次进程启动换一个种子，不追求密码学随机。
-  static final _rnd = Random();
-
   /// 带抖动的页间隔。固定间隔在服务端看来同样可疑。
-  Future<void> _pace(int page) async {
-    if (page <= 1) return;
-    // 1500ms + 0~900ms 随机抖动。
-    // 之前写成 900*(page%3)~/3 —— 只会在 0/300/600 三个值上循环，
-    // 是周期信号，服务端看得比固定间隔还清楚。
-    final jitter = _rnd.nextInt(250);
-    await Future<void>.delayed(_pageGap + Duration(milliseconds: jitter));
-  }
-
   /// 抓完整个目录。
   ///
   /// 策略是「先探后并」：
@@ -280,41 +255,62 @@ class NumbersRepository({this.client}) {
       return out;
     }
 
-    // 剩余页并发。每个任务抓完就把结果并进 out，并回调一次。
-    final pages = [for (var p = 2; p <= limit; p++) p];
-    final queue = [...pages];
+    // 剩余页并发。
+    //
+    // 三个必须注意的点（第一版全踩了）：
+    //   1. 任务分配要在**同步段**里完成：先 removeAt 再 await。
+    //      否则两个 worker 可能在 await 间隙拿到同一页，重复请求。
+    //   2. 单页失败不能让 worker 退出——它退出后队列里剩下的页就没人抓了。
+    //      正确做法是记一笔继续取下一页。
+    //   3. out / seen 的写入要串行化。Dart 虽然单线程，但 await 之间
+    //      交错的写入会让 onPage 快照出现「号码忽多忽少」的抖动。
+    final queue = <int>[for (var p = 2; p <= limit; p++) p];
     var done = 1;
     var failed = 0;
 
+    /// 把一个任务的结果并入主列表。
+    /// 抽成同步函数，保证「改 out + 回调」是一个不可分割的片段。
+    void mergeBatch(NumberPage batch) {
+      done++;
+      for (final n in batch.numbers) {
+        if (seen.add(n.number)) out.add(n);
+      }
+      onProgress?.call(out.length, done);
+      onPage?.call(List<AvailableNumber>.unmodifiable(out));
+    }
+
     Future<void> worker() async {
-      while (queue.isNotEmpty) {
+      while (true) {
+        // 取值和判空在同一个同步片段里，中间没有 await。
         if (queue.isEmpty) return;
         final page = queue.removeAt(0);
+
         final batch = await _fetchWithRetry(page);
-        if (batch == null || batch.numbers.isEmpty) {
+        if (batch == null) {
+          // 这一页彻底失败了，但**不退出**——继续抓剩下的。
           failed++;
-          // 某一页空了通常意味着到底了，剩下的不用再抓。
-          if (batch != null && batch.numbers.isEmpty) queue.clear();
+          continue;
+        }
+        if (batch.numbers.isEmpty) {
+          // 空页意味着站点已经没有更多了，清空队列让所有 worker 收工。
+          queue.clear();
           return;
         }
-        done++;
-        for (final n in batch.numbers) {
-          if (seen.add(n.number)) out.add(n);
-        }
-        onProgress?.call(out.length, done);
-        onPage?.call(List<AvailableNumber>.unmodifiable(out));
+        mergeBatch(batch);
       }
     }
 
     const concurrency = 3;
-    final workers = <Future<void>>[];
-    for (var i = 0; i < concurrency && i < pages.length; i++) {
-      workers.add(worker());
-    }
-    await Future.wait(workers);
+    await Future.wait([
+      for (var i = 0; i < concurrency && i < limit - 1; i++) worker(),
+    ]);
 
     if (out.isEmpty) {
       throw NumberFetchException('目录抓取失败（$failed 页出错）');
+    }
+    // 全部页都失败时 out 只有首页那批，这里补一条日志便于排查。
+    if (failed > 0) {
+      debugPrint('目录：$failed 页抓取失败，已拿到 ${out.length} 个号');
     }
     return out;
   }

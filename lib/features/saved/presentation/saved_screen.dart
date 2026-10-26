@@ -9,7 +9,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:fus_inbox/features/inbox/presentation/inbox_screen.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
-import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 import 'package:fus_inbox/features/numbers/domain/first_seen.dart';
 import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart';
 import 'package:fus_inbox/features/saved/application/saved_provider.dart';

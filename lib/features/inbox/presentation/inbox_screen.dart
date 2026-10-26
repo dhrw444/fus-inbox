@@ -49,6 +49,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   late final Future<String> _scriptFuture;
   Timer? _watchdog;
 
+  /// 翻页看门狗。和 [_watchdog] 分开：那个管首屏，这个管翻页。
+  /// 必须留引用，否则页面销毁后它还会触发 setState。
+  Timer? _loadMoreWatchdog;
+
   /// 站点要求人工过风控时，临时露一次页面。平时恒为 false。
   bool _showChallenge = false;
 
@@ -82,6 +86,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   @override
   void dispose() {
     _watchdog?.cancel();
+    _loadMoreWatchdog?.cancel();
     // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
     _store.detach();
     unawaited(
@@ -233,30 +238,40 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 之所以不能在 Dart 侧直接读 cookie：webview_flutter 没有暴露
   /// 读 cookie 的 API。走 JS 读 document.cookie 又拿不到 HttpOnly
   /// 的那部分，而 cf_clearance 恰恰可能是 HttpOnly。
-  /// 所以这里用 JS 检查页面状态、由 Dart 侧调原生的 getCookie。
+  /// 判定依据只有「挑战容器消失 + 页面已经有实际内容」。
+  ///
+  /// 刻意**不去检查 cf_clearance**：那个 cookie 一般带 HttpOnly，
+  /// document.cookie 读不到。之前那版靠读它，结果永远返回 false，
+  /// 等于这段检测从未生效过。真正的判据是页面本身——挑战页的 DOM
+  /// 结构固定且极短，过了之后会变成完整的收件箱结构。
   Future<bool> _checkChallengePassed() async {
     try {
-      final html = await _controller.runJavaScriptReturningResult(
-        'document.documentElement.innerHTML.length + "|" + '
-        '(document.querySelector("#challenge-form") ? 1 : 0) + "|" + '
-        '(document.querySelector("#challenge-stage") ? 1 : 0)',
+      final raw = await _controller.runJavaScriptReturningResult(
+        'JSON.stringify({'
+        'n: document.documentElement.innerHTML.length,'
+        'f: document.querySelector("#challenge-form") ? 1 : 0,'
+        's: document.querySelector("#challenge-stage") ? 1 : 0,'
+        'm: document.querySelectorAll("[class*=sms], [class*=message]").length'
+        '})',
       );
-      final text = html.toString().replaceAll('"', '');
-      final parts = text.split('|');
-      if (parts.length < 3) return false;
-      final len = int.tryParse(parts[0]) ?? 0;
-      final hasForm = parts[1] == '1';
-      final hasStage = parts[2] == '1';
+      // runJavaScriptReturningResult 回的是 JSON 编码过的字符串，去掉外层引号。
+      var text = raw.toString();
+      if (text.startsWith('"') && text.endsWith('"')) {
+        text = text.substring(1, text.length - 1);
+      }
+      text = text.replaceAll(r'\"', '"');
 
-      // 挑战页的特征是：HTML 很短，或页面上还有挑战容器。
-      if (len < 800 || hasForm || hasStage) return false;
+      final m = RegExp(r'"n":(\d+),"f":(\d),"s":(\d),"m":(\d+)')
+          .firstMatch(text);
+      if (m == null) return false;
 
-      // 页面已经正常渲染，再看有没有真正拿到 cf_clearance。
-      final cookies = await _controller.runJavaScriptReturningResult(
-        'document.cookie',
-      );
-      final ck = cookies.toString();
-      return ck.contains('cf_clearance');
+      final len = int.tryParse(m.group(1)!) ?? 0;
+      final hasForm = m.group(2) == '1';
+      final hasStage = m.group(3) == '1';
+      final msgNodes = int.tryParse(m.group(4)!) ?? 0;
+
+      // 三个条件同时满足才算过：没有挑战容器、DOM 足够长、页面上有消息节点。
+      return !hasForm && !hasStage && len > 2000 && msgNodes > 0;
     } catch (e) {
       debugPrint('检测验证状态失败: $e');
       return false;
@@ -270,8 +285,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   Future<void> _watchChallengePassed() async {
     for (var i = 0; i < 112; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 800));
+      // 每次 await 回来都要重新确认：页面可能已经被 pop 掉了。
       if (!mounted || !_showChallenge) return;
       if (await _checkChallengePassed()) {
+        if (!mounted) return;
         if (!mounted) return;
         setState(() => _showChallenge = false);
         _store.reset();
@@ -310,7 +327,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       );
       // 看门狗：JS 可能因为拿不到号码 id、页面被风控、或注入没生效而
       // 一声不吭。没有这道兜底，转圈会一直转到用户杀掉页面。
-      Timer(const Duration(seconds: 15), () {
+      _loadMoreWatchdog?.cancel();
+      _loadMoreWatchdog = Timer(const Duration(seconds: 15), () {
         if (!mounted) return;
         if (!_store.state.loadingMore) return;
         _store.markLoadingMore(done: true);
