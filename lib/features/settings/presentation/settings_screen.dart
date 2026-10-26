@@ -22,7 +22,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 36),
         children: [
-          const _GroupLabel('外观'),
+          const _GroupLabel(text: '外观'),
           _GroupCard(
             children: [
               const _ThemeModeRow(),
@@ -31,7 +31,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
             ],
           ),
 
-          const _GroupLabel('短信'),
+          const _GroupLabel(text: '短信'),
           _GroupCard(
             children: [
               SwitchListTile(
@@ -55,7 +55,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
             ],
           ),
 
-          const _GroupLabel('存储'),
+          const _GroupLabel(text: '存储'),
           _GroupCard(
             children: [
               ListTile(
@@ -82,7 +82,7 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
             ],
           ),
 
-          const _GroupLabel('关于'),
+          const _GroupLabel(text: '关于'),
           _GroupCard(
             children: [
               const ListTile(

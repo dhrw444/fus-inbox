@@ -301,7 +301,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           IconButton(
             tooltip: '换浏览器身份',
             onPressed: _rotateIdentity,
-            icon: const Icon(Icons.person_sync_outlined),
+            icon: const Icon(Icons.switch_account_outlined),
           ),
           // 常驻入口：之前只有「加载失败」时才露出这个按钮，
           // 一旦消息列表出来了就再也找不到它——而风控恰恰可能在
