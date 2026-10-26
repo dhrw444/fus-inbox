@@ -238,67 +238,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 之所以不能在 Dart 侧直接读 cookie：webview_flutter 没有暴露
   /// 读 cookie 的 API。走 JS 读 document.cookie 又拿不到 HttpOnly
   /// 的那部分，而 cf_clearance 恰恰可能是 HttpOnly。
-  /// 判定依据只有「挑战容器消失 + 页面已经有实际内容」。
-  ///
-  /// 刻意**不去检查 cf_clearance**：那个 cookie 一般带 HttpOnly，
-  /// document.cookie 读不到。之前那版靠读它，结果永远返回 false，
-  /// 等于这段检测从未生效过。真正的判据是页面本身——挑战页的 DOM
-  /// 结构固定且极短，过了之后会变成完整的收件箱结构。
-  Future<bool> _checkChallengePassed() async {
-    try {
-      final raw = await _controller.runJavaScriptReturningResult(
-        'JSON.stringify({'
-        'n: document.documentElement.innerHTML.length,'
-        'f: document.querySelector("#challenge-form") ? 1 : 0,'
-        's: document.querySelector("#challenge-stage") ? 1 : 0,'
-        'm: document.querySelectorAll("[class*=sms], [class*=message]").length'
-        '})',
-      );
-      // runJavaScriptReturningResult 回的是 JSON 编码过的字符串，去掉外层引号。
-      var text = raw.toString();
-      if (text.startsWith('"') && text.endsWith('"')) {
-        text = text.substring(1, text.length - 1);
-      }
-      text = text.replaceAll(r'\"', '"');
-
-      final m = RegExp(r'"n":(\d+),"f":(\d),"s":(\d),"m":(\d+)')
-          .firstMatch(text);
-      if (m == null) return false;
-
-      final len = int.tryParse(m.group(1)!) ?? 0;
-      final hasForm = m.group(2) == '1';
-      final hasStage = m.group(3) == '1';
-      final msgNodes = int.tryParse(m.group(4)!) ?? 0;
-
-      // 三个条件同时满足才算过：没有挑战容器、DOM 足够长、页面上有消息节点。
-      return !hasForm && !hasStage && len > 2000 && msgNodes > 0;
-    } catch (e) {
-      debugPrint('检测验证状态失败: $e');
-      return false;
-    }
-  }
-
-  /// 轮询等待用户过完验证。
-  ///
-  /// 每 800ms 查一次，最多 90 秒。用户过完的那一刻就自动收起面板，
-  /// 不用他自己点「完成」——之前必须手动点，很多人以为卡住了。
-  Future<void> _watchChallengePassed() async {
-    for (var i = 0; i < 112; i++) {
-      await Future<void>.delayed(const Duration(milliseconds: 800));
-      // 每次 await 回来都要重新确认：页面可能已经被 pop 掉了。
-      if (!mounted || !_showChallenge) return;
-      if (await _checkChallengePassed()) {
-        if (!mounted) return;
-        if (!mounted) return;
-        setState(() => _showChallenge = false);
-        _store.reset();
-        _armWatchdog();
-        unawaited(_rescan());
-        return;
-      }
-    }
-  }
-
   /// 重扫当前页面 DOM。不发网络请求，纯粹是把已经渲染出来的内容再读一遍。
   Future<void> _rescan() async {
     try {
@@ -398,10 +337,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 列表出来后再次触发（翻页、刷新都会重新走站点会话）。
           IconButton(
             tooltip: '打开浏览器过验证',
-            onPressed: () {
-              setState(() => _showChallenge = true);
-              unawaited(_watchChallengePassed());
-            },
+            // 只打开面板，不做任何自动检测——退出完全由用户点「完成」决定。
+            onPressed: () => setState(() => _showChallenge = true),
             icon: const Icon(Icons.shield_outlined),
           ),
           IconButton(
@@ -628,10 +565,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
             const SizedBox(height: 6),
             TextButton(
-              onPressed: () {
-                setState(() => _showChallenge = true);
-                unawaited(_watchChallengePassed());
-              },
+              onPressed: () => setState(() => _showChallenge = true),
               child: const Text('打开浏览器自己过验证'),
             ),
           ],
@@ -707,8 +641,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                   ),
                 ),
                 TextButton(
-                  // 保留手动「完成」——自动检测可能被某些挑战变体绕住，
-                  // 给用户一个兜底出口。正常情况下他不用点这个按钮。
+                  // 唯一退出方式。刻意不做自动检测：
+                  // 之前那版靠「挑战容器消失 + DOM 够长 + 有消息节点」判断，
+                  // 而 [class*=message] 这种选择器会命中导航和广告，
+                  // 页面刚加载就满足条件，面板一开就自动关，用户根本没法过验证。
                   onPressed: () {
                     setState(() => _showChallenge = false);
                     unawaited(_rescan());
