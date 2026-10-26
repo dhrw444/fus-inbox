@@ -204,16 +204,6 @@ class InboxStore({this.onChanged}) {
     onChanged?.call();
   }
 
-  /// 收起回到初始条数。
-  void collapse() {
-    if (_state.visible == _initialVisible) return;
-    _emit(_state.copyWith(visible: _initialVisible));
-    onChanged?.call();
-  }
-
-  /// 首屏放出的条数。
-  static const _initialVisible = 5;
-
   void fail(String message) => _emit(
     _state.copyWith(phase: InboxPhase.failed, error: message, status: message),
   );

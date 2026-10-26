@@ -131,10 +131,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           },
           // 注入要抢在站点自己发首屏请求之前，否则只能等 DOM 扫描，
           // 那就是几秒起的延迟。onPageStarted 时 document 可能还没建好，
-          // 注入失败无所谓——onLoadStop 会再补一次；JS 有 __fusInboxHooked
+          // 注入失败无所谓——onPageFinished 会再补一次；JS 有 __fusInboxHooked
           // 守卫，重复注入不会叠加定时器。
           onPageStarted: (url) => unawaited(_injectQuietly()),
-          onLoadStop: (url) => unawaited(_inject()),
           onPageFinished: (url) => unawaited(_inject()),
           onWebResourceError: (error) {
             // isForMainFrame 是 bool?：null 表示不确定，别当成主框架失败。
@@ -168,7 +167,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     try {
       await _controller.runJavaScript(script);
     } catch (_) {
-      // 正常情况：document 还没建好。onLoadStop 会重试。
+      // 正常情况：document 还没建好。onPageFinished 会重试。
     }
   }
 

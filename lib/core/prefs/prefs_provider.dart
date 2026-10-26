@@ -13,7 +13,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 const _kTranslate = 'pref_translate';
 const _kShowOriginal = 'pref_show_original';
 const _kFontScale = 'pref_font_scale';
-const _kLocale = 'pref_locale';
 const _kTargetLang = 'pref_target_lang';
 
 /// 界面偏好的不可变快照。
@@ -21,7 +20,6 @@ class const Prefs({
   this.translate = true,
   this.showOriginal = false,
   this.fontScale = 1.0,
-  this.localeCode = '',
   this.targetLang = 'zh-CN',
   this.restored = false,
 }) {
@@ -42,16 +40,10 @@ class const Prefs({
   /// 不同人对这个值的容忍度差别很大，交给用户调。
   final double fontScale;
 
-  /// 界面语言。空串表示跟随系统。
+  /// 译文目标语言：zh-CN（简体）或 zh-TW（繁体）。
   ///
-  /// 目前 App 只有中文，这个开关留在这里是为了不把结构写死——
-  /// 真要加英文时只改 strings 层，不用动设置页。
-  final String localeCode;
-
-  /// 译文目标语言。
-  ///
-  /// 和 [localeCode] 是两件事：localeCode 是界面语言（目前只有中文），
-  /// targetLang 是把英文短信翻成哪种中文。
+  /// 注意别和「界面语言」混为一谈——界面只有中文，这个只决定
+  /// 英文短信翻成哪种中文。
   final String targetLang;
 
   /// 是否已经从磁盘读完。界面用它决定要不要显示骨架。
@@ -61,14 +53,12 @@ class const Prefs({
     bool? translate,
     bool? showOriginal,
     double? fontScale,
-    String? localeCode,
     String? targetLang,
     bool? restored,
   }) => Prefs(
     translate: translate ?? this.translate,
     showOriginal: showOriginal ?? this.showOriginal,
     fontScale: fontScale ?? this.fontScale,
-    localeCode: localeCode ?? this.localeCode,
     targetLang: targetLang ?? this.targetLang,
     restored: restored ?? this.restored,
   );
@@ -90,7 +80,6 @@ class PrefsNotifier() extends Notifier<Prefs> {
         showOriginal: p.getBool(_kShowOriginal) ?? false,
         // 夹一下：手改配置文件塞进离谱值时不要让界面炸掉。
         fontScale: scale.clamp(0.85, 1.4),
-        localeCode: p.getString(_kLocale) ?? '',
         targetLang: p.getString(_kTargetLang) ?? 'zh-CN',
         restored: true,
       );
@@ -122,14 +111,6 @@ class PrefsNotifier() extends Notifier<Prefs> {
     try {
       final p = await SharedPreferences.getInstance();
       await p.setDouble(_kFontScale, clamped);
-    } catch (_) {}
-  }
-
-  Future<void> setLocale(String code) async {
-    state = state.copyWith(localeCode: code, restored: true);
-    try {
-      final p = await SharedPreferences.getInstance();
-      await p.setString(_kLocale, code);
     } catch (_) {}
   }
 

@@ -127,14 +127,6 @@ class const InboxState({
   /// 本地还有没放出来的条数。
   int get heldBack => messages.length > visible ? messages.length - visible : 0;
 
-  /// 还能不能往下放（本地有存货，或站点还有更早的）。
-  bool get canRevealMore => heldBack > 0 || hasMore;
-
-  int get newCount => messages.where((m) => m.isNew).length;
-
-  /// 有验证码的条数。
-  int get codeCount => messages.where((m) => m.hasCode).length;
-
   InboxState copyWith({
     List<InboxMessage>? messages,
     InboxPhase? phase,
