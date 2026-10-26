@@ -313,6 +313,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 message: s.messages[i],
                 translate: prefs.translate,
                 showOriginal: prefs.showOriginal,
+                fontScale: prefs.fontScale,
                 onCopyCode: (c) => _copy(c, '验证码'),
                 onCopyAll: () => _copy(
                   s.messages[i].code.isNotEmpty
@@ -541,6 +542,17 @@ class const _SkeletonTile({required this.theme}) extends StatelessWidget {
   }
 }
 
+/// 正文字体样式，按设置里的缩放倍数调整。
+///
+/// 只缩放 fontSize，不动 height：行高是相对字号的比例，
+/// 跟着字号走的话大字号会变成一大片空白。这里固定行高雅一点。
+TextStyle? _bodyStyle(ThemeData theme, double scale) {
+  final base = theme.textTheme.bodyMedium;
+  if (base == null) return null;
+  final size = (base.fontSize ?? 14) * scale;
+  return base.copyWith(fontSize: size, height: 1.45);
+}
+
 /// 译文和原文是否实质相同。
 ///
 /// 站点偶尔返回「翻译后跟原来一样」的结果（专有名词、已是中文等），
@@ -555,12 +567,16 @@ class const _MessageTile({
   required this.onCopyAll,
   required this.translate,
   required this.showOriginal,
+  required this.fontScale,
 }) extends ConsumerStatefulWidget {
   final InboxMessage message;
   final void Function(String) onCopyCode;
   final VoidCallback onCopyAll;
   final bool translate;
   final bool showOriginal;
+
+  /// 正文字号缩放，来自设置页。
+  final double fontScale;
 
   @override
   ConsumerState<_MessageTile> createState() => _MessageTileState();
@@ -702,7 +718,7 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
               else if (entry != null && entry.text.isNotEmpty) ...[
                 Text(
                   entry.text,
-                  style: theme.textTheme.bodyMedium,
+                  style: _bodyStyle(theme, widget.fontScale),
                   maxLines: 10,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -712,10 +728,10 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
                     padding: const EdgeInsets.only(top: 6),
                     child: Text(
                       message.text,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                        height: 1.45,
-                      ),
+                      style: _bodyStyle(
+                        theme,
+                        widget.fontScale * 0.88,
+                      )?.copyWith(color: scheme.onSurfaceVariant),
                       maxLines: 6,
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -723,7 +739,7 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
               ] else
                 Text(
                   message.text,
-                  style: theme.textTheme.bodyMedium,
+                  style: _bodyStyle(theme, widget.fontScale),
                   maxLines: 8,
                   overflow: TextOverflow.ellipsis,
                 ),

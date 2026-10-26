@@ -74,7 +74,8 @@ void main() {
       final page = parseDirectory(html);
       final n = page.numbers.firstWhere((e) => e.number == '14197797678');
       expect(n.pretty, '+1 (419) 779-7678');
-      expect(n.regionLabel, 'Ohio · 419');
+      // 界面上州名走中文映射（state_names.dart），Ohio -> 俄亥俄。
+      expect(n.regionLabel, '俄亥俄 · 419');
     });
 
     test('空 HTML 得到空列表而不是崩溃', () {

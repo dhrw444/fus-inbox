@@ -13,8 +13,12 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fus_inbox/core/translate/translator.dart';
 
 /// 翻译服务实例。整个 App 复用一个，连接池也复用。
+///
+/// 目标语言来自设置：语言一变就重建实例（旧的连接池 dispose），
+/// 这样请求本身就带着新的 tl 参数，不需要在调用处到处传。
 final translatorProvider = Provider<Translator>((ref) {
-  final t = Translator();
+  final toLang = ref.watch(prefsProvider.select((p) => p.targetLang));
+  final t = Translator(toLang: toLang);
   ref.onDispose(t.dispose);
   return t;
 });
@@ -51,7 +55,12 @@ class TranslationStore() extends Notifier<Map<String, TranslationEntry>> {
   final Map<String, Future<void>> _inflight = {};
 
   @override
-  Map<String, TranslationEntry> build() => const {};
+  Map<String, TranslationEntry> build() {
+    // 目标语言一变，之前所有译文都作废。监听并清空，
+    // 否则用户切到繁体后会一直看到旧的简体结果。
+    ref.watch(prefsProvider.select((p) => p.targetLang));
+    return const {};
+  }
 
   /// 请求翻译。同一个 [text] 重复调用不会再发请求。
   ///
@@ -74,6 +83,15 @@ class TranslationStore() extends Notifier<Map<String, TranslationEntry>> {
     f = _run(key).whenComplete(() => _inflight.remove(key));
     _inflight[key] = f;
     unawaited(f);
+  }
+
+  /// 清空所有缓存。
+  ///
+  /// 设置页的「清除翻译缓存」用。连进行中的请求一起丢掉——
+  /// 用户按了清除，就不该有旧请求悄悄把结果写回来。
+  void clear() {
+    _inflight.clear();
+    state = const {};
   }
 
   /// 写入一个条目。
