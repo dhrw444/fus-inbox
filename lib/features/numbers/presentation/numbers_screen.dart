@@ -97,9 +97,14 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
         .push(MaterialPageRoute<void>(builder: (_) => InboxScreen(number: n)));
   }
 
-  /// 复制号码到剪贴板。给的是 E.164 纯数字，方便直接粘进注册框。
+  /// 复制号码到剪贴板，带 + 前缀（+14783902317）。
+  ///
+  /// 站点和模型里存的是纯数字，但用户拿去注册时要的是 E.164 形式。
+  /// 不带 + 粘进输入框会被某些站点当成国内号码。
   Future<void> _copyNumber(AvailableNumber n) async {
-    await Clipboard.setData(ClipboardData(text: n.number));
+    // 带 + 号：号码在模型里是纯数字（14783902317），
+    // 但用户拿去注册时要的是 E.164 形式 +14783902317。
+    await Clipboard.setData(ClipboardData(text: '+${n.number}'));
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..clearSnackBars()

@@ -803,8 +803,13 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
             : scheme.surfaceContainerHighest.withValues(alpha: 0.4),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onLongPress: widget.onCopyAll,
+        // SelectionArea：长按可以自由选择任意文字（只选验证码、只选一句、
+        // 跨行选都行），系统自带选择手柄和「复制」菜单。
+        //
+        // 之前是 InkWell.onLongPress 一把抓走整条——那不是自由复制，
+        // 是「只能全选」。而且 onLongPress 会抢走长按手势，
+        // 导致正文根本没法选中。
+        child: SelectionArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
             child: Column(
@@ -848,8 +853,9 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
                           color: scheme.onSurfaceVariant,
                         ),
                       ),
-                    // 自由复制：整条短信一键拿走（发送方 + 时间 + 正文）。
-                    // 没有验证码的短信也能复制，之前只能长按，不好发现。
+                    // 一键复制整条（发送方 + 时间 + 正文）。
+                    // 和长按的自由选择是两个不同的需求：
+                    // 长按选任意片段，这个按钮一次拿走全部。
                     IconButton(
                       tooltip: '复制整条',
                       onPressed: widget.onCopyAll,

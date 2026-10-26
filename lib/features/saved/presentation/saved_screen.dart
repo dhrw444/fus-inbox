@@ -76,7 +76,8 @@ class const SavedScreen({super.key}) extends ConsumerWidget {
           onToggleSave: () =>
               ref.read(savedNumbersProvider.notifier).toggle(n.id),
           onCopy: () async {
-            await Clipboard.setData(ClipboardData(text: n.number));
+            // 带 + 前缀，和号码列表的复制行为保持一致。
+            await Clipboard.setData(ClipboardData(text: '+${n.number}'));
             if (!context.mounted) return;
             ScaffoldMessenger.of(context)
               ..clearSnackBars()
