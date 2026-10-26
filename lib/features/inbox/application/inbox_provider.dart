@@ -181,6 +181,9 @@ class InboxStore({this.onChanged}) {
         // 默认值（hasMore=true），导致用户刚拉到底又被允许继续拉。
         hasMore: _state.hasMore,
         loadingMore: _state.loadingMore,
+        // 同上：不带上就会每来一帧就被重置回 5 条，
+        // 用户刚滑出来的内容会自己缩回去。
+        visible: _state.visible,
       ),
     );
   }
@@ -193,6 +196,23 @@ class InboxStore({this.onChanged}) {
   /// 单独开一个方法是因为界面上要立刻显示「加载中」，不能等 JS 回话。
   void markLoadingMore({bool done = false}) =>
       _emit(_state.copyWith(loadingMore: !done));
+
+  /// 本地多放出 [step] 条。
+  void revealMore({int step = 20}) {
+    if (_state.heldBack <= 0) return;
+    _emit(_state.copyWith(visible: _state.visible + step));
+    onChanged?.call();
+  }
+
+  /// 收起回到初始条数。
+  void collapse() {
+    if (_state.visible == _initialVisible) return;
+    _emit(_state.copyWith(visible: _initialVisible));
+    onChanged?.call();
+  }
+
+  /// 首屏放出的条数。
+  static const _initialVisible = 5;
 
   void fail(String message) => _emit(
     _state.copyWith(phase: InboxPhase.failed, error: message, status: message),

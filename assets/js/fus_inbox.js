@@ -397,7 +397,21 @@
     var url = '/sms-api/v1/inbox?id=' + encodeURIComponent(numId) +
               '&before=' + encodeURIComponent(cursor);
 
-    fetch(url, { credentials: 'same-origin' })
+    // 必须走站点自己的签名入口。
+    //
+    // 直接 fetch 会被 401 reader_session_required 打回：inbox 接口要求
+    // X-FUS-Proof 头，而签名用的私钥只存在页面上下文（IndexedDB
+    // fus-reader-v1），还得先过一次 Turnstile 换 grant。
+    //
+    // 站点把这块封装成了 window.FUSReader，其中 fetch(url, options)
+    // 就是 secureFetch —— 它自己会 ensure() 拿 grant、给请求签名，
+    // 并在 401/403/409 时按 reader_* 错误码自动续期重试。
+    // 我们只需要把 URL 交给它，等于借用站点自己的登录态。
+    var send = (window.FUSReader && window.FUSReader.fetch)
+      ? function (u) { return window.FUSReader.fetch(u, {}); }
+      : function (u) { return fetch(u, { credentials: 'same-origin' }); };
+
+    send(url)
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();

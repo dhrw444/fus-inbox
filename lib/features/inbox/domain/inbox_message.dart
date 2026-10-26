@@ -90,6 +90,7 @@ class const InboxState({
   this.error,
   this.hasMore = true,
   this.loadingMore = false,
+  this.visible = 5,
 }) {
   final List<InboxMessage> messages;
   final InboxPhase phase;
@@ -112,6 +113,23 @@ class const InboxState({
   /// 正在拉更早的一页。用来防重复触发和显示「加载中」。
   final bool loadingMore;
 
+  /// 当前放出多少条。
+  ///
+  /// 站点一次会给一整页（24 条），全摆出来既长又慢。首屏只放 5 条，
+  /// 用户往下滑再把本地已有的继续放出；本地放完了才去找站点要更早的。
+  /// 这样「打开就一大坨」和「一上来就翻页」都避免了。
+  final int visible;
+
+  /// 列表里实际要渲染的消息（按 [visible] 截断）。
+  List<InboxMessage> get shown =>
+      messages.length <= visible ? messages : messages.sublist(0, visible);
+
+  /// 本地还有没放出来的条数。
+  int get heldBack => messages.length > visible ? messages.length - visible : 0;
+
+  /// 还能不能往下放（本地有存货，或站点还有更早的）。
+  bool get canRevealMore => heldBack > 0 || hasMore;
+
   int get newCount => messages.where((m) => m.isNew).length;
 
   /// 有验证码的条数。
@@ -129,6 +147,7 @@ class const InboxState({
     bool clearSource = false,
     bool? hasMore,
     bool? loadingMore,
+    int? visible,
   }) {
     return InboxState(
       messages: messages ?? this.messages,
@@ -139,6 +158,7 @@ class const InboxState({
       error: clearError ? null : (error ?? this.error),
       hasMore: hasMore ?? this.hasMore,
       loadingMore: loadingMore ?? this.loadingMore,
+      visible: visible ?? this.visible,
     );
   }
 }

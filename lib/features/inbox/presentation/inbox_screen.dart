@@ -302,6 +302,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   Widget _buildList(InboxState s, ThemeData theme) {
     final prefs = ref.watch(prefsProvider);
+    final shown = s.shown;
     if (s.messages.isEmpty) {
       return ColoredBox(
         color: theme.colorScheme.surface,
@@ -328,30 +329,36 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 是因为这里不想再管一个 controller 的生命周期。
           onNotification: (n) {
             if (n.metrics.pixels >= n.metrics.maxScrollExtent - 240) {
-              unawaited(_loadMore());
+              // 先放本地已有的（站点一次给了 24 条，只是没全摆出来），
+              // 本地放完了才真的去站点要更早的一页。
+              // 这样翻页请求是「用户真的看完了」才发生，而不是一打开就连发。
+              if (s.heldBack > 0) {
+                _store.revealMore();
+              } else {
+                unawaited(_loadMore());
+              }
             }
             return false;
           },
           child: ListView.separated(
             padding: const EdgeInsets.only(bottom: 24),
-            // 末尾多一项：翻页脚注（加载中 / 到底了 / 加载失败重试）。
-            itemCount: s.messages.length + 1,
+            // 只渲染 s.shown（首屏 5 条），不是全部 24 条。
+            // 末尾多一项：翻页脚注。
+            itemCount: shown.length + 1,
             separatorBuilder: (context, i) => const Divider(height: 1),
             itemBuilder: (context, i) {
-              if (i == s.messages.length) {
+              if (i == shown.length) {
                 return _buildFooter(s, theme);
               }
               return _MessageTile(
-                message: s.messages[i],
+                message: shown[i],
                 translate: prefs.translate,
                 showOriginal: prefs.showOriginal,
                 fontScale: prefs.fontScale,
                 onCopyCode: (c) => _copy(c, '验证码'),
                 onCopyAll: () => _copy(
-                  s.messages[i].code.isNotEmpty
-                      ? s.messages[i].code
-                      : s.messages[i].text,
-                  s.messages[i].code.isNotEmpty ? '验证码' : '正文',
+                  shown[i].code.isNotEmpty ? shown[i].code : shown[i].text,
+                  shown[i].code.isNotEmpty ? '验证码' : '正文',
                 ),
               );
             },
@@ -390,6 +397,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               ),
             ),
           ],
+        ),
+      );
+    }
+
+    // 本地还有存货：明确告诉用户还剩多少，点一下放开。
+    if (s.heldBack > 0) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: Center(
+          child: TextButton(
+            onPressed: () => _store.revealMore(),
+            child: Text('还有 ${s.heldBack} 条，显示更多'),
+          ),
         ),
       );
     }
