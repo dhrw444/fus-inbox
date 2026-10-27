@@ -315,7 +315,7 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     // 用满的也要清 —— 那个身份已经没额度了，留着只会让下一次 plan
     // 又把它当成「还有余额」然后原地打转。
     final bound = state.ledger.forProxy(next.id);
-    if (bound == null || bound.used >= IdentityLedger.maxPerIdentity) {
+    if (bound == null || bound.used >= state.ledger.maxPerIdentity) {
       state.ledger.clearProxy(next.id);
     }
     await _persist();

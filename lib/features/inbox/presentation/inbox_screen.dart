@@ -25,6 +25,7 @@ import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 import 'package:fus_inbox/core/webview/browser_identity.dart';
 import 'package:fus_inbox/core/webview/http_headers.dart';
 import 'package:fus_inbox/core/webview/native_capabilities.dart';
+import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/core/webview/webview_widget.dart';
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
@@ -67,12 +68,16 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 「这个出口静默过不去」，到点自己弹出来（见 [_pumpVerification]）。
   bool _showChallenge = false;
 
-  /// 本次页面加载里，验证页面是不是已经弹过一次了。
+  /// 这一轮验证的计时与闸门。
   ///
-  /// 不管是用户点的还是自动弹的，都算弹过了。弹一次就够 —— 用户收起
-  /// 说明他现在不想弄，过 6 秒再自动弹回来只会烦人。重新加载页面
-  /// （换身份 / 手动重载 / 重开号码）时清掉。
-  bool _autoPopped = false;
+  /// 逻辑抽到 [VerifyRound] 里是因为这段状态机**没法在 Flutter 之外
+  /// 测**：之前 `tool/` 下那份测试是手抄的一份模型，代码改了模型没改，
+  /// 30 条全绿但一行真实代码都没跑过 —— 等于没测。
+  ///
+  /// 现在状态机本身在 `lib/core/webview/verify_round.dart`，纯 Dart、
+  /// 不依赖 Flutter，`tool/verify_round_test.dart` 直接 import 真实
+  /// 代码跑。
+  final VerifyRound _round = VerifyRound();
 
   /// 代理引擎：负责起桥 / 设原生代理 / 拆干净。
   final ProxyEngine _proxyEngine = ProxyEngine();
@@ -85,41 +90,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 验证状态轮询。
   Timer? _verifyPoll;
-
-  /// 这一轮已经等了多久。每 900ms 由 [_pumpVerification] 用真实时间刷新，
-  /// 只用来跟两个阈值（[_verifyWindow]、[_autoChallengeAfter]）比大小。
-  Duration _verifyElapsed = Duration.zero;
-
-  /// 这一轮验证是从什么时候开始等的。
-  ///
-  /// 存时间戳而不是累加 900ms 计数：定时器会被系统挂起（切后台、Doze），
-  /// 挂起期间 tick 不来，累加值就落后于真实时间 —— 用户明明等了半分钟，
-  /// 计数器上只有 3 秒。真实时间才代表用户等了多久。
-  ///
-  /// 起算点只在**真的开始新一轮**时重置（见 [_beginVerifyRound]），
-  /// [_pumpVerification] 重复调用只是接着算 —— 它会被换号、换身份、
-  /// 重载等多条路径调到，每次都重设会让「等满 6 秒」永远凑不满。
-  DateTime? _verifyRoundStart;
-
-  /// 这一轮里站点是不是已经报过 ready 了。
-  ///
-  /// ready 之后 [_rescan] 和 [_syncClearance] 只需要各做一次，不能每
-  /// 900ms 重复做 —— 但轮询本身要继续跑（见 [_pumpVerification] 里
-  /// 为什么 ready 不能 cancel）。
-  bool _readySeen = false;
-
-  /// 最多等这么久。
-  ///
-  /// 实测 pending → ready 约 4 秒。给到 90 秒是留给慢网络，
-  /// 再长就是站点那边真出问题了，继续等没意义。
-  static const _verifyWindow = Duration(seconds: 90);
-
-  /// 等过这么久还没 ready，就把验证页面弹出来给用户点。
-  ///
-  /// 实测静默通过约 4 秒。给到 6 秒是留一点余量给慢网络 —— 太短会把
-  /// 本来能自己过的也弹出来，那就成了打扰。所以在 4 秒能过的出口上
-  /// 根本走不到这里，「弹出来的必定是需要点一下的那种」。
-  static const _autoChallengeAfter = Duration(seconds: 6);
 
   /// 重置身份后置 true：等站点页加载完成，立刻删掉它的密钥。
   ///
@@ -660,21 +630,16 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 从头再来」。除此之外 [_pumpVerification] 只是接着当前这轮算，
   /// 因为换身份那条路径会把 [_pumpVerification] 连着调两次（`loadRequest`
   /// 之后一次、`_wipeThenReload` 里一次），每次都归零的话起算点会被
-  /// 顶到最新那一刻，等满 [_autoChallengeAfter] 就遥遥无期。
+  /// 顶到最新那一刻，等满自动弹出阈值就遥遥无期。
   ///
   /// [rearm] 决定要不要把「这轮已经弹过」的闸门也解开。用户在验证页上
   /// 点了按钮（过了 / 收起）之后调这个，得把起算点重置 —— 否则他要是
-  /// 在页面上耗了超过 [_verifyWindow]，一回来轮询第一次 tick 就判超时
-  /// 自杀，明明刚说「我过了」反而当场放弃。
+  /// 在页面上耗了超过窗口时长，一回来轮询第一次 tick 就判超时自杀，
+  /// 明明刚说「我过了」反而当场放弃。
   ///
   /// 但闸门不能一律解开：点「收起」是明确表示不想过，解开就会在 6 秒后
   /// 立刻又弹回来，等于没得选。所以那条路径传 `rearm: false`。
-  void _beginVerifyRound({bool rearm = true}) {
-    _verifyRoundStart = DateTime.now();
-    _verifyElapsed = Duration.zero;
-    _readySeen = false;
-    if (rearm) _autoPopped = false;
-  }
+  void _beginVerifyRound({bool rearm = true}) => _round.begin(rearm: rearm);
 
   /// 驱动器：让站点自己把验证走完。
   ///
@@ -692,7 +657,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// 但**有的出口站点不给静默过**，那时页面里会真的摆一个
   /// 「Verify you are human」复选框，只有人点得到（跨域 shadow DOM，
-  /// JS 摸不着）。所以静默等过 [_autoChallengeAfter] 还没 ready，
+  /// JS 摸不着）。所以静默等过自动弹出阈值还没 ready，
   /// 就把页面弹出来让用户点一下 —— 这也是「只弹需要点的那种」：
   /// 能在 4 秒里自己过的出口根本走不到这一步。
   ///
@@ -701,7 +666,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void _pumpVerification() {
     _verifyPoll?.cancel();
     // 起算点只在没有的时候才落 —— 重复调用接着算，不归零。
-    _verifyRoundStart ??= DateTime.now();
+    _round.arm();
     _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (
       timer,
     ) async {
@@ -711,9 +676,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       }
       // 用真实流逝时间，不是累加 900ms —— 定时器被系统挂起时
       // 累加值会落后于真实时间，真实时间才代表用户等了多久。
-      final start = _verifyRoundStart ??= DateTime.now();
-      _verifyElapsed = DateTime.now().difference(start);
-      if (_verifyElapsed > _verifyWindow) {
+      _round.refresh();
+      if (_round.timedOut) {
         timer.cancel();
         _store.note('站点验证超时，已停止等待');
         return;
@@ -749,7 +713,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               // 页面藏着一句话说明不了任何问题 —— 放出来让用户自己看
               // 一眼、必要时点一下重试。之前这里只留一条日志，用户
               // 既看不到失败原因也做不了任何事。
-              if (!_showChallenge && !_autoPopped) _openChallenge();
+              if (!_showChallenge && !_round.autoPopped) _openChallenge();
               return;
             }
           }
@@ -769,8 +733,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         //
         // 现在继续盯：消息到了上面那条会自己 cancel，没到就靠下面的
         // 「等太久」把页面放出来。
-        if (!_readySeen) {
-          _readySeen = true;
+        if (_round.markReady()) {
           // 会话好了，让站点自己去拉消息。
           unawaited(_rescan());
           // 顺手把 Cloudflare 通行证搬到原生 HTTP。
@@ -792,9 +755,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       //
       // 能在几秒里自己过的出口根本走不到这一步，所以「弹出来的
       // 必定是需要点一下的那种」。
-      if (!_showChallenge &&
-          !_autoPopped &&
-          _verifyElapsed >= _autoChallengeAfter) {
+      if (!_showChallenge && _round.shouldAutoPop) {
         _store.note('这个出口卡住了，已把页面放出来让你点一下');
         _openChallenge();
       }
@@ -832,7 +793,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void _openChallenge({bool reload = false}) {
     // 不管是谁弹的（用户点的还是到点自动弹的），都算「这次加载弹过了」，
     // 免得收起之后又被自动弹回来。
-    _autoPopped = true;
+    _round.markPopped();
     _verifyPoll?.cancel();
     setState(() {
       _showChallenge = true;
@@ -849,7 +810,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 盯着；这个是真的断言「我过了」，所以重开一轮等待、立刻重扫一次。
   ///
   /// 起算点要重置 —— 用户可能在人机验证上耗了一分钟以上，接着旧起算点
-  /// 算的话第一次 tick 就超 [_verifyWindow]，当场判超时。
+  /// 算的话第一次 tick 就超窗口，当场判超时。
   void _confirmChallengeDone() {
     _verifyPoll?.cancel();
     setState(() => _showChallenge = false);
