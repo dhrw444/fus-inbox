@@ -407,9 +407,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 通行证跟着一起作废：cf_clearance 绑在旧 (IP, UA) 上，
       // 新出口配新身份还带着它，比不带更像在伪造。
       forgetClearance();
-      if (!mounted) return;
+      if (!mounted) return null;
       await persistCurrentIdentity();
-      if (!mounted) return;
+      if (!mounted) return null;
     } else if (plan.restored) {
       applyBoundIdentity(
         userAgent: plan.binding.userAgent,
@@ -454,7 +454,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     await ref
         .read(proxyProvider.notifier)
         .commitOpen(plan.proxy.id, widget.number.id, plan.binding);
-    if (!mounted) return;
+    if (!mounted) return null;
     if (plan.rotated) {
       _store.note('换到新出口：${plan.proxy.displayName}（${plan.reason}）');
     } else if (plan.restored) {
