@@ -61,11 +61,18 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 必须留引用，否则页面销毁后它还会触发 setState。
   Timer? _loadMoreWatchdog;
 
-  /// 用户主动点开页面、想自己在上面过验证时为 true。
+  /// 站点页面（连着验证）是不是露出来了。
   ///
-  /// 平时恒为 false —— 验证由站点自己完成（见 [_pumpVerification]），
-  /// 不需要露页面。只有用户点了「自己过验证」才把引擎层放出来。
+  /// 两个来源：用户点「自己过验证」主动要看；或者自动路径判定
+  /// 「这个出口静默过不去」，到点自己弹出来（见 [_pumpVerification]）。
   bool _showChallenge = false;
+
+  /// 本次页面加载里，验证页面是不是已经弹过一次了。
+  ///
+  /// 不管是用户点的还是自动弹的，都算弹过了。弹一次就够 —— 用户收起
+  /// 说明他现在不想弄，过 6 秒再自动弹回来只会烦人。重新加载页面
+  /// （换身份 / 手动重载 / 重开号码）时清掉。
+  bool _autoPopped = false;
 
   /// 代理引擎：负责起桥 / 设原生代理 / 拆干净。
   final ProxyEngine _proxyEngine = ProxyEngine();
@@ -87,6 +94,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 实测 pending → ready 约 4 秒。给到 90 秒是留给慢网络，
   /// 再长就是站点那边真出问题了，继续等没意义。
   static const _verifyWindow = Duration(seconds: 90);
+
+  /// 等过这么久还没 ready，就把验证页面弹出来给用户点。
+  ///
+  /// 实测静默通过约 4 秒。给到 6 秒是留一点余量给慢网络 —— 太短会把
+  /// 本来能自己过的也弹出来，那就成了打扰。所以在 4 秒能过的出口上
+  /// 根本走不到这里，「弹出来的必定是需要点一下的那种」。
+  static const _autoChallengeAfter = Duration(seconds: 6);
 
   /// 重置身份后置 true：等站点页加载完成，立刻删掉它的密钥。
   ///
@@ -272,9 +286,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
     if (!mounted) return;
     await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
-    // 页面开始加载就挂上验证驱动器：站点会自己 pending → ready，
-    // 我们只盯状态。全程不需要用户参与 —— 只有用户主动点了
-    // 「自己过验证」才会把页面露出来（见 _openChallenge）。
+    // 页面开始加载就挂上验证驱动器。站点大多会自己 pending → ready，
+    // 这一步不需要用户参与；但有的出口站点就是不给静默过，那时过了
+    // 余量还没 ready 就把页面弹出来让用户点一下（见 _pumpVerification）。
+    _autoPopped = false;
     _pumpVerification();
   }
 
@@ -474,7 +489,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _armWatchdog();
       await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
       // 新身份加载完也要盯验证状态 —— 换身份之后站点会重新
-      // pending → ready 走一遍。
+      // pending → ready 走一遍，这是一次全新的加载，闸门也跟着重置。
+      _autoPopped = false;
       _pumpVerification();
 
       if (!mounted) return;
@@ -518,7 +534,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     } catch (e) {
       debugPrint('重载失败: $e');
     }
-    // 重载完是新文档，重新盯验证状态。
+    // 重载完是新文档，重新盯验证状态，闸门重置。
+    _autoPopped = false;
     _pumpVerification();
   }
 
@@ -586,14 +603,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///   phase: ready    →  会话可用，接着才去要消息
   ///
   /// 实测从加载到 ready 大约 4 秒，全程 `iframes: 0`。也就是说
-  /// 根本不存在「需要用户点一下那个圆框」这件事 —— 之前让你去网页
-  /// 手动点，是我把「等待」误判成「需要交互」。
+  /// 主路径是静默：轮询 `FUSReader.status()`，等它自己到 ready。
+  /// 大多数出口 4 秒内就过了，全程不需要用户参与。
   ///
-  /// 所以这里只做一件事：轮询 `FUSReader.status()`，等它自己到
-  /// ready 或 error。不弹面板、不要用户点任何东西。
+  /// 但**有的出口站点不给静默过**，那时页面里会真的摆一个
+  /// 「Verify you are human」复选框，只有人点得到（跨域 shadow DOM，
+  /// JS 摸不着）。所以静默等过 [_autoChallengeAfter] 还没 ready，
+  /// 就把页面弹出来让用户点一下 —— 这也是「只弹需要点的那种」：
+  /// 能在 4 秒里自己过的出口根本走不到这一步。
   ///
-  /// 真失败时（category/errorCode 有值）才记录原因，由界面说明；
-  /// 仍然不需要用户操作，重新加载就够。
+  /// 真失败时（category/errorCode 有值，Cloudflare 报错也走这条）
+  /// 一样把页面放出来，用户至少能看到失败原因、能自己点一下重试。
   void _pumpVerification() {
     _verifyPoll?.cancel();
     _verifyElapsed = Duration.zero;
@@ -638,6 +658,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               _store.note(
                 message.isNotEmpty ? '站点验证失败：$message' : '站点验证失败（$category）',
               );
+              // 验证已经明确失败了（Cloudflare 报错也是走这条），这时候
+              // 页面藏着一句话说明不了任何问题 —— 放出来让用户自己看
+              // 一眼、必要时点一下重试。之前这里只留一条日志，用户
+              // 既看不到失败原因也做不了任何事。
+              if (!_showChallenge && !_autoPopped) _openChallenge();
               return;
             }
           }
@@ -658,6 +683,23 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         // cf_clearance 是 HttpOnly，JS 的 document.cookie 永远读不到，
         // 只有原生 getCookie 拿得到。
         unawaited(_syncClearance());
+        return;
+      }
+
+      // 静默过不去 → 把页面放出来让用户点一下。
+      //
+      // 上面 ready 那条已经 return 了，能走到这里的都是「站点要人机
+      // 验证、而且静默没过去」的情况 —— 页面里正摆着一个真的
+      // 「Verify you are human」复选框在等人。用户要的就是这一步：
+      // 别让他自己去翻「自己过验证」，到点了直接弹出来，他点一下就行。
+      //
+      // 之前这里只有等满 90 秒报一句「验证超时」，中间页面一直藏着，
+      // 用户看着像是卡死 —— 就是「验证码收不到也不给我弹验证」。
+      if (!_showChallenge &&
+          !_autoPopped &&
+          _verifyElapsed >= _autoChallengeAfter) {
+        _store.note('这个出口要手动点一下验证，已把页面放出来');
+        _openChallenge();
       }
     });
   }
@@ -685,6 +727,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 里，JS 摸不到，只能靠人点。所以这个入口是给「自动过不去」用的，
   /// 不是必经步骤。
   void _openChallenge() {
+    // 不管是谁弹的（用户点的还是到点自动弹的），都算「这次加载弹过了」，
+    // 免得收起之后又被自动弹回来。
+    _autoPopped = true;
     _verifyPoll?.cancel();
     setState(() {
       _showChallenge = true;
@@ -877,6 +922,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 _store.reset();
                 _armWatchdog();
                 unawaited(_controller.reload());
+                _autoPopped = false;
                 _pumpVerification();
               },
               icon: const Icon(Icons.restart_alt),
