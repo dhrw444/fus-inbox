@@ -97,6 +97,13 @@ enum SiteHoldKind {
   temporary,
 }
 
+/// 站点拒绝的详情。
+///
+/// 四个字段纯数据、无派生逻辑，天生该用主构造器。但 Dart 3.13 的
+/// 「主构造器」写法（`class Foo({required this.x});` 不带类体）在本机
+/// 实测报 `'x' isn't an instance field of this class`，根本编译不过 ——
+/// lint 要求的写法这套 SDK 还不支持。只能保留字段声明 + ignore。
+// ignore: use_primary_constructors
 class const SiteHold({
   required this.kind,
   required this.title,
@@ -112,12 +119,6 @@ class const SiteHold({
 
   /// 站点建议多少秒后再试。0 表示它没说。
   final int retrySeconds;
-
-  /// 这个拒绝是不是完全没法自己好。
-  ///
-  /// 配额和验证都要用户动手（等 24 小时 / 过验证），
-  /// 临时繁忙会自动恢复。
-  bool get needsUserAction => kind != SiteHoldKind.temporary;
 }
 
 class const InboxState({
