@@ -25,6 +25,18 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
   final TextEditingController _input = TextEditingController();
   String? _message;
 
+  /// 展开后一页放多少条。点一次「再显示」就加这么多。
+  static const int _pageSize = 100;
+
+  /// 用户点过「展开显示」没有。
+  ///
+  /// 只有列表长过一页时才需要它 —— 短列表照旧直接铺开，不让用户
+  /// 为了看三条代理多点一下。
+  bool _expanded = false;
+
+  /// 展开状态下当前放出多少条。
+  int _visible = _pageSize;
+
   @override
   void dispose() {
     _input.dispose();
@@ -197,19 +209,117 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
                 ),
               ],
             ),
-            ...all.map(
-              (p) => _ProxyRow(
-                proxy: p,
-                active: p.id == state.currentId,
-                used: ledger.usedFor(p.id),
-                probe: state.results[p.id],
-                onUse: () => notifier.select(p.id),
-                onRemove: () => notifier.remove(p.id),
-              ),
-            ),
+            ..._rows(all, state, ledger, notifier),
           ],
         ],
       ),
+    );
+  }
+
+  /// 代理列表。长列表默认收起，展开后一次放出 [_pageSize] 条。
+  ///
+  /// 之前这里是 `...all.map(...)` —— 589 个 ListTile 一次性全建出来，
+  /// 每次进设置页都卡。现在按需放：没展开就只显示前 [_pageSize] 条，
+  /// 点「再显示」再加一百。
+  List<Widget> _rows(
+    List<ProxyConfig> all,
+    ProxyState state,
+    IdentityLedger ledger,
+    ProxyNotifier notifier,
+  ) {
+    // 短列表没必要折叠 —— 一次全铺开，不给用户增加点击。
+    if (all.length <= _pageSize) {
+      return all
+          .map((p) => _row(p, state, ledger, notifier))
+          .toList(growable: false);
+    }
+
+    if (!_expanded) {
+      // 收起时把「当前正在用的那条」留在外面 —— 否则用户一眼看过去
+      // 一条代理都没有，会以为配置丢了。其余的收进按钮后面。
+      final active = state.current;
+      return [
+        if (active != null) _row(active, state, ledger, notifier),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => setState(() {
+                _expanded = true;
+                _visible = _pageSize;
+              }),
+              icon: const Icon(Icons.expand_more, size: 18),
+              label: Text(
+                active == null
+                    ? '展开显示（共 ${all.length} 条）'
+                    : '展开显示全部 ${all.length} 条',
+              ),
+            ),
+          ),
+        ),
+      ];
+    }
+
+    final shown = _visible < all.length ? _visible : all.length;
+    final rows = <Widget>[
+      for (final p in all.take(shown)) _row(p, state, ledger, notifier),
+    ];
+
+    if (shown < all.length) {
+      final rest = all.length - shown;
+      final step = rest < _pageSize ? rest : _pageSize;
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => setState(() => _visible += _pageSize),
+              icon: const Icon(Icons.expand_more, size: 18),
+              label: Text(
+                rest <= _pageSize ? '显示剩下 $rest 条' : '再显示 $step 条（还有 $rest 条）',
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    rows.add(
+      Padding(
+        padding: const EdgeInsets.only(top: 2),
+        child: SizedBox(
+          width: double.infinity,
+          child: TextButton.icon(
+            onPressed: () => setState(() {
+              _expanded = false;
+              _visible = _pageSize;
+            }),
+            icon: const Icon(Icons.expand_less, size: 18),
+            label: const Text('收起'),
+          ),
+        ),
+      ),
+    );
+
+    return rows;
+  }
+
+  Widget _row(
+    ProxyConfig p,
+    ProxyState state,
+    IdentityLedger ledger,
+    ProxyNotifier notifier,
+  ) {
+    return _ProxyRow(
+      key: ValueKey(p.id),
+      proxy: p,
+      active: p.id == state.currentId,
+      used: ledger.usedFor(p.id),
+      probe: state.results[p.id],
+      onUse: () => notifier.select(p.id),
+      onRemove: () => notifier.remove(p.id),
     );
   }
 }
@@ -260,6 +370,7 @@ class const _StatusCard({required this.state}) extends StatelessWidget {
 
 /// 一条代理。内置的和手动添加的长得一模一样。
 class const _ProxyRow({
+  super.key,
   required this.proxy,
   required this.active,
   required this.used,
