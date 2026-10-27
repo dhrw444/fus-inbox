@@ -120,9 +120,11 @@ fun buildBrowserShim(
       // 平台版本拼上 .0.0）—— 推成两段等于把 F3 修好的
       // 那处不一致又造回来。
       //
-      // 注意：这行是 Kotlin 原始字符串内部，$ 会被当插值。
-      // 上面那句原来写成了带 ${} 的形式（复制自 Dart 注释），
-      // 编译期直接被当成 Kotlin 插值，报 Unresolved reference 'id'。
+      // 注意：这行是 Kotlin 原始字符串内部，美元符号会被当插值。
+      // 上面那句原来是从 Dart 注释直接粘的、带了花括号插值写法，
+      // 编译期就被当成 Kotlin 插值，报 Unresolved reference 'id'。
+      // 同理：注释里连空的插值花括号也别写，那是语法错
+      // （Expecting an expression）。这段注释本身就不含美元符号。
       if (av.length >= 2) {
         PLATFORM_VERSION = av[1].indexOf('.') < 0 ? av[1] + '.0.0' : av[1];
       }
