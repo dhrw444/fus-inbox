@@ -234,6 +234,8 @@ class LocalProxyBridge._(this._server, this.proxy) {
 /// Socket 只能 listen 一次，握手/读头阶段要「读定长」，之后就变成
 /// 「原样转发」，两件事必须共用同一个订阅。
 class _ClientReader {
+  // 参数名不是 this.，构造体里要用它调 listen()，主构造器写法访问不到。
+  // ignore: use_primary_constructors
   _ClientReader(Socket socket) {
     socket.listen(
       (chunk) {

@@ -19,6 +19,9 @@ const _kLedger = 'fus:identity:ledger:v1';
 const _kAutoProxy = 'fus:proxy:auto:v1';
 
 class ProxyState {
+  // 带初始化列表 + 非 this 参数（ledger 要 ?? IdentityLedger()），
+  // 主构造器表达不了。
+  // ignore: use_primary_constructors
   ProxyState({
     this.pool = const [],
     this.builtin = const [],
@@ -31,9 +34,6 @@ class ProxyState {
     this.probeTotal = 0,
     this.results = const {},
   }) : ledger = ledger ?? IdentityLedger();
-
-  /// 全部代理（内置 + 手动），顺序是内置在前。
-  List<ProxyConfig> get all => [...builtin, ...pool];
 
   /// 还有没有别的代理可换。
   ///

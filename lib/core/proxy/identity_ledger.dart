@@ -114,7 +114,7 @@ class const IdentityBinding({
 }
 
 /// 打开一个号码之前要做什么。
-enum OpenAction {
+enum OpenAction() {
   /// 复用当前代理 + 当前身份，直接开。
   reuse,
 
@@ -144,6 +144,8 @@ class const OpenPlan({
 
 /// 账本。纯逻辑，不碰磁盘不碰网络。
 class IdentityLedger {
+  // 带初始化列表 + 非 this 参数，主构造器表达不了。
+  // ignore: use_primary_constructors
   IdentityLedger({
     Map<String, IdentityBinding>? bindings,
     this.maxPerIdentity = 3,

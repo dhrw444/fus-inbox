@@ -21,7 +21,7 @@
 library;
 
 /// 什么时候该自动换身份。
-enum RotationTrigger {
+enum RotationTrigger() {
   /// 配额用完（429 + pause）。**换** —— 新身份不继承旧计数。
   quota,
 
@@ -36,7 +36,7 @@ enum RotationTrigger {
 }
 
 /// 自动换身份的节流器。
-class IdentityRotationPolicy({
+class const IdentityRotationPolicy({
   this.cooldown = const Duration(seconds: 30),
   this.window = const Duration(minutes: 10),
   this.maxPerWindow = 6,

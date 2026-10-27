@@ -23,7 +23,7 @@
 library;
 
 /// 代理协议。
-enum ProxyScheme {
+enum ProxyScheme() {
   /// SOCKS5，DNS 在本地解析。
   socks5,
 

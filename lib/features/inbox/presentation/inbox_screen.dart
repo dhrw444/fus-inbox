@@ -67,11 +67,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 不需要露页面。只有用户点了「自己过验证」才把引擎层放出来。
   bool _showChallenge = false;
 
-  /// 验证是否已经走完（reader 到 ready）。
-  ///
-  /// 内部状态，不驱动界面 —— 自动路径不需要用户参与。
-  bool _verifyReady = false;
-
   /// 代理引擎：负责起桥 / 设原生代理 / 拆干净。
   final ProxyEngine _proxyEngine = ProxyEngine();
 
@@ -650,7 +645,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
       if (phase == 'ready') {
         timer.cancel();
-        _verifyReady = true;
         // 会话好了，让站点自己去拉消息。
         unawaited(_rescan());
         // 顺手把 Cloudflare 通行证搬到原生 HTTP。
@@ -691,7 +685,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _verifyPoll?.cancel();
     setState(() {
       _showChallenge = true;
-      _verifyReady = false;
     });
     // 页面可能停在旧状态，重载一次让站点重新发起验证。
     unawaited(_controller.reload());
@@ -717,7 +710,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     await ref.read(proxyProvider.notifier).resetCurrentIdentity();
     if (!mounted) return;
     _verifyPoll?.cancel();
-    setState(() => _verifyReady = false);
     _store.reset();
     _armWatchdog();
     await _rotateIdentity();

@@ -21,7 +21,7 @@ class const ProxySection({super.key}) extends ConsumerStatefulWidget {
   ConsumerState<ProxySection> createState() => _ProxySectionState();
 }
 
-class _ProxySectionState extends ConsumerState<ProxySection> {
+class _ProxySectionState() extends ConsumerState<ProxySection> {
   final TextEditingController _input = TextEditingController();
   String? _message;
 
@@ -215,9 +215,7 @@ class _ProxySectionState extends ConsumerState<ProxySection> {
 }
 
 /// 当前出口 + 额度状态。
-class _StatusCard extends StatelessWidget {
-  const _StatusCard({required this.state});
-
+class const _StatusCard({required this.state}) extends StatelessWidget {
   final ProxyState state;
 
   @override
@@ -261,16 +259,14 @@ class _StatusCard extends StatelessWidget {
 }
 
 /// 一条代理。内置的和手动添加的长得一模一样。
-class _ProxyRow extends StatelessWidget {
-  const _ProxyRow({
-    required this.proxy,
-    required this.active,
-    required this.used,
-    required this.probe,
-    required this.onUse,
-    required this.onRemove,
-  });
-
+class const _ProxyRow({
+  required this.proxy,
+  required this.active,
+  required this.used,
+  required this.probe,
+  required this.onUse,
+  required this.onRemove,
+}) extends StatelessWidget {
   final ProxyConfig proxy;
   final bool active;
   final int used;

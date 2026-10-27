@@ -54,9 +54,7 @@ String describeSocksReply(int code) => switch (code) {
 ///
 /// 对外只暴露「读目标服务器的字节」和「写目标服务器的字节」，
 /// 让上层（HTTP 桥）完全不用关心 SOCKS5 协议。
-class SocksTunnel {
-  SocksTunnel._(this._socket, this._reader, this._replay);
-
+class SocksTunnel._(this._socket, this._reader, this._replay) {
   final Socket _socket;
   final _SocketReader _reader;
 
@@ -279,6 +277,9 @@ Future<Uint8List> encodeSocksAddress(
 /// 所以这里始终只订阅一次：握手期间数据攒进 `_buffer` 供 `read(n)` 切，
 /// `handshakeDone()` 之后新数据直接进 `_out` 给上层。
 class _SocketReader {
+  // 构造体里要建 StreamController 并订阅 socket，两者互相引用，
+  // 主构造器表达不了。
+  // ignore: use_primary_constructors
   _SocketReader(Socket socket) {
     // 控制器必须在构造体里建：它的 onPause/onResume 要引用 _sub，
     // 而字段初始化器里读不到 this。
