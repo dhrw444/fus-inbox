@@ -159,6 +159,31 @@ Future<void> main(List<String> args) async {
         : bad('有重复', o.map((e) => e.label).join(' → '));
   });
 
+  await check('沉底：首选失败时也不许出现重复项', () async {
+    // 这条是回归测试：以前 base 里 lastGood 与 head 相同就会重复，
+    // 而 healthy 的 contains 只在健康分支去重，sick 分支漏了。
+    final o = Translator.orderEngines(
+      preferred: TranslateEngine.bing,
+      lastGood: TranslateEngine.bing,
+      fails: {TranslateEngine.bing: 1},
+      demoteAfter: 1,
+    );
+    o.length == 3 && o.toSet().length == 3 && o.last == TranslateEngine.bing
+        ? ok('无重复且沉底', o.map((e) => e.label).join(' → '))
+        : bad('有重复或没沉底', o.map((e) => e.label).join(' → '));
+  });
+  await check('沉底：全部失败时仍是三项且无重复', () async {
+    final o = Translator.orderEngines(
+      preferred: TranslateEngine.google,
+      lastGood: TranslateEngine.bing,
+      fails: {for (final e in TranslateEngine.values) e: 1},
+      demoteAfter: 1,
+    );
+    o.length == 3 && o.toSet().length == 3
+        ? ok('三项无重复', o.map((e) => e.label).join(' → '))
+        : bad('数量或重复出错', o.map((e) => e.label).join(' → '));
+  });
+
   stdout.writeln('\n=== 2b. 存盘往返（不联网）===');
   for (final e in TranslateEngine.values) {
     await check('存盘名 ${e.name} 能读回', () async {

@@ -33,15 +33,26 @@ package com.yg.fusinbox
 /**
  * 生成注入脚本。
  *
- * @param chromeMajor UA 里的 Chrome 主版本，如 "134"
- * @param appVersion  Chrome 完整版本的前三段，如 "134.0.6998"
- * @param platform    Sec-CH-UA-Platform 的值，Android 固定 "Android"
- * @param model       机型串，如 "Pixel 8"
- * @param isMobile    是否移动端
+ * **一条硬性要求**：下面这些身份值必须全部由 Host 传进来，一个都不许在
+ * 本地写死 —— 写死的那一项迟早会在某台设备上和 UA 对不上，而本文件开头
+ * 那条铁律说的就是「对不上比不伪装更明显」。
+ *
+ * @param chromeMajor    UA 里的 Chrome 主版本，如 "134"
+ * @param appVersion     Chrome **完整四段**版本，如 "134.0.6998.135"。
+ *                       必须与 UA 里 Chrome/ 后面那截逐字相同：真 Chrome 的
+ *                       userAgentData.uaFullVersion 和 UA 版本完全一致，
+ *                       fullVersionList 里真实品牌的 version 也是四段。
+ *                       之前这里收的是「前三段」，那是错的。
+ * @param platformVersion 系统主版本，如 "16"。输出成三段 "16.0.0"，
+ *                        与原生头 http_headers.dart 发出的形态一致。
+ * @param platform       Sec-CH-UA-Platform 的值，Android 固定 "Android"
+ * @param model          机型串，如 "Pixel 8"
+ * @param isMobile       是否移动端
  */
 fun buildBrowserShim(
     chromeMajor: String,
     appVersion: String,
+    platformVersion: String,
     platform: String,
     model: String,
     isMobile: Boolean,
@@ -52,6 +63,15 @@ fun buildBrowserShim(
 
     val major = esc(chromeMajor)
     val full = esc(appVersion)
+    // 三段形态：入参是 "16" 就输出 "16.0.0"，已经是三段则原样用。
+    // 空串保持空串（这只是兜底值，输出 ".0.0" 反而更糟）。
+    val pv = esc(platformVersion).let {
+        when {
+            it.isEmpty() -> ""
+            it.contains('.') -> it
+            else -> "$it.0.0"
+        }
+    }
     val plat = esc(platform)
     val mdl = esc(model)
     val mobile = if (isMobile) "true" else "false"
@@ -62,11 +82,48 @@ fun buildBrowserShim(
   if (window.__fusShimmed) return;
   window.__fusShimmed = true;
 
-  var MAJOR = '$major';
-  var FULL = '$full';
-  var PLATFORM = '$plat';
+  // ---- 身份值：从当下的 UA 现推，不烧进脚本 ----
+  //
+  // 为什么不能烧：`addDocumentStartJavaScript` **只能加、不能删**
+  // （webkit 1.14.0 里没有 removeDocumentStartJavaScript，已 javap 核实），
+  // 而本脚本开头有 `if (window.__fusShimmed) return;` —— 于是**先装的那份
+  // 永远赢**，后面重装多少次都无效。
+  //
+  // 后果：换身份时 Dart 用 setUserAgent 把 UA 换了，脚本里烧死的版本没换，
+  // navigator.userAgentData 就停在上一次的身份上 —— 而且这个矛盾**每换一次
+  // 就累积一层**。改成自推就没有「旧」这个概念：每个文档加载时读的都是
+  // 当下那串 UA，装一次管到底。
+  //
+  // 下面 $ 开头的是装机时那组值，只在整个 UA 解不出来时兜底。
+  var UA = navigator.userAgent || '';
+  var uaChrome = /Chrome\/([\d.]+)/.exec(UA);
+  var uaParen = /\(([^)]*)\)/.exec(UA);
+  var FULL = uaChrome ? uaChrome[1] : '$full';
+  var MAJOR = FULL.split('.')[0] || '$major';
+  var PLATFORM = /Android/i.test(UA) ? 'Android' : '$plat';
+  // UA 里连 Chrome 标记都没有 = 整串解不出来，这时才用装机时的值。
+  var MOBILE = /Chrome\//.test(UA) ? /Mobile/i.test(UA) : $mobile;
+  var PLATFORM_VERSION = '$pv';
   var MODEL = '$mdl';
-  var MOBILE = $mobile;
+  if (uaParen) {
+    var segs = uaParen[1].split(';');
+    // "(Linux; Android 14)" —— 只有两段就是 UA 本身没有机型。
+    // 这时给空串（**和 UA 保持一致**），绝不退回装机时那个机型：
+    // 机型在换身份时是会变的，退回旧值等于又造一处矛盾。
+    MODEL = segs.length >= 3
+      ? segs[2].trim().replace(/\s+Build\/.*$/, '')
+      : '';
+    if (segs.length >= 2) {
+      var av = segs[1].trim().split(/\s+/);
+      // 补成三段。UA 里是 "Android 16"，但 client hints 的
+      // Sec-CH-UA-Platform-Version 是三段（原生头那边发的就是
+      // '${id.platformVersion}.0.0'）—— 推成两段等于把 F3 修好的
+      // 那处不一致又造回来。
+      if (av.length >= 2) {
+        PLATFORM_VERSION = av[1].indexOf('.') < 0 ? av[1] + '.0.0' : av[1];
+      }
+    }
+  }
 
   // GREASE 值。Chrome 每版会换一个 "Not?A_Brand" 之类的占位品牌，
   // 真 Chrome 一定有这一项，缺了反而是特征。
@@ -91,7 +148,7 @@ fun buildBrowserShim(
       mobile: MOBILE,
       model: MODEL,
       platform: PLATFORM,
-      platformVersion: '14.0.0',
+      platformVersion: PLATFORM_VERSION,
       uaFullVersion: FULL,
       wow64: false
     };

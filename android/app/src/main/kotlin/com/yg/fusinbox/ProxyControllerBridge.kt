@@ -49,11 +49,20 @@ class ProxyControllerBridge(private val activity: Activity) {
         }
         if (host.isEmpty() || port <= 0) return false
         return try {
+            // 只加这一条代理规则，**绝不能加 .addDirect()**。
+            //
+            // addDirect() 不是「本机回环绕过」，它往规则表里塞一条 DIRECT
+            // 回退（androidx 源码：addDirect → addDirect(MATCH_ALL_SCHEMES)
+            // → mProxyRules.add(new ProxyRule(MATCH_ALL_SCHEMES, DIRECT))）。
+            // 官方文档原话：多条 proxyRule 是「前一条不响应时的后备」，
+            // 所以上游代理一死，WebView 会自动改走直连把请求发出去 ——
+            // 页面照常打开、没有任何报错，而真实 IP 已经暴露给站点。
+            // 那正是这个模块唯一要防的事。
+            //
+            // 回环绕过是下面 addBypassRule 的活：bypass 按目标主机匹配，
+            // 本来就不会把 127.0.0.1 的流量引回代理。
             val builder = ProxyConfig.Builder()
                 .addProxyRule("$host:$port")
-                // 本机回环一定要绕过，否则桥自己的健康检查、
-                // 以及任何 127.0.0.1 的请求会绕回代理形成环。
-                .addDirect()
             for (item in bypass) {
                 val trimmed = item.trim()
                 if (trimmed.isNotEmpty()) builder.addBypassRule(trimmed)

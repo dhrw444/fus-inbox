@@ -18,6 +18,13 @@ const platformWebViewChannel = MethodChannel('fusinbox/webview');
 /// 浏览器身份在磁盘上的键。
 const _kIdentityKey = 'fus:identity:current:v1';
 
+/// 内核基准的落盘键。
+///
+/// 单独存一份，是为了在原生探测失败时也能拿到基准 —— 没有它，
+/// `rotateIdentity` / `mintIdentity` 又会退回「拿自己上一次的输出当基准」，
+/// 继续单向下漂（见 browser_identity.dart 的 `_kernelMajor`）。
+const _kKernelKey = 'fus:identity:kernel:v1';
+
 /// 读 Android SDK 版本，决定 WebView 用哪种合成方式。
 Future<int?> androidSdkVersion() async {
   try {
@@ -101,24 +108,54 @@ Future<bool> openExternalUrl(String url) async {
 /// 返回 false 表示这台设备的内核不支持（89 以下），页面照常打开。
 Future<bool> installBrowserShim() async {
   final id = currentIdentity;
-  // appVersion 要三段，形如 134.0.6998。UA 里是完整四段，
-  // 这里截前三段 —— client hints 的 uaFullVersion 就是这个格式。
+  // appVersion 要**完整四段**，和 UA 里 Chrome/ 后面那截逐字相同。
+  //
+  // 真 Chrome 的 navigator.userAgentData.uaFullVersion 与 UA 里的版本
+  // 完全一致（4 段，如 141.0.7390.122）；fullVersionList 里真实品牌的
+  // version 同样是 4 段。以前这里 `take(3)` 截成三段，注释还写着
+  // 「client hints 的 uaFullVersion 就是这个格式」—— 那句话是错的，
+  // 产物是：navigator.userAgent 说 141.0.7390.122、userAgentData 说
+  // 141.0.7390，Cloudflare/Turnstile 一交叉核对就对上，**每一页都存在**。
   final parts = RegExp(r'Chrome/([\d.]+)').firstMatch(id.userAgent);
-  final full = parts?.group(1) ?? '';
-  final segments = full.split('.');
-  final appVersion = segments.length >= 3
-      ? segments.take(3).join('.')
-      : '$full.0.0';
+  final appVersion = parts?.group(1) ?? '';
+  // 版本取不到就别装了：一个 uaFullVersion 为空的垫片，比没有垫片更像
+  // 一个被人改过的浏览器。
+  if (appVersion.isEmpty) return false;
+  // **一份参数喂两个通道。**
+  //
+  // 垫片改的是页面里 JS 读到的 navigator.userAgentData；
+  // applyUserAgentMetadata 改的是引擎真正发出去的 Sec-CH-UA 请求头。
+  // 两处用不同的数（或只调了其中一个）等于亲手造出一个「JS 说 A、
+  // 请求头说 B」的矛盾 —— 而 Cloudflare 两边都能看到。
+  final args = <String, Object?>{
+    'chromeMajor': id.chromeMajor,
+    'appVersion': appVersion,
+    // platformVersion 必须跟着身份走。
+    //
+    // 原生头那边发的是 '${id.platformVersion}.0.0'（http_headers.dart），
+    // 垫片以前却写死 '14.0.0'：除 Android 14 之外的每台设备，页面里
+    // getHighEntropyValues(['platformVersion']) 得到 14.0.0，而 UA 说
+    // Android 16、同 App 的原生头也说 16.0.0。这是 100% 触发、
+    // 不需要任何竞态的一条自相矛盾。
+    'platformVersion': id.platformVersion,
+    'platform': 'Android',
+    'model': id.model,
+    'isMobile': id.isMobile,
+  };
   try {
     final ok = await platformWebViewChannel
-        .invokeMethod<bool>('installBrowserShim', {
-          'chromeMajor': id.chromeMajor,
-          'appVersion': appVersion,
-          'platform': 'Android',
-          'model': id.model,
-          'isMobile': id.isMobile,
-        })
+        .invokeMethod<bool>('installBrowserShim', args)
         .timeout(const Duration(seconds: 2));
+    // 请求头那一路单独 try：老内核不支持这个特性是**正常**的，不该连累
+    // 垫片 —— 垫片还管着 window.chrome 和 navigator.plugins，
+    // 那两个比 client hints 更要紧。
+    try {
+      await platformWebViewChannel
+          .invokeMethod<bool>('applyUserAgentMetadata', args)
+          .timeout(const Duration(seconds: 2));
+    } catch (e) {
+      debugPrint('设 client hints 失败（老内核属正常）：$e');
+    }
     return ok ?? false;
   } on MissingPluginException {
     return false;
@@ -177,6 +214,9 @@ Future<BrowserIdentity> bootstrapBrowserIdentity() async {
       jsonDecode(prefs.getString(_kIdentityKey) ?? 'null'),
     );
     if (saved != null) restoreIdentity(saved);
+    // 探测失败时也得有基准可用。先读上次记下的，下面探测成功会用真值覆盖。
+    final km = prefs.getInt(_kKernelKey);
+    if (km != null) noteKernelMajor('$km');
   } catch (e) {
     debugPrint('读回浏览器身份失败：$e');
   }
@@ -190,13 +230,18 @@ Future<BrowserIdentity> bootstrapBrowserIdentity() async {
       if (ua != null && ua.isNotEmpty) {
         // 探测出来的真实身份只在**第一次**用 —— 之后一切以磁盘上
         // 那份为准，否则用户换过的身份每次启动都会被真实值顶掉。
-        final identity =
-            saved ??
-            parseWebViewUserAgent(
-              ua,
-              model: raw['model'] as String?,
-              platformVersion: raw['release'] as String?,
-            );
+        final probed = parseWebViewUserAgent(
+          ua,
+          model: raw['model'] as String?,
+          platformVersion: raw['release'] as String?,
+        );
+        // 两件事的规则**不一样**，别混：
+        //   身份     → 认磁盘（saved 优先），探测值只在第一次用；
+        //   内核基准 → 认探测，因为磁盘那份可能已经被轮换漂过了，
+        //              拿它当基准等于把漂移固化。
+        noteKernelMajor(probed.chromeMajor);
+        await _persistKernelMajor();
+        final identity = saved ?? probed;
         initBrowserIdentity(identity);
         await _persistIdentity(identity);
         return identity;
@@ -223,5 +268,21 @@ Future<void> _persistIdentity(BrowserIdentity identity) async {
     await prefs.setString(_kIdentityKey, jsonEncode(identityToJson(identity)));
   } catch (e) {
     debugPrint('存浏览器身份失败：$e');
+  }
+}
+
+/// 记下内核基准。只在原生探测到真实 UA 之后调。
+///
+/// 和 [_persistIdentity] 分开存：那个存的是「现在假装成哪台设备」（会随
+/// 换身份变），这个存的是「这台机器真实的内核是多少」（永远不变）。
+/// 混在一起存，换身份就会把基准一起改掉 —— 那正是版本号单向漂移的成因。
+Future<void> _persistKernelMajor() async {
+  final km = kernelMajor;
+  if (km == null) return;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_kKernelKey, km);
+  } catch (e) {
+    debugPrint('存内核基准失败：$e');
   }
 }

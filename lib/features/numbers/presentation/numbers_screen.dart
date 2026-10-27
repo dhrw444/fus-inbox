@@ -125,7 +125,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     final firstSeen = ref.watch(firstSeenStoreProvider);
     final theme = Theme.of(context);
 
-    final items = dir.visibleFor(dir.tab);
+    final items = dir.visibleFor(dir.tab, firstSeen: firstSeen);
     final query = dir.query.trim();
 
     return Scaffold(

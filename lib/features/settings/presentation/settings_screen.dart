@@ -72,7 +72,14 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
                 subtitle: Text(
                   '${ref.watch(translationStoreProvider).length} 条译文',
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                // 这里以前是 chevron_right —— 那个图标的意思是「点进去还有
+                // 一页」，实际却是点一下就清空，没有二级页。换成删除图标，
+                // 并上 error 色：本页其余可点项都是进二级页，只有这两处是
+                // 会真的删东西的动作，外观上必须能一眼区分。
+                trailing: Icon(
+                  Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error,
+                ),
                 onTap: () => _clearTranslationCache(context, ref),
               ),
               const Divider(height: 1, indent: 16, endIndent: 16),
@@ -84,7 +91,14 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
                       ? '暂无缓存'
                       : '${ref.watch(numberDirectoryProvider).all.length} 个号码',
                 ),
-                trailing: const Icon(Icons.chevron_right),
+                // 这里以前是 chevron_right —— 那个图标的意思是「点进去还有
+                // 一页」，实际却是点一下就清空，没有二级页。换成删除图标，
+                // 并上 error 色：本页其余可点项都是进二级页，只有这两处是
+                // 会真的删东西的动作，外观上必须能一眼区分。
+                trailing: Icon(
+                  Icons.delete_outline,
+                  color: Theme.of(context).colorScheme.error,
+                ),
                 onTap: () => _clearDirectoryCache(context, ref),
               ),
             ],

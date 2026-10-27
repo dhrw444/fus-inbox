@@ -140,8 +140,10 @@ class PrefsNotifier() extends Notifier<Prefs> {
 
   /// 换优先引擎。
   ///
-  /// 只改偏好、不动缓存：已翻好的译文仍然有效，
-  /// 换引擎只影响之后的新短信。
+  /// 会连带清空翻译缓存（见 [TranslationStore.build]）。曾经写成「不动缓存」，
+  /// 但失败过的条目不重试，用户换引擎几乎总是因为当前这家不通——
+  /// 不清就是他换完什么都没变，看着像坏了。已翻好的译文一并重来，
+  /// 换的是「换完立刻按新引擎重翻」这个可预期的行为。
   Future<void> setEngine(TranslateEngine e) async {
     state = state.copyWith(engine: e, restored: true);
     try {

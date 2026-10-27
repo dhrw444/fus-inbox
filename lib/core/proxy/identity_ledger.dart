@@ -291,6 +291,13 @@ class IdentityLedger {
     }
 
     // 没绑定 → 在这个代理上造一个新身份。
+    //
+    // 这**就是 rotate**，别标成 reuse。判据不是「出口换没换」，是
+    // 「这个 binding 是现造的还是账本里已有的」：这里造的是全新设备，
+    // 浏览器必须换成它、而且必须清掉旧密钥 —— _applyProxyPlan 的 rotate
+    // 分支做的正是这两件事。标成 reuse 会被当成「什么都不用做」放过去，
+    // 结果是账本记下新设备、页面还挂着上一条出口的旧身份和旧密钥：
+    // 既没换成新设备，新出口又白吃一次「同一个人换条线路」的信号。
     if (existing == null) {
       final binding = IdentityBinding(
         proxyId: current.id,
@@ -301,7 +308,7 @@ class IdentityLedger {
         createdAtMs: DateTime.now().millisecondsSinceEpoch,
       );
       return OpenPlan(
-        action: OpenAction.reuse,
+        action: OpenAction.rotate,
         proxy: current,
         binding: binding,
         reason: '新代理，绑定新身份',

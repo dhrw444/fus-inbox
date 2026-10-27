@@ -116,7 +116,14 @@ class Translator({this.client, this.toLang = 'zh-CN', this.preferred}) {
   /// 优先尝试的引擎；为空时用 [TranslateEngine.bing]。
   final TranslateEngine? preferred;
 
-  late final HttpClient _http = client ?? HttpClient();
+  /// 外部注入时（测试）不改它，只配自己新建的那个。
+  ///
+  /// [HttpClient.connectionTimeout] 必须设：`Future.timeout()` 只给 Future
+  /// 计时，**不会中断底层 socket**。谷歌在国内的失败形态正是「DNS 通、
+  /// 连接挂住」，不设这个的话超时一到 Future 就抛了，socket 还留在池里
+  /// 慢慢等系统回收；设上才是真的把连接掐掉。
+  late final HttpClient _http =
+      client ?? (HttpClient()..connectionTimeout = _timeout);
 
   /// 原文到译文的缓存。上限 [maxCache]，满了清空——短信场景里
   /// 老文案复用价值低，不值得做 LRU。
@@ -158,15 +165,7 @@ class Translator({this.client, this.toLang = 'zh-CN', this.preferred}) {
     return true;
   }
 
-  /// 本次会话里各引擎的实际尝试顺序。
-  ///
-  /// 规则：
-  /// 1. 上次成功的引擎排最前——它已经被证明在这台设备上能用。
-  /// 2. 首选其次，用户的选择仍然受尊重。
-  /// 3. 失败过 `demoteAfter` 次的沉到末尾。
-  ///
-  /// 光靠「首选在前」不够：谷歌不通时每条短信都要先吃满超时再降级，
-  /// 用户看到的是每张卡片都卡几秒。让成功过的引擎记住位置才真的快。
+  /// 本次会话里各引擎的实际尝试顺序。见 [orderEngines] 的规则。
   List<TranslateEngine> get engineOrder => orderEngines(
     preferred: preferred,
     lastGood: _lastGood,
@@ -177,14 +176,15 @@ class Translator({this.client, this.toLang = 'zh-CN', this.preferred}) {
   /// [engineOrder] 的纯逻辑本体。
   ///
   /// 抽成静态纯函数是为了能真测：[engineOrder] 依赖实例里的私有状态，
-  /// 测试没法把「某引擎已经失败过一次」注入进去，只能靠真跑一次网络
-  /// 失败来间接验证——而那个间接验证会被 [_lastGood] 盖住（成功过的
-  /// 引擎本来就排第一，沉底逻辑没机会显形）。变异测试实锤过这一点。
+  /// 测试没法把「某引擎已经失败过一次」注入进去。
   ///
   /// 规则：
   /// 1. 上次成功的引擎排最前——它已被证明在这台设备上能用。
   /// 2. 首选其次，用户的选择仍然受尊重。
   /// 3. 失败次数达到 [demoteAfter] 的，沉到末尾。
+  ///
+  /// 光靠「首选在前」不够：谷歌不通时每条短信都要先吃满超时再降级，
+  /// 用户看到的是每张卡片都卡几秒。让成功过的引擎记住位置才真的快。
   static List<TranslateEngine> orderEngines({
     required TranslateEngine? preferred,
     required TranslateEngine? lastGood,
@@ -192,23 +192,20 @@ class Translator({this.client, this.toLang = 'zh-CN', this.preferred}) {
     required int demoteAfter,
   }) {
     final head = preferred ?? TranslateEngine.bing;
-    // 这里不排 lastGood 与 head 的重复：下面 healthy 的 contains 判断
-    // 就是去重。实测过——把 e != lastGood 加回去，行为一模一样，
-    // 也就是说那个条件是不可测的冗余分支。
+    // base 必须无重复，两个来源都要排：lastGood 可能是 head 本身，
+    // 也可能在 values 里再出现一次。以前只靠 healthy 的 contains 去重，
+    // sick 分支漏了，于是首选失败时会多吐一个重复项。
     final base = <TranslateEngine>[
-      ?lastGood,
+      if (lastGood != null && lastGood != head) lastGood,
       head,
       for (final e in TranslateEngine.values)
-        if (e != head) e,
+        if (e != head && e != lastGood) e,
     ];
+    // base 已保证无重复，这里只是稳定分区，不需要 contains。
     final healthy = <TranslateEngine>[];
     final sick = <TranslateEngine>[];
     for (final e in base) {
-      if ((fails[e] ?? 0) >= demoteAfter) {
-        sick.add(e);
-      } else if (!healthy.contains(e)) {
-        healthy.add(e);
-      }
+      ((fails[e] ?? 0) >= demoteAfter ? sick : healthy).add(e);
     }
     return [...healthy, ...sick];
   }

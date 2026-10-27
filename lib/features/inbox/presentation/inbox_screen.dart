@@ -104,11 +104,29 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 一被限制就重置是错的做法：每次重置在站点眼里都是一个全新的
   /// 首次访客，连续重置等于「同一个 IP 一分钟来了十个新访客」，
   /// 比单个爬虫更显眼，还白耗 Turnstile 验证次数。
-  final _rotationPolicy = IdentityRotationPolicy();
+  ///
+  /// **必须是 static（进程级）**：以前它是实例字段，而 InboxScreen 每点
+  /// 一个号就 push 一个新实例（numbers_screen / saved_screen 都走
+  /// MaterialPageRoute）—— 于是「配额触发后返回列表、再点下一个号」这条
+  /// 最常见的动作把冷却直接清零，可以无限速地连烧身份和出口。上面那段
+  /// 注释想防的事，本来就被这个实例作用域漏掉了。
+  static final _rotationPolicy = IdentityRotationPolicy();
 
   /// 正在换出口/换身份。见 [_maybeAutoRotate] —— 换的过程中会写状态，
   /// 状态一变又回调进来，没有这个闸门会自激。
   bool _rotating = false;
+
+  /// [_maybeAutoRotate] 的可重入闸。
+  ///
+  /// 必须有这一道：身体里任何一次写状态都会同步回调进
+  /// `InboxStore.onChanged` → 又调回 `_maybeAutoRotate`。
+  ///
+  /// 以前只有 [_rotating]，而它只在换出口那条路上设置；走「换身份」分支时
+  /// 身体里第一句 `_store.note(...)`（`_rotateIdentity` 的同步段）就会回调
+  /// 回来 → `canRotate` 刚被 `record` 打过必然为 false → `note(why)` →
+  /// 再回调 → **纯同步无限递归**，几毫秒爆栈。换出口那条路没炸纯属
+  /// `_rotating` 的巧合，不是设计。
+  bool _autoRotating = false;
 
   /// 上一次因为配额换出口的时间。
   ///
@@ -117,7 +135,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 触发一次。真连着换下去会把 589 条池子在一分钟内烧穿 ——
   /// 而且每换一次在站点眼里都是「同一个 IP 又来一个新访客」的
   /// 反向操作（换出口不换 IP 是不可能的，但换太快本身也可疑）。
-  DateTime? _lastProxyRotate;
+  ///
+  /// 同 [_rotationPolicy]：**必须是 static**。停在这里就够的冷却，一旦
+  /// 回到列表再点下一个号就归零，等于没设。
+  static DateTime? _lastProxyRotate;
 
   /// 两次换出口之间至少隔这么久。
   ///
@@ -183,7 +204,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// 节流是为了别把新身份一次性打光：刚换完立刻又撞墙，
   /// 那个身份就白扔了。
+  ///
+  /// 这里只是可重入闸；真正的判定在 [_maybeAutoRotateBody]，见 [_autoRotating]。
   void _maybeAutoRotate() {
+    if (_autoRotating) return;
+    _autoRotating = true;
+    try {
+      _maybeAutoRotateBody();
+    } finally {
+      _autoRotating = false;
+    }
+  }
+
+  void _maybeAutoRotateBody() {
     if (_rotating) return;
     final hold = _store.state.hold;
     final status = _store.state.status;
@@ -268,7 +301,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     await Future<void>.delayed(const Duration(milliseconds: 120));
     // 代理必须最先设：垫片和第一个页面请求都会带流量出去，
     // 晚一步就是真实 IP 先露一次。
-    await _applyProxyPlan();
+    //
+    // 返回 null = 代理没设上 → **就此停下**，绝不能往下走到 loadRequest：
+    // 那会拿真实 IP 去撞站点（见 _applyProxyPlan）。
+    if (await _applyProxyPlan() == null) return;
     final shimmed = await installBrowserShim();
     if (!shimmed) {
       debugPrint('浏览器垫片没装上（内核太老或找不到 WebView）');
@@ -323,32 +359,42 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 把计划里的代理设上，必要时连带把浏览器身份换掉。
   ///
-  /// 失败时**不**继续 —— 拿真实 IP 去撞站点，比不打开更糟：
-  /// 它会把这个 IP 的额度也吃掉。
-  Future<void> _applyProxyPlan() async {
+  /// 返回 `null` = **别继续**：代理没设上就 `loadRequest`，等于拿真实 IP
+  /// 去撞站点，比不打开更糟 —— 它会把这个 IP 的额度也吃掉。
+  /// 调用方 [_startUp] 必须检查返回值。
+  ///
+  /// 以前这里返回 void、调用方也不看，于是「代理不可用，已停下。」这句
+  /// 话只是写了一行提示，页面照旧用真实 IP 打开；而且因为提前 return，
+  /// `commitOpen` 也没执行 —— 额度被吃了，账本还不知道。
+  Future<ActiveProxy?> _applyProxyPlan() async {
     final plan = _openPlan;
-    if (plan == null) return;
+    if (plan == null) return null;
     final active = await _proxyEngine.apply(plan.proxy);
-    if (!mounted) return;
+    if (!mounted) return null;
     _store.note(active.ok ? '出口：${active.detail}' : '代理没设上：${active.detail}');
     if (!active.ok && !plan.proxy.isDirectProxy) {
-      _store.note('代理不可用，已停下。换一条代理再试。');
-      return;
+      _store.fail('代理不可用，已停下。换一条代理再试。');
+      return null;
     }
 
-    // 换出口的同时必须把浏览器身份也换掉。
+    // 换出口的同时必须把**浏览器身份**也换掉，三条分支一条都不能漏。
     //
-    // 之前这里只设代理就 loadRequest 了 —— 账本判定 rotate（当前身份
-    // 用满 3 个号）时，出口换了，UA 却还是原来那个，站点那边一眼看出
-    // 「同一个人换了条线路又回来了」。账本里记的新 UA 是凭空 mint 的，
-    // 页面根本没用上，等于白记。
+    // 判据是「账本的 binding 是不是浏览器当前这台设备」，不是「出口换没换」：
+    // 账本说 B 而页面露 A，站点交叉核对 UA 与客户端提示就看出来 ——
+    // 本仓 browser_identity.dart 开头写着「一旦对不上，比不伪装更明显」。
     //
-    // 三种计划区别对待，不能一把清：
-    //   rotate  → 新身份：换 UA + **清浏览数据**（新身份不能带着旧密钥）
-    //   restore → 切回原身份：只换 UA，**绝不清数据** —— 它的全部价值
-    //             就在于复用原来那对 ECDSA 密钥和「已读过哪些号」的记录。
-    //             清掉等于又造一个全新身份，白吃一次额度。
-    //   reuse   → 什么都不用做
+    // 三条分支的区别只在**清不清数据**，不能一把清：
+    //   rotate  → 现造的新设备：换 UA + **清浏览数据**（新身份不能带着旧密钥）
+    //   restore → 切回账本里已有的老设备：只换 UA，**绝不清数据** —— 它的
+    //             全部价值就在于复用原来那对 ECDSA 密钥和「已读过哪些号」
+    //             的记录。清掉等于又造一个全新身份，白吃一次额度。
+    //   reuse   → 同样是账本里已有的设备，同样只换 UA、不清数据；差别是它
+    //             连出口都没换。以前这里写的是「什么都不用做」，那句是错的：
+    //             reuse 当时还覆盖着「这条出口从没绑过、刚 mint 了一份新
+    //             身份」那条路 —— 那条已改判成 rotate（见 identity_ledger.plan）。
+    //
+    // 三条分支跑完，下面还会统一补一次 setUserAgent —— applyBoundIdentity 换的
+    // 是全局身份，WebView 自己那个 UA 得单独设。
     if (plan.rotated) {
       applyBoundIdentity(
         userAgent: plan.binding.userAgent,
@@ -358,6 +404,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 站点认人靠 IndexedDB 里那对密钥，光换 UA 没用 —— 必须清掉。
       // 否则新身份带着旧密钥回来，站点眼里还是同一个人。
       await clearBrowsingData();
+      // 通行证跟着一起作废：cf_clearance 绑在旧 (IP, UA) 上，
+      // 新出口配新身份还带着它，比不带更像在伪造。
+      forgetClearance();
       if (!mounted) return;
       await persistCurrentIdentity();
       if (!mounted) return;
@@ -369,8 +418,36 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       );
       // 不清数据，但要保证页面上真的用上了这个 UA。
       if (mounted) await persistCurrentIdentity();
-      if (!mounted) return;
+      if (!mounted) return null;
+    } else if (currentUserAgent != plan.binding.userAgent) {
+      // reuse：binding 是账本里**已有**的那台设备，但浏览器当前不一定就是它。
+      //
+      // 例：先看 A 出口的号（身份 A），再看 B 出口的号（身份 B），回头点 B 的
+      // 另一个号 —— owner 是 B、和 current 相同，于是走 reuse 而不是 restore，
+      // 而浏览器此刻装着的是 A。不补这一刀，账本说 B、页面露 A。
+      //
+      // 与 rotate 的差别只在**清不清数据**：这台设备之前就用过这个出口，
+      // 它的密钥和「已读过哪些号」都得留着。
+      applyBoundIdentity(
+        userAgent: plan.binding.userAgent,
+        model: plan.binding.model,
+        chromeMajor: plan.binding.chromeMajor,
+      );
+      if (mounted) await persistCurrentIdentity();
+      if (!mounted) return null;
     }
+
+    // rotate / restore 都在上面把**全局身份**换成了 plan.binding，但 WebView
+    // 自己的 UA 是 _buildController() 在 initState 里同步焊死的，那时还是
+    // 计划应用**之前**的旧身份。不补这一刀，站点看到的 navigator.userAgent
+    // 是旧设备，而 navigator.userAgentData（垫片紧跟着读 currentIdentity）
+    // 是另一台 —— 本仓 browser_identity.dart 开头自己写着「客户端提示必须
+    // 和 UA 同步……一旦对不上，比不伪装更明显」。
+    //
+    // 位置也是死的：必须在 _startUp 的 installBrowserShim() 之前 ——
+    // 垫片一装上，它里面的 brands / model 就改不了了。
+    await _controller.setUserAgent(plan.binding.userAgent);
+    if (!mounted) return null;
 
     // 代理设成了才记账。没设成就记一笔的话，这个出口的 3 个额度
     // 会被白白吃掉 —— 而且记的还是别人的账。
@@ -384,6 +461,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 回头点老号才会走到这 —— 说清楚是「切回原来那条」，不是又轮换。
       _store.note('切回原出口：${plan.proxy.displayName}（${plan.reason}）');
     }
+    return active;
   }
 
   /// 25 秒还没拿到任何东西，提示可能卡在风控上。
@@ -508,6 +586,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       //    时间点删：about:blank 的 origin 碰不到站点库，
       //    而等站点自己发完请求再删，旧密钥已经用过了。
       final ok = await clearBrowsingData();
+      // 同上：旧证绑在旧 (IP, UA) 上，换完就是废纸。
+      forgetClearance();
 
       final identity = rotateIdentity();
       await _controller.setUserAgent(identity.userAgent);
@@ -925,6 +1005,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     } catch (e) {
       debugPrint('加载更多失败: $e');
       _store.markLoadingMore(done: true);
+      // 超时有提示（见上面的看门狗），这里原来只有 debugPrint ——
+      // 同样是「没翻成」，一个说话一个不说，用户无从知道该怎么办。
+      _store.note('翻页失败，稍后再试');
     }
   }
 
@@ -1493,9 +1576,11 @@ class _MessageTileState() extends ConsumerState<_MessageTile> {
 
   /// 确保这条消息有一次翻译请求。
   ///
-  /// 不能只在 initState 里踢一次：用户在设置里「清除翻译缓存」或切换
-  /// 目标语言之后，卡片还在屏幕上、state 里的条目已经没了，
-  /// 不补一次请求就永远停在原文。request() 自身按 key 去重，重复调用无害。
+  /// 不能只在 initState 里踢一次：用户在设置里「清除翻译缓存」、切换
+  /// 目标语言、或**换翻译引擎**之后，卡片还在屏幕上、state 里的条目已经没了，
+  /// 不补一次请求就永远停在原文（换引擎那条尤其坑：失败条目不重试，
+  /// 不清缓存的话换完引擎他看到的还是同一片失败卡片）。
+  /// request() 自身按 key 去重，重复调用无害。
   void _ensureRequested(bool hasEntry) {
     if (!widget.translate || hasEntry) return;
     if (widget.message.text.isEmpty) return;

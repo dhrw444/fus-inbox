@@ -5,6 +5,8 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.webkit.WebView
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import io.flutter.embedding.android.FlutterActivity
@@ -45,13 +47,28 @@ class MainActivity : FlutterActivity() {
     private fun installBrowserShim(args: Map<*, *>?): Boolean {
         return try {
             val webView = findWebView() ?: return false
-            val major = args?.get("chromeMajor") as? String ?: return false
-            val full = args["appVersion"] as? String ?: return false
+            val major = args?.get("chromeMajor") as? String ?: ""
+            val full = args["appVersion"] as? String ?: ""
+            // 这几个值现在只是**兜底**，缺了不该拒绝安装。
+            //
+            // 垫片已经从 navigator.userAgent 自己推身份了（见
+            // BrowserShim.kt 里的推导段），参数只在 UA 完全解不出来时
+            // 才会被用上。所以「缺参数 = 不装垫片」是过度反应：
+            // 装不上垫片意味着 window.chrome / navigator.plugins 也一起没了，
+            // 那两个比 client hints 更要紧，代价比兜底值不全大得多。
+            val platformVersion = args["platformVersion"] as? String ?: ""
             val platform = args["platform"] as? String ?: "Android"
             val model = args["model"] as? String ?: ""
             val isMobile = args["isMobile"] as? Boolean ?: true
 
-            val script = buildBrowserShim(major, full, platform, model, isMobile)
+            val script = buildBrowserShim(
+                major,
+                full,
+                platformVersion,
+                platform,
+                model,
+                isMobile,
+            )
 
             // FEATURE_DOCUMENT_START_SCRIPT 在 WebView 内核 89+ 才有。
             // 老内核返回 false，页面照常打开，只是没有垫片。
@@ -61,6 +78,86 @@ class MainActivity : FlutterActivity() {
             WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
             true
         } catch (error: Exception) {
+            false
+        }
+    }
+
+    /// 把 client hints 也改成我们声称的身份。
+    ///
+    /// **为什么必须做**：WebView 发出的 `Sec-CH-UA*` 请求头由引擎按
+    /// **真实内核版本**生成，而 UA 字符串是我们自己设的。身份在真实内核
+    /// 附近浮动 ±2 之后（见 browser_identity.dart 的 `_kernelMajor`），
+    /// 「UA 说 Chrome/143、Sec-CH-UA 头说 141」就成立 —— 撕裂面从
+    /// 「版本号乱编」变成「UA 与请求头不一致」，而 Cloudflare 恰好能同时
+    /// 看到这两处。本文件上面 `deviceProfile()` 那段注释担心的正是这件事，
+    /// 当年是靠「身份钉死在内核版本上」绕开的，现在有了真正的解法。
+    ///
+    /// 垫片（BrowserShim）只改了页面里 JS 读到的 `navigator.userAgentData`，
+    /// **改不了 HTTP 头**。这里是唯一能改头的地方。
+    ///
+    /// 三份数据必须同源：设进去的 UA、这里的 metadata、垫片里的
+    /// BRANDS / FULL_LIST —— 全部由 Dart 侧同一组参数生成。
+    ///
+    /// @return 是否真的设上了。false 不是错误：老内核不支持这个特性时
+    ///         只能靠「身份不偏离内核」兜底。
+    private fun applyUserAgentMetadata(args: Map<*, *>?): Boolean {
+        if (args == null) return false
+        val major = args["chromeMajor"] as? String ?: return false
+        val full = args["appVersion"] as? String ?: return false
+        val platformVersion = args["platformVersion"] as? String ?: return false
+        val platform = args["platform"] as? String ?: "Android"
+        val model = args["model"] as? String ?: ""
+        val isMobile = args["isMobile"] as? Boolean ?: true
+        if (major.isBlank() || full.isBlank()) return false
+        // BrandVersion.Builder.build() 对空串会抛 IllegalArgumentException，
+        // 这里先挡一道，别让一个空机型串把整条通道打挂。
+        val pv = if (platformVersion.contains('.')) platformVersion else
+            "$platformVersion.0.0"
+
+        val webView = findWebView() ?: return false
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) {
+            return false
+        }
+        return try {
+            // GREASE 占位品牌。真 Chrome 的 sec-ch-ua 里必有这么一项，
+            // 缺了反而是特征。必须与 BrowserShim.kt 里的 BRANDS / FULL_LIST
+            // 逐字同值 —— 一处改了另一处没改，就又造出一个不一致。
+            val brands = listOf(
+                UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand("Chromium")
+                    .setMajorVersion(major)
+                    .setFullVersion(full)
+                    .build(),
+                UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand("Google Chrome")
+                    .setMajorVersion(major)
+                    .setFullVersion(full)
+                    .build(),
+                UserAgentMetadata.BrandVersion.Builder()
+                    .setBrand("Not?A_Brand")
+                    .setMajorVersion("99")
+                    .setFullVersion("99.0.0.0")
+                    .build(),
+            )
+            val metadata = UserAgentMetadata.Builder()
+                .setBrandVersionList(brands)
+                .setFullVersion(full)
+                .setPlatform(platform)
+                .setPlatformVersion(pv)
+                .setArchitecture("arm")
+                // 传字面量 64：这个类里**没有** BITNESS_64 常量
+                // （javap 过 1.14.0 的 aar，只有 BITNESS_DEFAULT = 0），
+                // 官方文档里那行示例是错的。
+                .setBitness(64)
+                .setModel(model)
+                .setMobile(isMobile)
+                .setWow64(false)
+                .build()
+            WebSettingsCompat.setUserAgentMetadata(webView.settings, metadata)
+            true
+        } catch (error: Exception) {
+            // 内核版本够新但具体实现不认某个字段时会走到这里。
+            // 设不上也不该崩 —— 页面照常能用，只是回到「不偏离内核」的兜底。
             false
         }
     }
@@ -106,30 +203,56 @@ class MainActivity : FlutterActivity() {
     ///
     /// IndexedDB 没有公开的清除 API，由 Dart 侧在页面里用
     /// `indexedDB.deleteDatabase()` 处理，这里负责剩下三样。
-    private fun clearBrowsingData(): Boolean {
-        return try {
-            val latch = java.util.concurrent.CountDownLatch(1)
-            // removeAllCookies 要 ValueCallback<Boolean>。这是 Java 接口，
-            // Kotlin 里不能写 lambda 直接转换，必须显式实现对象。
-            val callback = object : android.webkit.ValueCallback<Boolean> {
-                override fun onReceiveValue(value: Boolean?) {
-                    latch.countDown()
-                }
-            }
-            android.webkit.CookieManager.getInstance().removeAllCookies(callback)
-            // 最多等 2 秒。等不到也继续清剩下的 ——
-            // 不能因为 cookie 回调慢就整件事都不做。
-            latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
-
+    private fun clearBrowsingDataAsync(result: MethodChannel.Result) {
+        // 回给 Dart 的判定，沿用原来的语义：**有没有抛异常**。
+        // 不用回调里那个 Boolean —— 「本来就没 cookie」也可能回 false，
+        // 那会把一次正常清理误报成「没清干净」。
+        val ok = java.util.concurrent.atomic.AtomicBoolean(true)
+        try {
             // localStorage / sessionStorage 全站点清空。
             android.webkit.WebStorage.getInstance().deleteAllData()
             // HTTP 认证凭据，顺手一起。
             android.webkit.WebViewDatabase.getInstance(this)
                 .clearHttpAuthUsernamePassword()
-
-            true
         } catch (error: Exception) {
-            false
+            // 原先这里会冒泡到外层 catch 返回 false —— 语义保持一致：
+            // Dart 侧会据此弹「站点数据没清干净」的警告。
+            ok.set(false)
+        }
+
+        val handler = android.os.Handler(android.os.Looper.getMainLooper())
+        val done = java.util.concurrent.atomic.AtomicBoolean(false)
+        // 只回复一次 —— MethodChannel.Result 二次调用会抛异常。
+        val finish = { success: Boolean ->
+            if (done.compareAndSet(false, true)) {
+                handler.post { result.success(success) }
+            }
+        }
+        try {
+            // removeAllCookies 要 ValueCallback<Boolean>。这是 Java 接口，
+            // Kotlin 里不能写 lambda 直接转换，必须显式实现对象。
+            //
+            // **不要在回调里只 countDown 然后 await** —— 这个函数跑在
+            // MethodChannel 的处理线程上，也就是**平台主线程**：
+            // await 等于把 UI 冻住（这里原先等 2 秒），而换身份一定会
+            // 走到这里，所以每次换号都必然卡一下，极端情况还有 ANR 风险。
+            //
+            // 正确做法是**异步回复**：MethodChannel.Result 可以从任意
+            // 线程调用，把 result 交出去、回调来了再 success。
+            // 顺序保证不变 —— Dart 侧 await 到的那一刻 cookie 确实已经
+            // 清完了（原来靠 latch 保证的正是这一点）。
+            val callback = object : android.webkit.ValueCallback<Boolean> {
+                override fun onReceiveValue(value: Boolean?) {
+                    finish(ok.get())
+                }
+            }
+            android.webkit.CookieManager.getInstance().removeAllCookies(callback)
+            // 兜底：WebView 偶尔不回调（进程刚起、内核还在初始化）。
+            // 2 秒后自己收尾，时长与原实现一致，但**不冻 UI**；
+            // 且照原样算成功（原实现的 latch 超时也是继续往下返回 true）。
+            handler.postDelayed({ finish(ok.get()) }, 2000)
+        } catch (error: Exception) {
+            finish(false)
         }
     }
 
@@ -240,9 +363,13 @@ class MainActivity : FlutterActivity() {
                         val args = call.arguments as? Map<*, *>
                         result.success(installBrowserShim(args))
                     }
-                    "clearBrowsingData" -> {
-                        result.success(clearBrowsingData())
+                    "applyUserAgentMetadata" -> {
+                        val args = call.arguments as? Map<*, *>
+                        result.success(applyUserAgentMetadata(args))
                     }
+                    // 注意这里**不**同步回复：cookie 是异步 API，
+                    // 回复要等到真的清完（见 clearBrowsingDataAsync）。
+                    "clearBrowsingData" -> clearBrowsingDataAsync(result)
                     "getCookies" -> {
                         val url = call.argument<String>("url")
                         if (url == null) {

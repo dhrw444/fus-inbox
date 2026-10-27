@@ -23,39 +23,87 @@ class const SavedScreen({super.key}) extends ConsumerWidget {
 
     final items = dir.all.where((n) => saved.contains(n.id)).toList();
 
-    if (items.isEmpty) {
+    // 目录还在加载时 all 就是空的。这一支必须先判 —— 否则用户看到的是
+    // 「收藏的号码不在当前目录里」，读起来就是「我的收藏丢了」，
+    // 而事实上只是网络还没回来。
+    if (items.isEmpty && dir.loading) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 64,
-                height: 64,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: theme.colorScheme.surfaceContainerHighest.withValues(
-                    alpha: 0.6,
-                  ),
-                ),
-                child: Icon(
-                  Icons.star_border_rounded,
-                  size: 30,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+              const SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
               ),
-              const SizedBox(height: 18),
+              const SizedBox(height: 16),
               Text(
-                saved.isEmpty ? '还没有收藏的号码' : '收藏的号码不在当前目录里',
-                style: theme.textTheme.titleSmall,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                saved.isEmpty ? '在号码列表点右侧的星标就存下来了' : '下拉刷新一下试试',
+                dir.status.isEmpty ? '正在取号码目录…' : dir.status,
                 textAlign: TextAlign.center,
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (items.isEmpty) {
+      // 「下拉刷新一下试试」以前是句空话：这个文件里没有任何
+      // RefreshIndicator，用户照着做只会以为是自己手势不对。
+      // 现在这句话真能照做了。
+      //
+      // 要套 LayoutBuilder + ConstrainedBox 是因为空态内容撑不满一屏，
+      // 没有这条 ListView 就滚不动，RefreshIndicator 也就触发不了。
+      return RefreshIndicator(
+        onRefresh: () =>
+            ref.read(numberDirectoryProvider.notifier).load(force: true),
+        child: LayoutBuilder(
+          builder: (context, constraints) => ListView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            children: [
+              ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: 64,
+                          height: 64,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: theme.colorScheme.surfaceContainerHighest
+                                .withValues(alpha: 0.6),
+                          ),
+                          child: Icon(
+                            Icons.star_border_rounded,
+                            size: 30,
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                        Text(
+                          saved.isEmpty ? '还没有收藏的号码' : '收藏的号码不在当前目录里',
+                          style: theme.textTheme.titleSmall,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          saved.isEmpty ? '在号码列表点右侧的星标就存下来了' : '下拉刷新一下试试',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
             ],

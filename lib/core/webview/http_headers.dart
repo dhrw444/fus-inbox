@@ -31,10 +31,30 @@ import 'package:fus_inbox/core/webview/browser_identity.dart';
 /// 一条链路带着通行证、另一条裸奔，站点的 bot score 会很难看。
 String? _clearance;
 
+/// 拿这张通行证时用的是哪个 UA。
+///
+/// `cf_clearance` 是绑在 (IP, UA) 上的：同一个 App 换了身份或换了出口
+/// 之后再用旧证，等于拿着上一个身份的通行证去开门 —— 比不带更像伪造。
+String? _clearanceUserAgent;
+
 /// 记住通行证。由收件页读到后调用。
 void rememberClearance(String value) {
-  if (value.isNotEmpty) _clearance = value;
+  if (value.isEmpty) return;
+  _clearance = value;
+  _clearanceUserAgent = currentUserAgent;
 }
+
+/// 忘掉通行证。
+///
+/// 换身份 / 换出口 / 清浏览数据之后应当显式调用。
+/// （就算漏了也不致命：[applyBrowserHeaders] 里还有一道身份比对兜底。）
+void forgetClearance() {
+  _clearance = null;
+  _clearanceUserAgent = null;
+}
+
+/// 当前是否持有一张仍可用的通行证。
+bool get hasClearance => _clearance != null;
 
 /// 给一个请求装上一整套真实 Chrome 会发的头。
 ///
@@ -82,10 +102,14 @@ void applyBrowserHeaders(
     headers.set(HttpHeaders.refererHeader, '$base/numbers/');
   }
 
-  // 有通行证就带上。没有不发——发个空的 cf_clearance 反而是
-  // 明确的「我试过但没拿到」信号。
+  // 有通行证就带上 —— 但**必须还是拿证时那台设备**。
+  //
+  // 以前这里只判 `_clearance != null`，而全仓只有 remember 没有 forget：
+  // 换身份、换出口、清浏览数据之后，旧证会一直发到下一次
+  // markReady → _syncClearance 把它覆盖为止；如果新会话一直没 ready
+  // （比如卡在验证），旧证就被无限期发下去。
   final clearance = _clearance;
-  if (clearance != null) {
+  if (clearance != null && _clearanceUserAgent == currentUserAgent) {
     headers.set(HttpHeaders.cookieHeader, 'cf_clearance=$clearance');
   }
 }

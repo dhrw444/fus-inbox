@@ -99,7 +99,22 @@ class InboxStore({this.onChanged}) {
     }
     if (type == 'moreFail') {
       // 失败不等于没有更多：保留 hasMore，用户还能再试一次。
-      _emit(_state.copyWith(loadingMore: false));
+      //
+      // 但要**说出来**。以前这里只把 loadingMore 关掉：转圈消失、
+      // 按钮回来，界面和「什么都没发生」长得一模一样，用户只会以为
+      // 是自己没点到。JS 侧三条失败路径（no_cursor / no_id / 抛异常）
+      // 全汇到这里，此前都没有下文。
+      final reason = '${payload['reason'] ?? payload['err'] ?? ''}';
+      _emit(
+        _state.copyWith(
+          loadingMore: false,
+          status: switch (reason) {
+            'no_cursor' => '站点没给翻页游标，稍后再试',
+            'no_id' => '拿不到号码标识，翻页停在这里',
+            _ => '翻页失败，稍后再试',
+          },
+        ),
+      );
       return;
     }
 

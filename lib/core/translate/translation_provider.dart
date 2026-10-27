@@ -68,6 +68,11 @@ class TranslationStore() extends Notifier<Map<String, TranslationEntry>> {
     // 目标语言一变，之前所有译文都作废。监听并清空，
     // 否则用户切到繁体后会一直看到旧的简体结果。
     ref.watch(prefsProvider.select((p) => p.targetLang));
+    // 换引擎也必须清空，而且这条更要命：失败的条目不重试（见 _run 的 catch），
+    // 用户换引擎的动机十有八九就是「这家不通」——不清的话他换完看到的
+    // 还是同一片失败卡片，只会以为设置没生效。
+    // 代价是已翻好的译文也重来一遍；短信译文都是短文本，值这个钱。
+    ref.watch(prefsProvider.select((p) => p.engine));
     // 语言变了：旧的 in-flight 结果全部作废。
     _gen++;
     _inflight.clear();

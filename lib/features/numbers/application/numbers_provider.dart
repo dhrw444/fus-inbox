@@ -24,6 +24,7 @@ enum NumberTab(this.label) {
 /// 排序方式。
 enum NumberSort(this.label) {
   recent('最近活跃'),
+  firstSeen('收录时间'),
   messages('短信最多'),
   number('号码顺序');
 
@@ -77,7 +78,16 @@ class const NumberDirectoryState({
   }
 
   /// 当前页签 + 搜索词 + 排序之后真正要显示的号码。
-  List<AvailableNumber> visibleFor(NumberTab tab) {
+  ///
+  /// [firstSeen] 只有 [NumberSort.firstSeen] 用得上，所以做成可选参数：
+  /// 收录时间存在 FirstSeenStore 里（另一个 provider），不在这个 state 上。
+  /// 不把它塞进 state 是有意的 —— 目录 state 不该反向依赖收录时间仓库，
+  /// 而且收录时间会在「打开一个新号」时单独变化，塞进来就还要再维护一层
+  /// 同步，容易变成两个真相。
+  List<AvailableNumber> visibleFor(
+    NumberTab tab, {
+    Map<String, DateTime> firstSeen = const {},
+  }) {
     Iterable<AvailableNumber> items = all;
 
     final q = query.trim().toLowerCase();
@@ -109,6 +119,24 @@ class const NumberDirectoryState({
           final at = a.lastTextAt ?? '';
           final bt = b.lastTextAt ?? '';
           return bt.compareTo(at);
+        });
+      case NumberSort.firstSeen:
+        // 新收录的在前。
+        //
+        // 从没收录过的（表里没记录）一律沉到最后，**不能当成 1970 年**：
+        // 那样它们会永远卡在列表底部，而且 `?? 零点` 这类写法在
+        // 升/降序切换时很容易反过来把空值顶到最前。
+        //
+        // 并列时按号码排一下，让结果稳定 —— List.sort 不保证稳定，
+        // 只回 0 的话同一批并列项每次刷新顺序都可能变。
+        list.sort((a, b) {
+          final at = firstSeen[a.number];
+          final bt = firstSeen[b.number];
+          if (at == null && bt == null) return a.number.compareTo(b.number);
+          if (at == null) return 1;
+          if (bt == null) return -1;
+          final byTime = bt.compareTo(at);
+          return byTime != 0 ? byTime : a.number.compareTo(b.number);
         });
       case NumberSort.messages:
         list.sort((a, b) => b.messageCount.compareTo(a.messageCount));

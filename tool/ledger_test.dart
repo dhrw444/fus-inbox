@@ -60,7 +60,13 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(plan.action, OpenAction.reuse, '首次不轮换');
+    // 契约已改：在一条**从没绑过**的出口上第一次开号，账本现造一台新设备
+    // → 必须是 rotate（换身份 + 清密钥），不是 reuse。
+    //
+    // 以前这里断言 reuse，于是 _applyProxyPlan 的 reuse 分支「什么都不用做」：
+    // 账本记下新设备，页面却还挂着上一条出口的旧身份和旧密钥。判据是
+    // 「binding 是现造的还是账本里已有的」，不是「出口换没换」。
+    eq(plan.action, OpenAction.rotate, '首次要轮换（新设备）');
     eq(plan.binding.used, 0, '首次身份未用');
     eq(plan.proxy.id, pool[0].id, '用当前代理');
     led.commit(plan.proxy.id, 'n1', plan.binding);
@@ -84,7 +90,13 @@ void main() {
         mintModel: mintModel,
         mintChromeMajor: mintChrome,
       );
-      eq(plan.action, OpenAction.reuse, '第 $i 个号仍复用');
+      // 第 1 个号是「这条出口上第一次开号」→ 现造新设备 → rotate；
+      // 第 2、3 个号才复用同一台设备。
+      eq(
+        plan.action,
+        i == 1 ? OpenAction.rotate : OpenAction.reuse,
+        i == 1 ? '第 $i 个号是新设备，要轮换' : '第 $i 个号仍复用',
+      );
       led.commit(plan.proxy.id, 'n$i', plan.binding);
     }
     eq(led.forProxy(pool[0].id)!.used, 3, '第一个身份用满 3 个');
@@ -154,7 +166,8 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(b.action, OpenAction.reuse, '代理 1 首次不轮换');
+    // 同第 2 组：代理 1 也是从没绑过 → 现造新设备 → rotate。
+    eq(b.action, OpenAction.rotate, '代理 1 首次要轮换（新设备）');
     led.commit(b.proxy.id, 'y1', b.binding);
     // 现在在代理 1，用满 1 个 → 轮换到下一个（环形）
     final c = led.plan(

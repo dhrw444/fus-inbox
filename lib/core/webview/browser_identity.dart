@@ -160,7 +160,35 @@ BrowserIdentity _current = BrowserIdentity.fallback;
 
 BrowserIdentity get currentIdentity => _current;
 
+/// 设备真实内核的 Chrome 大版本。
+///
+/// **换身份时浮动的唯一基准**，必须不可被 [rotateIdentity] /
+/// [mintIdentity] 覆盖。
+///
+/// 之前它们拿 `_current.chromeMajor` 当基准 —— 那正是自己上一次的输出，
+/// 于是每换一次身份就是一次带负漂的随机游走（`r.nextInt(4) - 2` 取值
+/// {−2,−1,0,+1}，均值 −0.5）。实测从内核 141 起：约 85 次跌破 Chrome 100，
+/// 约 290 次变成 0 或负数，而 `identityToJson` 还会把这个值落盘、
+/// 跨重启继续漂。表现就是「Android 16 的机器装着 2020 年的 Chrome」，
+/// 和真内核越差越远 —— 换身份这个功能从降低风控变成制造矛盾。
+int? _kernelMajor;
+
+/// 当前记着的内核大版本。没探测到过就是 null。
+int? get kernelMajor => _kernelMajor;
+
+/// 记下真实内核大版本。**只在原生探测到 UA 时调用**。
+///
+/// 不要从 [_current] 推 —— 那是浮动的结果，不是基准。
+void noteKernelMajor(String major) {
+  final v = int.tryParse(major);
+  if (v != null && v > 0) _kernelMajor = v;
+}
+
 /// 用原生探测到的真实身份初始化。App 启动时调用一次。
+///
+/// 注意这里**不**动 [_kernelMajor]：调用方可能传进来的是磁盘上那份
+/// 已经被轮换漂过的身份，拿它当基准就等于把漂移固化。
+/// 基准一律走 [noteKernelMajor]。
 void initBrowserIdentity(BrowserIdentity identity) {
   _current = identity;
 }
@@ -221,10 +249,14 @@ BrowserIdentity rotateIdentity([Random? rnd]) {
   final r = rnd ?? Random();
   final base = _current;
 
-  // 真实内核版本是基准，只在附近浮动——编一个不存在的版本
-  // 比固定版本更可疑。
-  final baseMajor = int.tryParse(base.chromeMajor) ?? 141;
-  final major = baseMajor + r.nextInt(4) - 2;
+  // 注释原来就说「真实内核版本是基准」—— 意图是对的，实现是错的：
+  // 基准取的是 base.chromeMajor，那是**自己上一次的输出**，等于让结果
+  // 喂给自己。基准一律用 [_kernelMajor]（原生探测到的内核真值）。
+  // 探测不到才退回当前值 —— 有漂移风险，但总比没有基准强。
+  final baseMajor = _kernelMajor ?? int.tryParse(base.chromeMajor) ?? 141;
+  // 对称窗口 {−2..+2}：期望 0，不会系统性漂移。
+  // 原来是 `r.nextInt(4) - 2` = {−2,−1,0,+1}，均值 −0.5。
+  final major = baseMajor + r.nextInt(5) - 2;
   final version = '$major.0.${6000 + r.nextInt(4000)}.${r.nextInt(200)}';
 
   final model = _knownModels[r.nextInt(_knownModels.length)];
@@ -255,10 +287,14 @@ BrowserIdentity mintIdentity([Random? rnd]) {
   final r = rnd ?? Random();
   final base = _current;
 
-  // 真实内核版本是基准，只在附近浮动——编一个不存在的版本
-  // 比固定版本更可疑。
-  final baseMajor = int.tryParse(base.chromeMajor) ?? 141;
-  final major = baseMajor + r.nextInt(4) - 2;
+  // 注释原来就说「真实内核版本是基准」—— 意图是对的，实现是错的：
+  // 基准取的是 base.chromeMajor，那是**自己上一次的输出**，等于让结果
+  // 喂给自己。基准一律用 [_kernelMajor]（原生探测到的内核真值）。
+  // 探测不到才退回当前值 —— 有漂移风险，但总比没有基准强。
+  final baseMajor = _kernelMajor ?? int.tryParse(base.chromeMajor) ?? 141;
+  // 对称窗口 {−2..+2}：期望 0，不会系统性漂移。
+  // 原来是 `r.nextInt(4) - 2` = {−2,−1,0,+1}，均值 −0.5。
+  final major = baseMajor + r.nextInt(5) - 2;
   final version = '$major.0.${6000 + r.nextInt(4000)}.${r.nextInt(200)}';
   final model = _knownModels[r.nextInt(_knownModels.length)];
 
