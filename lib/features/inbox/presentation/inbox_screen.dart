@@ -19,6 +19,9 @@ import 'package:webview_flutter/webview_flutter.dart';
 
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
+import 'package:fus_inbox/core/proxy/identity_ledger.dart';
+import 'package:fus_inbox/core/proxy/proxy_engine.dart';
+import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 import 'package:fus_inbox/core/webview/browser_identity.dart';
 import 'package:fus_inbox/core/webview/http_headers.dart';
 import 'package:fus_inbox/core/webview/native_capabilities.dart';
@@ -69,6 +72,15 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 内部状态，不驱动界面 —— 自动路径不需要用户参与。
   bool _verifyReady = false;
 
+  /// 代理引擎：负责起桥 / 设原生代理 / 拆干净。
+  final ProxyEngine _proxyEngine = ProxyEngine();
+
+  /// 本次打开号码时账本给出的计划（用哪个代理、哪个身份）。
+  ///
+  /// 在 initState 里算好，_startUp 里执行 —— 顺序不能反：
+  /// 代理必须在 loadRequest 之前设好，否则第一个请求已经漏了真实 IP。
+  OpenPlan? _openPlan;
+
   /// 验证状态轮询。
   Timer? _verifyPoll;
 
@@ -113,6 +125,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     });
     _controller = _buildController();
     _webViewFuture = createPlatformWebView(_controller);
+    _openPlan = _planForThisNumber();
     // 两条都要等：垫片得在页面任何脚本之前装好，WebView 实例也得
     // 先挂进视图树（原生侧要遍历 content view 才找得到那个实例）。
     unawaited(_startUp());
@@ -196,6 +209,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 造不出来就算了，下面照样尝试加载。
     }
     await Future<void>.delayed(const Duration(milliseconds: 120));
+    // 代理必须最先设：垫片和第一个页面请求都会带流量出去，
+    // 晚一步就是真实 IP 先露一次。
+    await _applyProxyPlan();
     final shimmed = await installBrowserShim();
     if (!shimmed) {
       debugPrint('浏览器垫片没装上（内核太老或找不到 WebView）');
@@ -206,6 +222,54 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 我们只盯状态。全程不需要用户参与 —— 只有用户主动点了
     // 「自己过验证」才会把页面露出来（见 _openChallenge）。
     _pumpVerification();
+  }
+
+  /// 按账本决定这次用哪个代理、哪个身份。
+  ///
+  /// 规则：一个代理绑一个身份，一个身份最多看 3 个号，满了就
+  /// 换代理 + 换身份。见 [IdentityLedger]。
+  OpenPlan _planForThisNumber() {
+    final proxyState = ref.read(proxyProvider);
+    // 身份必须是「新造」或「复用」，所以这里给账本三个 mint 函数，
+    // 它只在需要新身份时才调用 —— 不会白烧。
+    return proxyState.ledger.plan(
+      pool: proxyState.pool,
+      currentProxyId: proxyState.currentId,
+      numberId: widget.number.id,
+      // rotateIdentity 是唯一会真的换身份的函数：UA、client hints、
+      // 机型串一起换，保持自洽。账本只在需要新身份时调它。
+      mintUserAgent: () => rotateIdentity().userAgent,
+      mintModel: () => currentIdentity.model,
+      mintChromeMajor: () => currentIdentity.chromeMajor,
+    );
+  }
+
+  /// 把计划里的代理设上。
+  ///
+  /// 失败时**不**继续 —— 拿真实 IP 去撞站点，比不打开更糟：
+  /// 它会把这个 IP 的额度也吃掉。
+  Future<void> _applyProxyPlan() async {
+    final plan = _openPlan;
+    if (plan == null) return;
+    final active = await _proxyEngine.apply(plan.proxy);
+    if (!mounted) return;
+    _store.note(active.ok ? '出口：${active.detail}' : '代理没设上：${active.detail}');
+    if (!active.ok && !plan.proxy.isDirectProxy) {
+      _store.note('代理不可用，已停下。换一条代理再试。');
+      return;
+    }
+
+    // 代理设成了才记账。没设成就记一笔的话，这个出口的 3 个额度
+    // 会被白白吃掉 —— 而且记的还是别人的账。
+    await ref.read(proxyProvider.notifier).commitOpen(
+      plan.proxy.id,
+      widget.number.id,
+      plan.binding,
+    );
+    if (!mounted) return;
+    if (plan.rotated) {
+      _store.note('换到新出口：${plan.proxy.displayName}（${plan.reason}）');
+    }
   }
 
   /// 25 秒还没拿到任何东西，提示可能卡在风控上。
@@ -574,6 +638,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 依然被拒）。反过来只换 IP 不清身份，站点那边还认旧会话。所以
   /// 这两半必须一起 —— App 负责身份这一半，IP 那一半用户来做。
   Future<void> _restartWithNewIdentity() async {
+    // 账本里这个出口的绑定也要清掉 —— 否则下次打开还会拿回同一个
+    // 身份，用户明明换了 IP 却还是旧身份，等于白换。
+    await ref.read(proxyProvider.notifier).resetCurrentIdentity();
+    if (!mounted) return;
     _verifyPoll?.cancel();
     setState(() => _verifyReady = false);
     _store.reset();

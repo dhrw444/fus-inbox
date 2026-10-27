@@ -16,6 +16,9 @@ class MainActivity : FlutterActivity() {
     private var backupResult: MethodChannel.Result? = null
     private val backupRequestCode = 4102
 
+    /// 代理控制。WebView 的 ProxyController 只能原生调。
+    private val proxyBridge by lazy { ProxyControllerBridge(this) }
+
     /// 把浏览器能力垫片装进 WebView。
     ///
     /// ## 为什么必须走原生，不能在 Dart 侧 runJavaScript
@@ -226,6 +229,20 @@ class MainActivity : FlutterActivity() {
                             result.success(readCookies(url))
                         }
                     }
+                    // 代理相关。ProxyController 没有 Dart 侧封装，
+                    // 只能从这里出去。注意不能另开一个 MethodChannel
+                    // 挂同名通道 —— setMethodCallHandler 是覆盖式的，
+                    // 后设的那个会把这里的整个 handler 顶掉。
+                    "applyProxy" -> {
+                        val host = call.argument<String>("host") ?: ""
+                        val port = call.argument<Int>("port") ?: 0
+                        val bypass =
+                            (call.argument<List<String>>("bypass") ?: emptyList())
+                        result.success(proxyBridge.applyHttpProxy(host, port, bypass))
+                    }
+                    "clearProxy" -> result.success(proxyBridge.clearProxy())
+                    "supportsProxy" -> result.success(proxyBridge.supportsProxy())
+                    "webViewVersion" -> result.success(proxyBridge.webViewVersion())
                     else -> result.notImplemented()
                 }
             }

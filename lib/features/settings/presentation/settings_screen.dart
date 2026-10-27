@@ -5,6 +5,7 @@ import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
+import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 
 /// 设置页。
@@ -54,6 +55,9 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
               _LanguageRow(prefs: prefs),
             ],
           ),
+
+          const _GroupLabel(text: '代理'),
+          const _GroupCard(children: [_ProxySection()]),
 
           const _GroupLabel(text: '存储'),
           _GroupCard(
