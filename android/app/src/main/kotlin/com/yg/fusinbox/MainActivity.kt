@@ -48,7 +48,7 @@ class MainActivity : FlutterActivity() {
         return try {
             val webView = findWebView() ?: return false
             val major = args?.get("chromeMajor") as? String ?: ""
-            val full = args["appVersion"] as? String ?: ""
+            val full = args?.get("appVersion") as? String ?: ""
             // 这几个值现在只是**兜底**，缺了不该拒绝安装。
             //
             // 垫片已经从 navigator.userAgent 自己推身份了（见
@@ -56,10 +56,10 @@ class MainActivity : FlutterActivity() {
             // 才会被用上。所以「缺参数 = 不装垫片」是过度反应：
             // 装不上垫片意味着 window.chrome / navigator.plugins 也一起没了，
             // 那两个比 client hints 更要紧，代价比兜底值不全大得多。
-            val platformVersion = args["platformVersion"] as? String ?: ""
-            val platform = args["platform"] as? String ?: "Android"
-            val model = args["model"] as? String ?: ""
-            val isMobile = args["isMobile"] as? Boolean ?: true
+            val platformVersion = args?.get("platformVersion") as? String ?: ""
+            val platform = args?.get("platform") as? String ?: "Android"
+            val model = args?.get("model") as? String ?: ""
+            val isMobile = args?.get("isMobile") as? Boolean ?: true
 
             val script = buildBrowserShim(
                 major,
