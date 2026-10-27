@@ -19,7 +19,8 @@ import 'package:fus_inbox/core/translate/translator.dart';
 /// 这样请求本身就带着新的 tl 参数，不需要在调用处到处传。
 final translatorProvider = Provider<Translator>((ref) {
   final toLang = ref.watch(prefsProvider.select((p) => p.targetLang));
-  final t = Translator(toLang: toLang);
+  final engine = ref.watch(prefsProvider.select((p) => p.engine));
+  final t = Translator(toLang: toLang, preferred: engine);
   ref.onDispose(t.dispose);
   return t;
 });

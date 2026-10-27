@@ -10,10 +10,13 @@ library;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:fus_inbox/core/translate/translator.dart';
+
 const _kTranslate = 'pref_translate';
 const _kShowOriginal = 'pref_show_original';
 const _kFontScale = 'pref_font_scale';
 const _kTargetLang = 'pref_target_lang';
+const _kEngine = 'pref_translate_engine';
 
 /// 界面偏好的不可变快照。
 class const Prefs({
@@ -21,6 +24,7 @@ class const Prefs({
   this.showOriginal = false,
   this.fontScale = 1.0,
   this.targetLang = 'zh-CN',
+  this.engine = TranslateEngine.bing,
   this.restored = false,
 }) {
   /// 是否实时翻译短信正文。
@@ -46,6 +50,15 @@ class const Prefs({
   /// 英文短信翻成哪种中文。
   final String targetLang;
 
+  /// 优先使用的翻译引擎。
+  ///
+  /// 只是「首选」：它挂了会自动换下一家，所以选谷歌但网络不通时
+  /// 仍然能翻出中文，只是慢一点。
+  ///
+  /// 默认微软：谷歌在国内网络基本连不通，而首选不通时第一条短信
+  /// 要白等满 8 秒超时。微软的 Edge 端点在实测里 300ms 内必回。
+  final TranslateEngine engine;
+
   /// 是否已经从磁盘读完。界面用它决定要不要显示骨架。
   final bool restored;
 
@@ -54,12 +67,14 @@ class const Prefs({
     bool? showOriginal,
     double? fontScale,
     String? targetLang,
+    TranslateEngine? engine,
     bool? restored,
   }) => Prefs(
     translate: translate ?? this.translate,
     showOriginal: showOriginal ?? this.showOriginal,
     fontScale: fontScale ?? this.fontScale,
     targetLang: targetLang ?? this.targetLang,
+    engine: engine ?? this.engine,
     restored: restored ?? this.restored,
   );
 }
@@ -81,6 +96,7 @@ class PrefsNotifier() extends Notifier<Prefs> {
         // 夹一下：手改配置文件塞进离谱值时不要让界面炸掉。
         fontScale: scale.clamp(0.85, 1.4),
         targetLang: p.getString(_kTargetLang) ?? 'zh-CN',
+        engine: TranslateEngine.fromName(p.getString(_kEngine)),
         restored: true,
       );
     } catch (_) {
@@ -121,6 +137,21 @@ class PrefsNotifier() extends Notifier<Prefs> {
       await p.setString(_kTargetLang, code);
     } catch (_) {}
   }
+
+  /// 换优先引擎。
+  ///
+  /// 只改偏好、不动缓存：已翻好的译文仍然有效，
+  /// 换引擎只影响之后的新短信。
+  Future<void> setEngine(TranslateEngine e) async {
+    state = state.copyWith(engine: e, restored: true);
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setString(_kEngine, e.name);
+    } catch (_) {}
+  }
+
+  /// 存档里存的是枚举名。存档里出现未知名字（降级、手改配置）时
+  /// 回落到默认，不让界面崩。
 
   Future<void> _saveBool(String key, bool v) async {
     try {

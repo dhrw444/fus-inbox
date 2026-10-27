@@ -5,6 +5,7 @@ import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
+import 'package:fus_inbox/core/translate/translator.dart';
 import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/features/settings/presentation/proxy_section.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
@@ -54,6 +55,8 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
               ),
               const Divider(height: 1, indent: 16, endIndent: 16),
               _LanguageRow(prefs: prefs),
+              const Divider(height: 1, indent: 16, endIndent: 16),
+              _EngineRow(prefs: prefs),
             ],
           ),
 
@@ -306,6 +309,36 @@ class const _FontSizeRow({required this.prefs}) extends ConsumerWidget {
             },
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// 翻译引擎。
+///
+/// 这里选的是「首选」，不是「唯一」：选中那家连不上时会自动换下一家，
+/// 所以文案写「优先」而不是「使用」。默认微软：谷歌在国内网络基本
+/// 连不通，而首选不通时第一条短信要白等满超时。
+class const _EngineRow({required this.prefs}) extends ConsumerWidget {
+  final Prefs prefs;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return ListTile(
+      leading: const Icon(Icons.cloud_outlined),
+      title: const Text('翻译引擎'),
+      subtitle: const Text('首选引擎；连不上会自动换另一家'),
+      trailing: DropdownButton<TranslateEngine>(
+        value: prefs.engine,
+        underline: const SizedBox.shrink(),
+        items: [
+          for (final e in TranslateEngine.values)
+            DropdownMenuItem(value: e, child: Text(e.label)),
+        ],
+        onChanged: (v) {
+          if (v == null) return;
+          ref.read(prefsProvider.notifier).setEngine(v);
+        },
       ),
     );
   }
