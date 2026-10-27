@@ -36,7 +36,7 @@ enum RotationTrigger() {
 }
 
 /// 自动换身份的节流器。
-class const IdentityRotationPolicy({
+class IdentityRotationPolicy({
   this.cooldown = const Duration(seconds: 30),
   this.window = const Duration(minutes: 10),
   this.maxPerWindow = 6,
