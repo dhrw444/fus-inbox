@@ -36,6 +36,9 @@ import 'dart:math';
 ///
 /// 全部字段来自原生 `getDeviceProfile`，没有编造值。
 class BrowserIdentity {
+  // 这个类有 5 个字段和一堆派生 getter（secChUa / secChUaModel / ...）。
+  // 主构造器写法要额外拆一组字段声明出去，读起来比现在绕，不划算。
+  // ignore: use_primary_constructors
   const BrowserIdentity({
     required this.userAgent,
     required this.chromeMajor,
