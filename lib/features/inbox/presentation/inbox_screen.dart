@@ -86,19 +86,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 验证状态轮询。
   Timer? _verifyPoll;
 
-  /// 已经等了多久。
+  /// 这一轮已经等了多久。每 900ms 由 [_pumpVerification] 用真实时间刷新，
+  /// 只用来跟两个阈值（[_verifyWindow]、[_autoChallengeAfter]）比大小。
   Duration _verifyElapsed = Duration.zero;
 
   /// 这一轮验证是从什么时候开始等的。
   ///
-  /// 用时间戳而不是累加计数器：[_pumpVerification] 会被反复调用
-  /// （每次 onPageFinished 都来一次，而站点 SPA 自己跳转会触发好几次），
-  /// 之前每调一次就把 [_verifyElapsed] 归零 —— 页面只要在加载期间
-  /// 多跳几次，「等 6 秒」这个条件就永远凑不满，验证页面永远不弹，
-  /// 用户看到的就是「一直转圈、说换好了、但不弹验证」。
+  /// 存时间戳而不是累加 900ms 计数：定时器会被系统挂起（切后台、Doze），
+  /// 挂起期间 tick 不来，累加值就落后于真实时间 —— 用户明明等了半分钟，
+  /// 计数器上只有 3 秒。真实时间才代表用户等了多久。
   ///
-  /// 现在起算点只在**真的开始新一轮**时重置（见 [_beginVerifyRound]），
-  /// 重复调用只是接着算。
+  /// 起算点只在**真的开始新一轮**时重置（见 [_beginVerifyRound]），
+  /// [_pumpVerification] 重复调用只是接着算 —— 它会被换号、换身份、
+  /// 重载等多条路径调到，每次都重设会让「等满 6 秒」永远凑不满。
   DateTime? _verifyRoundStart;
 
   /// 这一轮里站点是不是已经报过 ready 了。
@@ -318,8 +318,16 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 换代理 + 换身份。见 [IdentityLedger]。
   OpenPlan _planForThisNumber() {
     final proxyState = ref.read(proxyProvider);
-    // 身份必须是「新造」或「复用」，所以这里给账本三个 mint 函数，
-    // 它只在需要新身份时才调用 —— 不会白烧。
+    // 三个 mint 回调必须给出**同一个**新身份。
+    //
+    // 每次调 mintIdentity() 都会随机造一套新的，三个回调各自调一次
+    // 就会得到 UA 说 SM-S918B / Chrome 134、机型字段却是 Pixel 7、
+    // 版本字段是 131 —— 账本里记的身份自相矛盾，套到浏览器上就是
+    // navigator.userAgentData 和 UA 对不上，比不换还扎眼。
+    //
+    // 所以一次造好、三个回调读同一份。账本只在真要造新身份时才调用
+    // 它们，所以不会白烧。
+    final fresh = mintIdentity();
     return proxyState.ledger.plan(
       // 必须用 all：内置的 589 条和用户手加的分开存（内置的在 APK
       // 资源里，只能靠排除表隐藏），只传 pool 的话内置代理在运行时
@@ -333,18 +341,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           .where((e) => !e.value.ok)
           .map((e) => e.key)
           .toSet(),
-      // 这三个都必须是**只读**的当前值。之前 mintUserAgent 写成
-      // rotateIdentity().userAgent —— 读一个字段顺手换了身份，副作用
-      // 藏在取值里：账本记下的 UA 和页面真正在用的 UA 会是两个，
-      // 站点那边看到的还是旧身份，等于白记。换身份只有 _rotateIdentity
-      // 一处，别的地方不许偷偷换。
-      mintUserAgent: () => currentIdentity.userAgent,
-      mintModel: () => currentIdentity.model,
-      mintChromeMajor: () => currentIdentity.chromeMajor,
+      // 用 mintIdentity() 而不是 rotateIdentity()：后者会直接改当前
+      // 身份，而此刻代理还没设上 —— 失败的话页面已经换成新身份却
+      // 挂在旧出口上，一次白烧。造好的身份先记进账本，等代理真的
+      // 设上了由 _applyProxyPlan 应用。
+      mintUserAgent: () => fresh.userAgent,
+      mintModel: () => fresh.model,
+      mintChromeMajor: () => fresh.chromeMajor,
     );
   }
 
-  /// 把计划里的代理设上。
+  /// 把计划里的代理设上，必要时连带把浏览器身份换掉。
   ///
   /// 失败时**不**继续 —— 拿真实 IP 去撞站点，比不打开更糟：
   /// 它会把这个 IP 的额度也吃掉。
@@ -357,6 +364,42 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     if (!active.ok && !plan.proxy.isDirectProxy) {
       _store.note('代理不可用，已停下。换一条代理再试。');
       return;
+    }
+
+    // 换出口的同时必须把浏览器身份也换掉。
+    //
+    // 之前这里只设代理就 loadRequest 了 —— 账本判定 rotate（当前身份
+    // 用满 3 个号）时，出口换了，UA 却还是原来那个，站点那边一眼看出
+    // 「同一个人换了条线路又回来了」。账本里记的新 UA 是凭空 mint 的，
+    // 页面根本没用上，等于白记。
+    //
+    // 三种计划区别对待，不能一把清：
+    //   rotate  → 新身份：换 UA + **清浏览数据**（新身份不能带着旧密钥）
+    //   restore → 切回原身份：只换 UA，**绝不清数据** —— 它的全部价值
+    //             就在于复用原来那对 ECDSA 密钥和「已读过哪些号」的记录。
+    //             清掉等于又造一个全新身份，白吃一次额度。
+    //   reuse   → 什么都不用做
+    if (plan.rotated) {
+      applyBoundIdentity(
+        userAgent: plan.binding.userAgent,
+        model: plan.binding.model,
+        chromeMajor: plan.binding.chromeMajor,
+      );
+      // 站点认人靠 IndexedDB 里那对密钥，光换 UA 没用 —— 必须清掉。
+      // 否则新身份带着旧密钥回来，站点眼里还是同一个人。
+      await clearBrowsingData();
+      if (!mounted) return;
+      await persistCurrentIdentity();
+      if (!mounted) return;
+    } else if (plan.restored) {
+      applyBoundIdentity(
+        userAgent: plan.binding.userAgent,
+        model: plan.binding.model,
+        chromeMajor: plan.binding.chromeMajor,
+      );
+      // 不清数据，但要保证页面上真的用上了这个 UA。
+      if (mounted) await persistCurrentIdentity();
+      if (!mounted) return;
     }
 
     // 代理设成了才记账。没设成就记一笔的话，这个出口的 3 个额度
@@ -614,18 +657,23 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 开一轮新的验证等待：起算点归位。
   ///
   /// 换号 / 换身份 / 换 IP / 手动重载时调 —— 这些都是「上一个页面作废、
-  /// 从头再来」。除此之外 [_pumpVerification] 只是接着当前这轮算。
+  /// 从头再来」。除此之外 [_pumpVerification] 只是接着当前这轮算，
+  /// 因为换身份那条路径会把 [_pumpVerification] 连着调两次（`loadRequest`
+  /// 之后一次、`_wipeThenReload` 里一次），每次都归零的话起算点会被
+  /// 顶到最新那一刻，等满 [_autoChallengeAfter] 就遥遥无期。
   ///
-  /// 重复调用不归零是**必须**的：[_pumpVerification] 会被反复调用
-  /// （每次 onPageFinished 都来一次，而站点 SPA 自己跳转会触发好几次）。
-  /// 之前每调一次就归零，页面只要在加载期间多跳几次，「等 6 秒」这个
-  /// 条件就永远凑不满 —— 验证页永远不弹，用户看到的就是「一直转圈、
-  /// 说换好了、但不弹验证」。
-  void _beginVerifyRound() {
+  /// [rearm] 决定要不要把「这轮已经弹过」的闸门也解开。用户在验证页上
+  /// 点了按钮（过了 / 收起）之后调这个，得把起算点重置 —— 否则他要是
+  /// 在页面上耗了超过 [_verifyWindow]，一回来轮询第一次 tick 就判超时
+  /// 自杀，明明刚说「我过了」反而当场放弃。
+  ///
+  /// 但闸门不能一律解开：点「收起」是明确表示不想过，解开就会在 6 秒后
+  /// 立刻又弹回来，等于没得选。所以那条路径传 `rearm: false`。
+  void _beginVerifyRound({bool rearm = true}) {
     _verifyRoundStart = DateTime.now();
     _verifyElapsed = Duration.zero;
     _readySeen = false;
-    _autoPopped = false;
+    if (rearm) _autoPopped = false;
   }
 
   /// 驱动器：让站点自己把验证走完。
@@ -654,7 +702,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _verifyPoll?.cancel();
     // 起算点只在没有的时候才落 —— 重复调用接着算，不归零。
     _verifyRoundStart ??= DateTime.now();
-    _verifyElapsed = Duration.zero;
     _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (
       timer,
     ) async {
@@ -799,18 +846,26 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 用户说验证过了：收起页面，重新要消息。
   ///
   /// 和 [_closeChallenge]（收起）的区别：收起是「先退出来」，状态还继续
-  /// 盯着；这个是真的断言「我过了」，所以立刻重扫一次。
+  /// 盯着；这个是真的断言「我过了」，所以重开一轮等待、立刻重扫一次。
+  ///
+  /// 起算点要重置 —— 用户可能在人机验证上耗了一分钟以上，接着旧起算点
+  /// 算的话第一次 tick 就超 [_verifyWindow]，当场判超时。
   void _confirmChallengeDone() {
     _verifyPoll?.cancel();
     setState(() => _showChallenge = false);
+    _beginVerifyRound();
     unawaited(_rescan());
     _pumpVerification();
   }
 
   /// 用户说先不弄了：收起页面，但继续盯状态。
+  ///
+  /// 起算点同样重置（免得旧轮次已经超窗口），但**不解开闸门** —— 用户
+  /// 刚说了不想过，6 秒后又自动弹回来等于没给他选。
   void _closeChallenge() {
     _verifyPoll?.cancel();
     setState(() => _showChallenge = false);
+    _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。
     _pumpVerification();
   }

@@ -281,11 +281,17 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     await _persist();
   }
 
-  /// 换到下一条代理，并把它上面的旧绑定清掉。
+  /// 换到下一条**还能用的**代理。
   ///
-  /// 「换 IP」和「换身份」必须一起做 —— 只换一样站点都还认得出是同一个人
-  /// （实测：同一 IP 换身份后第 4 个号照样被拒；只换 IP 不换身份，reader
-  /// 密钥还是那一对）。所以这里顺手把绑定清了，调用方接着重置浏览器。
+  /// 挑选规则和 [IdentityLedger.plan] 完全一致（都走
+  /// [IdentityLedger.nextUsableProxy]）—— 之前这里是纯 `(idx + 1)`，
+  /// 于是「站点报限额时自动换」这条最需要跳过的路径，恰恰会落回一条
+  /// 用满的出口上，白烧一次轮转。
+  ///
+  /// **不**再无条件清目标出口的绑定。目标出口上如果已经有一台设备
+  /// （绑过、还有余额），清掉它等于让同一个 IP 换台机器，比不动更扎眼；
+  /// 调用方会读到残留的绑定并沿用那个身份。只有目标出口是干净的、或者
+  /// 已经用满时，才清掉让调用方造新身份。
   ///
   /// 判死的代理会跳过，除非全部都被判死。返回换到的那条，池子空时返回 null。
   Future<ProxyConfig?> rotateToNext() async {
@@ -299,12 +305,19 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     final usable = all.where((p) => !unusable.contains(p.id)).toList();
     final candidates = usable.isNotEmpty ? usable : all;
 
-    final idx = candidates.indexWhere((p) => p.id == state.currentId);
-    final next = candidates[(idx + 1) % candidates.length];
+    final next =
+        state.ledger.nextUsableProxy(candidates, state.currentId) ??
+        candidates.first;
 
-    // 新出口 = 新身份。清掉这条代理上的旧绑定，下次算计划时会造新的。
     state = state.copyWith(currentId: next.id);
-    state.ledger.clearProxy(next.id);
+
+    // 只在「这条出口上没有可沿用的身份」时清。
+    // 用满的也要清 —— 那个身份已经没额度了，留着只会让下一次 plan
+    // 又把它当成「还有余额」然后原地打转。
+    final bound = state.ledger.forProxy(next.id);
+    if (bound == null || bound.used >= IdentityLedger.maxPerIdentity) {
+      state.ledger.clearProxy(next.id);
+    }
     await _persist();
     return next;
   }

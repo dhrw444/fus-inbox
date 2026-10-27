@@ -308,8 +308,28 @@ class IdentityLedger {
       );
     }
 
-    // 满了 → 换代理 + 换身份。
+    // 满了 → 换代理。
+    //
+    // 身份怎么来，看目标出口上有没有旧绑定：
+    //   - 没有 → 造一个新的（新出口 + 新身份，最干净）
+    //   - 有 → **复用那个**，不造新的
+    //
+    // 第二条很关键。_nextProxy 优先挑没绑过的出口，但池子用旧之后会
+    // 落到「绑过、还有余额」的出口上。那种出口上已经有一台设备了，
+    // 再 mint 一个就等于同一个 IP 上冒出第二台 —— 站点眼里这是最扎眼
+    // 的信号。复用它自己的身份，账本才是「一个代理一个身份」。
     final nextProxy = _nextProxy(candidates, current.id);
+    final carried = _bindings[nextProxy.id];
+    if (carried != null && carried.used < maxPerIdentity) {
+      return OpenPlan(
+        action: OpenAction.rotate,
+        proxy: nextProxy,
+        binding: carried,
+        reason:
+            '当前出口已用满 $maxPerIdentity 个号，换到 ${nextProxy.displayName}'
+            '（那边还有 ${maxPerIdentity - carried.used} 个额度）',
+      );
+    }
     final binding = IdentityBinding(
       proxyId: nextProxy.id,
       userAgent: mintUserAgent(),
@@ -351,7 +371,7 @@ class IdentityLedger {
 
   void clearAll() => _bindings.clear();
 
-  /// 池里下一条**还有余额**的代理。
+  /// 池里下一条**还能用的**代理。
   ///
   /// 之前这里只是 `pool[(idx + 1) % pool.length]` —— 纯粹的 +1，压根
   /// 没检查下一条是不是也已经用满。可界面在满的代理上写着「下次会跳过」，
@@ -359,9 +379,14 @@ class IdentityLedger {
   /// 身份，白耗一次轮转；而且站点那边这个 IP 早被盯上了，很容易直接
   /// 弹 CF 验证 —— 就是「有的时候会 cf 验证错误」的来源之一。
   ///
-  /// 现在真的跳：从当前这条往后绕一圈，取第一条 `used < maxPerIdentity`
-  /// 的。一圈下来全满（589 条 × 3 = 1767 个号都看完了）才退回「下一条」，
-  /// 因为总得往前走，不能原地卡死。
+  /// 挑的顺序是两轮，不能反：
+  ///   1) 没绑过身份的出口 —— 在上面开一个新身份，正是「一代理一身份」
+  ///   2) 绑过、但还有余额的出口 —— 接着用它的身份往下数
+  /// 两轮都空（整池都满了）才退回「下一条」。
+  ///
+  /// 之所以优先找没绑过的：落在一条已经绑过的出口上又造新身份，等于
+  /// 同一个 IP 上出现两台设备；而只认没绑过的又会在池子用旧之后无路
+  /// 可走，所以留第二轮兜底。
   ///
   /// 轮转而不是随机：代理池通常按顺序配的，随机容易连着撞同一条。
   ProxyConfig _nextProxy(List<ProxyConfig> pool, String currentId) {
@@ -369,14 +394,29 @@ class IdentityLedger {
     if (pool.length == 1) return pool.first;
     final idx = pool.indexWhere((p) => p.id == currentId);
     final start = idx < 0 ? 0 : idx + 1;
+
+    ProxyConfig? partial;
     for (var i = 0; i < pool.length; i++) {
       final p = pool[(start + i) % pool.length];
       if (p.id == currentId) continue;
-      if (usedFor(p.id) < maxPerIdentity) return p;
+      final b = _bindings[p.id];
+      if (b == null) return p;
+      if (b.used < maxPerIdentity) partial ??= p;
     }
+    if (partial != null) return partial;
     // 全满了。退回「下一条」，至少不会原地卡住 —— 真到这一步说明
     // 池子的额度整个用完了，该提醒用户加代理。
     return pool[start % pool.length];
+  }
+
+  /// [plan] 和 `ProxyNotifier.rotateToNext` 共用同一条挑选规则。
+  ///
+  /// 两条路径必须一致：`plan` 管「开新号时当前出口满了」，`rotateToNext`
+  /// 管「站点报限额时自动换」。之前只修了前者，后者还是纯 +1 —— 于是
+  /// 恰恰在最需要跳过的场合（出口刚被限额烧掉）又落回一条用满的出口。
+  ProxyConfig? nextUsableProxy(List<ProxyConfig> pool, String currentId) {
+    if (pool.isEmpty) return null;
+    return _nextProxy(pool, currentId);
   }
 
   Map<String, Object?> toJson() => {

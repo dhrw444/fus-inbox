@@ -548,6 +548,150 @@ void main() {
     ok(plan.proxy.id != pool[0].id, '不会原地停在当前这条');
   }
 
+  // ---------- 19. 轮换到「用了一半」的出口时，必须复用它自己的身份 ----------
+  //
+  // _nextProxy 优先挑没绑过的出口，但池子用旧之后会落到「绑过、还有
+  // 余额」的出口上。那种出口上已经有一台设备了，如果再 mint 一个新
+  // UA，commit() 合并时号数取旧的、UA 取新的 —— 同一个 IP 上冒出第二
+  // 台设备，账本也不再是「一个代理一个身份」。
+  //
+  // 实测（identity_drift_test.dart）在改之前确实是串的：
+  //   P1 原本自己的 UA : …Pixel 7) …Chrome/131…
+  //   P1 现在记的 UA   : …SM-S918B) …Chrome/134…
+  {
+    final led = IdentityLedger();
+    var n = 0;
+    String uaA() => 'UA-A-${n}';
+    String uaB() => 'UA-B-${n}';
+
+    // P0 用满 3 个，全部身份是 A。
+    for (final id in ['a1', 'a2', 'a3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: uaA,
+        mintModel: () => 'MODEL-A',
+        mintChromeMajor: () => '131',
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+
+    // P1 先占 1 个号，用 B 身份 —— 这就是它的「自己的身份」。
+    final first = led.plan(
+      pool: pool,
+      currentProxyId: pool[1].id,
+      numberId: 'b1',
+      mintUserAgent: uaB,
+      mintModel: () => 'MODEL-B',
+      mintChromeMajor: () => '134',
+    );
+    led.commit(pool[1].id, 'b1', first.binding);
+    final p1Before = led.forProxy(pool[1].id);
+    eq(p1Before!.used, 1, 'P1 先用掉 1 个');
+    eq(p1Before.userAgent, 'UA-B-0', 'P1 自己的身份是 B');
+
+    // P2 也占 1 个，逼着后面只能落到 P1 上。
+    final f2 = led.plan(
+      pool: pool,
+      currentProxyId: pool[2].id,
+      numberId: 'c1',
+      mintUserAgent: uaB,
+      mintModel: () => 'MODEL-B',
+      mintChromeMajor: () => '134',
+    );
+    led.commit(pool[2].id, 'c1', f2.binding);
+
+    // 站在 P0 上开新号：P1 和 P2 都绑过且没满 → 落到其中一条，
+    // 但**绝不能**把那条的身份换掉。
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'a4',
+      mintUserAgent: uaA,
+      mintModel: () => 'MODEL-A',
+      mintChromeMajor: () => '131',
+    );
+    eq(p.action, OpenAction.rotate, 'P0 满了要轮转');
+    ok(p.proxy.id != pool[0].id, '没落在满的 P0 上');
+    eq(p.binding.userAgent, 'UA-B-0', '复用的是目标出口自己的身份，不是现造的 A');
+
+    led.commit(p.proxy.id, 'a4', p.binding);
+    final after = led.forProxy(p.proxy.id)!;
+    eq(after.userAgent, 'UA-B-0', '落账后身份没被顶掉');
+    eq(after.model, 'MODEL-B', '机型也没串');
+    eq(after.chromeMajor, '134', 'Chrome 版本没串');
+    eq(after.used, 2, '号数照常往上加');
+  }
+
+  // ---------- 20. 没绑过的出口优先于「用了一半」的出口 ----------
+  //
+  // 两边都能用的时候应该挑没绑过的：在新出口上开新身份，比挤到一条
+  // 已经有设备的出口上更干净。
+  {
+    final led = IdentityLedger();
+    // P0 满、P1 占 1 个、P2 完全没绑过。
+    for (final id in ['a1', 'a2', 'a3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+    final b = led.plan(
+      pool: pool,
+      currentProxyId: pool[1].id,
+      numberId: 'b1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(pool[1].id, 'b1', b.binding);
+
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'a4',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(p.proxy.id, pool[2].id, '优先挑完全没绑过的 P2');
+  }
+
+  // ---------- 21. nextUsableProxy 与 plan 用同一条规则 ----------
+  //
+  // rotateToNext（站点报限额时自动换）走的是这个方法。两条路径不一致
+  // 的话，恰恰在最需要跳过的场合（出口刚被限额烧掉）又会落回一条
+  // 用满的出口。
+  {
+    final led = IdentityLedger();
+    for (final id in ['a1', 'a2', 'a3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+    eq(led.usedFor(pool[0].id), 3, 'P0 满');
+
+    final next = led.nextUsableProxy(pool, pool[0].id);
+    ok(next != null, '有可用的下一条');
+    ok(next!.id != pool[0].id, '不会返回满的 P0');
+    eq(next.id, pool[1].id, '跳过满的 P0，取 P1');
+
+    // 空池返回 null，不抛。
+    ok(led.nextUsableProxy(const [], pool[0].id) == null, '空池返回 null');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }

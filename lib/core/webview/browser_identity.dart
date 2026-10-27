@@ -242,6 +242,83 @@ BrowserIdentity rotateIdentity([Random? rnd]) {
   return _current;
 }
 
+/// 生成一个**新**身份但不切换当前身份。
+///
+/// 和 [rotateIdentity] 的区别只在于「不写 [_current]」。账本要在「造
+/// 新身份」时先记下来，等代理真的设上了才应用；如果这里直接切，代理
+/// 失败时页面已经被换成了新身份，却还挂在旧出口上 —— 一次白烧。
+///
+/// 之前 `_planForThisNumber` 的 mint 回调传的是 `currentIdentity.xxx`，
+/// 于是账本记下的「新身份」和当前身份**一模一样**：换到一条干净出口上，
+/// 新 IP 配旧 UA，站点那边看到的是「同一个人换了条线路」。
+BrowserIdentity mintIdentity([Random? rnd]) {
+  final r = rnd ?? Random();
+  final base = _current;
+
+  // 真实内核版本是基准，只在附近浮动——编一个不存在的版本
+  // 比固定版本更可疑。
+  final baseMajor = int.tryParse(base.chromeMajor) ?? 141;
+  final major = baseMajor + r.nextInt(4) - 2;
+  final version = '$major.0.${6000 + r.nextInt(4000)}.${r.nextInt(200)}';
+  final model = _knownModels[r.nextInt(_knownModels.length)];
+
+  return BrowserIdentity(
+    userAgent:
+        'Mozilla/5.0 (Linux; Android ${base.platformVersion}; $model) '
+        'AppleWebKit/537.36 (KHTML, like Gecko) '
+        'Chrome/$version Mobile Safari/537.36',
+    chromeMajor: '$major',
+    model: model,
+    platformVersion: base.platformVersion,
+    isMobile: true,
+  );
+}
+
+/// 按账本里记的身份还原当前身份。
+///
+/// 账本记着「出口 A 用身份 X」，重启或换号时如果还沿用它，页面就必须
+/// 真的用 X 的 UA。否则账本记的是假的：站点看到的是另一个身份，本地
+/// 却按 X 算额度，两边对不上，轮转全乱。
+///
+/// 之前 [IdentityBinding] 的 userAgent / model / chromeMajor 是**只写
+/// 不读**的死字段 —— 全仓 `setUserAgent` 只有两处，一处读
+/// [currentUserAgent]，一处读 [rotateIdentity] 现造的，没有任何地方
+/// 从账本取值。所以「切回原出口原身份」实际只切了出口，身份那半截
+/// 从来没实现过。
+///
+/// 老数据里 model / chromeMajor 可能是空串（早期版本没记），那就从
+/// UA 里现解 —— 宁可解出来，也不要拿空值去拼一个自相矛盾的 client
+/// hints 组合。
+void applyBoundIdentity({
+  required String userAgent,
+  required String model,
+  required String chromeMajor,
+}) {
+  if (userAgent.isEmpty) return;
+  final m = model.isNotEmpty ? model : modelFromUserAgent(userAgent);
+  final major = chromeMajor.isNotEmpty
+      ? chromeMajor
+      : _chromeMajorFrom(userAgent);
+  _current = BrowserIdentity(
+    userAgent: userAgent,
+    chromeMajor: major,
+    model: m,
+    platformVersion: _androidFrom(userAgent),
+    isMobile: true,
+  );
+}
+
+/// 从 UA 里取机型串。取不到返回空串，由调用方决定怎么兜。
+String modelFromUserAgent(String ua) {
+  final m = RegExp(r'Android [\d.]+; ([^;)]+)\)').firstMatch(ua);
+  return m?.group(1)?.trim() ?? '';
+}
+
+String _chromeMajorFrom(String ua) {
+  final m = RegExp(r'Chrome/(\d+)').firstMatch(ua);
+  return m?.group(1) ?? '141';
+}
+
 /// 真实存在的 Android 机型串。
 ///
 /// 都是 `Build.MODEL` 的合法值，不是编的营销名。
