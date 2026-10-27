@@ -3,6 +3,7 @@
 /// 全部落 SharedPreferences，字段少、读写快，不需要数据库。
 library;
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -24,6 +25,9 @@ const _kAutoProxy = 'fus:proxy:auto:v1';
 class ProxyNotifier() extends Notifier<ProxyState> {
   /// 检测器。无状态，整个 notifier 共用一个就够。
   final ProxyProbe _probe = ProxyProbe();
+
+  /// [_load] 跑完就 complete 一次，[ready] 等的是它。
+  final Completer<void> _ready = Completer<void>();
 
   @override
   ProxyState build() {
@@ -76,6 +80,8 @@ class ProxyNotifier() extends Notifier<ProxyState> {
       // 无论成败都要置位。读失败时池子确实是空的，那和「还没读」是两件事：
       // 前者该让上层去走直连（并明确告诉用户），后者必须继续等。
       state = state.copyWith(loaded: true);
+      // 等待方当场醒来。只 complete 一次 —— Completer 重复 complete 会抛。
+      if (!_ready.isCompleted) _ready.complete();
     }
   }
 
@@ -290,19 +296,16 @@ class ProxyNotifier() extends Notifier<ProxyState> {
   /// 读 `state.pool` 会看到空列表，那和「用户没配代理」长得一样。收件页
   /// 拿这个空池算出的计划是直连 —— 等于拿真实 IP 去开号。
   ///
-  /// 所以开号之前必须 `await` 这个。已经读完时立刻返回，不额外挂一帧。
+  /// 所以开号之前必须 `await` 这个。已经读完时立刻返回。
   ///
-  /// 兜底超时：读盘卡住时不能让用户干等，到点就放行 —— 那时 `loaded`
-  /// 可能仍是 false，调用方得自己决定（收件页选择照常走，因为卡住的原因
-  /// 不明，干等更糟）。
-  Future<void> get ready async {
-    if (state.loaded) return;
-    final deadline = DateTime.now().add(const Duration(seconds: 3));
-    while (!state.loaded) {
-      if (DateTime.now().isAfter(deadline)) return;
-      await Future<void>.delayed(const Duration(milliseconds: 16));
-    }
-  }
+  /// 实现是 `Completer`，不是轮询：`_load` 结束时 [complete] 被叫一次，
+  /// 等待方全部当场醒来。早先那版写的是 16ms 轮询，最坏要空转 187 次。
+  ///
+  /// 兜底超时：读盘卡住时不能让用户干等。到点返回时 `loaded` 可能仍是
+  /// false，**调用方必须自己检查**（收件页检查了，见 `_startUp`）——
+  /// 这里不抛异常，因为卡住的原因不明，硬失败会让用户连页面都打不开。
+  Future<void> get ready =>
+      _ready.future.timeout(const Duration(seconds: 3), onTimeout: () {});
 }
 
 final proxyProvider = NotifierProvider<ProxyNotifier, ProxyState>(

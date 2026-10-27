@@ -54,7 +54,7 @@ jobs:
           set -e
           for t in ledger_test proxy_logic_test mint_identity_test \
                    identity_drift_test verify_round_test bridge_test \
-                   loaded_probe; do
+                   loaded_probe ready_test; do
             echo "::group::$t"
             dart run tool/$t.dart
             echo "::endgroup::"
