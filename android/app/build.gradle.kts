@@ -69,4 +69,8 @@ flutter {
 
 dependencies {
     implementation("com.google.android.material:material:1.14.0")
+    // addDocumentStartJavaScript 需要它。webview_flutter_android 内部
+    // 已经传递依赖了 androidx.webkit，但显式声明才不会在某次升级后
+    // 悄悄消失导致编译失败。
+    implementation("androidx.webkit:webkit:1.14.0")
 }

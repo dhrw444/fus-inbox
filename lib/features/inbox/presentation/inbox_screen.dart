@@ -96,7 +96,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     });
     _controller = _buildController();
     _webViewFuture = createPlatformWebView(_controller);
-    unawaited(_controller.loadRequest(Uri.parse(widget.number.inboxUrl)));
+    // 两条都要等：垫片得在页面任何脚本之前装好，WebView 实例也得
+    // 先挂进视图树（原生侧要遍历 content view 才找得到那个实例）。
+    unawaited(_startUp());
     _armWatchdog();
   }
 
@@ -122,6 +124,28 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           .catchError((Object _) {}),
     );
     super.dispose();
+  }
+
+  /// 启动：装垫片 → 打开收件页。
+  ///
+  /// 顺序不能反。`addDocumentStartJavaScript` 只对**之后**的文档
+  /// 生效；先 loadRequest 再装就没有意义了，那一屏的 navigator
+  /// 已经被站点和 Turnstile 读过。
+  Future<void> _startUp() async {
+    // 等 WebView widget 真正 attach 到视图树。
+    // createPlatformWebView 只是造参数，原生实例要等下一帧布局后才有。
+    try {
+      await _webViewFuture;
+    } catch (_) {
+      // 造不出来就算了，下面照样尝试加载。
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 120));
+    final shimmed = await installBrowserShim();
+    if (!shimmed) {
+      debugPrint('浏览器垫片没装上（内核太老或找不到 WebView）');
+    }
+    if (!mounted) return;
+    await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
   }
 
   /// 25 秒还没拿到任何东西，提示可能卡在风控上。

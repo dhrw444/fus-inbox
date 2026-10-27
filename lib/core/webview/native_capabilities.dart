@@ -48,6 +48,63 @@ Future<Map<String, String>> readCookies(String url) async {
   }
 }
 
+/// 给 WebView 装上浏览器能力垫片。
+///
+/// ## 为什么
+///
+/// Android System WebView 内核**不提供**三样真 Chrome 必有之物：
+///
+///   navigator.userAgentData  → undefined
+///   window.chrome            → undefined
+///   navigator.plugins        → 空
+///
+/// Cloudflare 的 Turnstile 先查这三项。缺任何一样，UA 写得多像
+/// 都会被判成伪装的浏览器 —— 这正是「只换 UA 反而更容易被风控」
+/// 的根本原因：UA 自称 Chrome，JS 却探测不到 Chrome 该有的能力。
+///
+/// ## 为什么走原生
+///
+/// 必须用 `addDocumentStartJavaScript` —— 注入时机是「文档创建后、
+/// **页面任何脚本执行前**」。用 Dart 的 runJavaScript 太晚了：
+/// 那时站点脚本和 Turnstile 早就跑完并做出判定。
+///
+/// ## 传入的身份
+///
+/// 全部取自 [currentIdentity]，和 UA / Sec-CH-UA 同源。
+/// 版本号一旦对不上，垫片自己就成了新的矛盾点。
+///
+/// 返回 false 表示这台设备的内核不支持（89 以下），页面照常打开。
+Future<bool> installBrowserShim() async {
+  final id = currentIdentity;
+  // appVersion 要三段，形如 134.0.6998。UA 里是完整四段，
+  // 这里截前三段 —— client hints 的 uaFullVersion 就是这个格式。
+  final parts = RegExp(r'Chrome/([\d.]+)').firstMatch(id.userAgent);
+  final full = parts?.group(1) ?? '';
+  final segments = full.split('.');
+  final appVersion = segments.length >= 3
+      ? segments.take(3).join('.')
+      : '$full.0.0';
+  try {
+    final ok = await platformWebViewChannel
+        .invokeMethod<bool>('installBrowserShim', {
+          'chromeMajor': id.chromeMajor,
+          'appVersion': appVersion,
+          'platform': 'Android',
+          'model': id.model,
+          'isMobile': id.isMobile,
+        })
+        .timeout(const Duration(seconds: 2));
+    return ok ?? false;
+  } on MissingPluginException {
+    return false;
+  } on PlatformException catch (e) {
+    debugPrint('装垫片失败：$e');
+    return false;
+  } on TimeoutException {
+    return false;
+  }
+}
+
 /// 清空 WebView 的全部站点数据（cookie / localStorage / IndexedDB）。
 ///
 /// 站点把访客身份绑在一对 ECDSA 密钥上，密钥存在 IndexedDB。

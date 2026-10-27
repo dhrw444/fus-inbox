@@ -85,7 +85,7 @@ enum InboxPhase() {
 ///
 /// 三种来自 `X-Fair-Use` 响应头（见 assets/js/fus_inbox.js 的
 /// `holdFromResponse`）：
-enum SiteHoldKind {
+enum SiteHoldKind() {
   /// `429 + pause`：免费配额用完了。站点限制新号码，
   /// 已打开过的号码在 24 小时内还能读。
   quota,

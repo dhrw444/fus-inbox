@@ -3,6 +3,9 @@ package com.yg.fusinbox
 import android.app.Activity
 import android.content.Intent
 import android.os.Build
+import android.webkit.WebView
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -12,6 +15,73 @@ import kotlin.concurrent.thread
 class MainActivity : FlutterActivity() {
     private var backupResult: MethodChannel.Result? = null
     private val backupRequestCode = 4102
+
+    /// 把浏览器能力垫片装进 WebView。
+    ///
+    /// ## 为什么必须走原生，不能在 Dart 侧 runJavaScript
+    ///
+    /// `addDocumentStartJavaScript` 的注入时机是「文档创建后、
+    /// **页面任何脚本执行前**」。站点自己的 reader.js / live.js /
+    /// Turnstile 都在这个时间点之后才会读 navigator，所以它们看到的
+    /// 已经是补齐后的能力。
+    ///
+    /// 用 Dart 的 `runJavaScript` 做不到这一点：那时候站点脚本早就
+    /// 跑完了，Turnstile 已经拿着「这是 WebView」的结论做完判定。
+    ///
+    /// ## 补的是什么
+    ///
+    /// Android System WebView 内核不提供三样真 Chrome 必有的东西：
+    /// `navigator.userAgentData`、`window.chrome`、非空的
+    /// `navigator.plugins`。缺任何一样，UA 写得多像都没用 ——
+    /// 这正是「只换 UA 反而更容易被风控」的原因。
+    ///
+    /// 所有值都由调用方从 **同一份身份** 传进来，保证 UA、
+    /// client hints、垫片三者版本号一致。一旦对不上，垫片自己
+    /// 就成了新的矛盾点。
+    private fun installBrowserShim(args: Map<*, *>?): Boolean {
+        return try {
+            val webView = findWebView() ?: return false
+            val major = args?.get("chromeMajor") as? String ?: return false
+            val full = args["appVersion"] as? String ?: return false
+            val platform = args["platform"] as? String ?: "Android"
+            val model = args["model"] as? String ?: ""
+            val isMobile = args["isMobile"] as? Boolean ?: true
+
+            val script = buildBrowserShim(major, full, platform, model, isMobile)
+
+            // FEATURE_DOCUMENT_START_SCRIPT 在 WebView 内核 89+ 才有。
+            // 老内核返回 false，页面照常打开，只是没有垫片。
+            if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                return false
+            }
+            WebViewCompat.addDocumentStartJavaScript(webView, script, setOf("*"))
+            true
+        } catch (error: Exception) {
+            false
+        }
+    }
+
+    /// 找到当前 Activity 里的 WebView 实例。
+    ///
+    /// flutter 的 webview_flutter 把 WebView 挂在自己的 platform view
+    /// 树里，没有公开的引用。这里遍历 content view 找第一个 WebView。
+    private fun findWebView(): WebView? {
+        return try {
+            val root = findViewById<android.view.View>(android.R.id.content)
+            val found = mutableListOf<WebView>()
+            fun walk(view: android.view.View?) {
+                if (view == null || found.isNotEmpty()) return
+                if (view is WebView) { found.add(view); return }
+                if (view is android.view.ViewGroup) {
+                    for (i in 0 until view.childCount) walk(view.getChildAt(i))
+                }
+            }
+            walk(root)
+            found.firstOrNull()
+        } catch (error: Exception) {
+            null
+        }
+    }
 
     /// 清空 WebView 的全部站点数据。
     ///
@@ -141,6 +211,10 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "getAndroidSdkVersion" -> result.success(Build.VERSION.SDK_INT)
                     "getDeviceProfile" -> result.success(deviceProfile())
+                    "installBrowserShim" -> {
+                        val args = call.arguments as? Map<*, *>
+                        result.success(installBrowserShim(args))
+                    }
                     "clearBrowsingData" -> {
                         result.success(clearBrowsingData())
                     }
