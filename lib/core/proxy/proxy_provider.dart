@@ -12,104 +12,14 @@ import 'package:fus_inbox/core/proxy/builtin_proxies.dart';
 import 'package:fus_inbox/core/proxy/identity_ledger.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
 import 'package:fus_inbox/core/proxy/proxy_probe.dart';
+import 'package:fus_inbox/core/proxy/proxy_state.dart';
+
+export 'package:fus_inbox/core/proxy/proxy_state.dart';
 
 const _kPool = 'fus:proxy:pool:v1';
 const _kCurrent = 'fus:proxy:current:v1';
 const _kLedger = 'fus:identity:ledger:v1';
 const _kAutoProxy = 'fus:proxy:auto:v1';
-
-class ProxyState {
-  // 带初始化列表 + 非 this 参数（ledger 要 ?? IdentityLedger()），
-  // 主构造器表达不了。
-  // ignore: use_primary_constructors
-  ProxyState({
-    this.pool = const [],
-    this.builtin = const [],
-    this.excludedBuiltin = const {},
-    this.currentId = '',
-    IdentityLedger? ledger,
-    this.autoRotate = true,
-    this.probing = false,
-    this.progress = 0,
-    this.probeTotal = 0,
-    this.results = const {},
-  }) : ledger = ledger ?? IdentityLedger();
-
-  /// 还有没有别的代理可换。
-  ///
-  /// 只有一条（或全被判死只剩一条）时返回 false —— 那种情况下
-  /// 「自动换」只会原地打转，界面该让用户自己去换 IP。
-  ///
-  /// 放在 [ProxyState] 上而不是 notifier 上：notifier 的公开 API
-  /// 应该只有 `state`（`avoid_public_notifier_properties`）。
-  bool get canRotate {
-    final usable = all.where((p) => !isUnusable(p.id));
-    return usable.length > 1;
-  }
-
-  /// 这条代理是不是被检测判死了。
-  bool isUnusable(String proxyId) => results[proxyId]?.ok == false;
-
-  /// 用户手动添加的代理。
-  final List<ProxyConfig> pool;
-
-  /// 内置清单里没被删掉的代理。
-  ///
-  /// 和 [pool] 分开存：内置的在 APK 资源里，不能改，只能靠排除表
-  /// 隐藏。界面上两者显示完全一样，都能删。
-  final List<ProxyConfig> builtin;
-
-  /// 被删掉的内置代理 key。
-  final Set<String> excludedBuiltin;
-
-  final String currentId;
-  final IdentityLedger ledger;
-
-  /// 用满额度后自动换代理 + 换身份。
-  final bool autoRotate;
-
-  /// 正在跑连通性检测。
-  final bool probing;
-
-  /// 已检测多少条。
-  final int progress;
-
-  /// 本轮总共要检测多少条。
-  final int probeTotal;
-
-  /// 检测结果，key 是代理 id。
-  final Map<String, ProxyProbeResult> results;
-
-  /// 全部代理，内置在前。
-  List<ProxyConfig> get all => [...builtin, ...pool];
-
-  ProxyConfig? get current =>
-      all.where((p) => p.id == currentId).firstOrNull ?? all.firstOrNull;
-
-  ProxyState copyWith({
-    List<ProxyConfig>? pool,
-    List<ProxyConfig>? builtin,
-    Set<String>? excludedBuiltin,
-    String? currentId,
-    IdentityLedger? ledger,
-    bool? autoRotate,
-    bool? probing,
-    int? progress,
-    int? probeTotal,
-    Map<String, ProxyProbeResult>? results,
-  }) => ProxyState(
-    pool: pool ?? this.pool,
-    builtin: builtin ?? this.builtin,
-    excludedBuiltin: excludedBuiltin ?? this.excludedBuiltin,
-    currentId: currentId ?? this.currentId,
-    ledger: ledger ?? this.ledger,
-    autoRotate: autoRotate ?? this.autoRotate,
-    probing: probing ?? this.probing,
-    progress: progress ?? this.progress,
-    probeTotal: probeTotal ?? this.probeTotal,
-    results: results ?? this.results,
-  );
-}
 
 class ProxyNotifier() extends Notifier<ProxyState> {
   /// 检测器。无状态，整个 notifier 共用一个就够。
@@ -162,6 +72,10 @@ class ProxyNotifier() extends Notifier<ProxyState> {
       );
     } catch (_) {
       // 读不出来就用默认值，别让启动挂在这。
+    } finally {
+      // 无论成败都要置位。读失败时池子确实是空的，那和「还没读」是两件事：
+      // 前者该让上层去走直连（并明确告诉用户），后者必须继续等。
+      state = state.copyWith(loaded: true);
     }
   }
 
@@ -368,6 +282,26 @@ class ProxyNotifier() extends Notifier<ProxyState> {
 
     await Future.wait(List.generate(concurrency, (_) => worker()));
     state = state.copyWith(probing: false);
+  }
+
+  /// 等到磁盘上的代理清单读完（`state.loaded == true`）。
+  ///
+  /// [build] 是同步的，池子在 microtask 里才回填。调用方在 build 之后立刻
+  /// 读 `state.pool` 会看到空列表，那和「用户没配代理」长得一样。收件页
+  /// 拿这个空池算出的计划是直连 —— 等于拿真实 IP 去开号。
+  ///
+  /// 所以开号之前必须 `await` 这个。已经读完时立刻返回，不额外挂一帧。
+  ///
+  /// 兜底超时：读盘卡住时不能让用户干等，到点就放行 —— 那时 `loaded`
+  /// 可能仍是 false，调用方得自己决定（收件页选择照常走，因为卡住的原因
+  /// 不明，干等更糟）。
+  Future<void> get ready async {
+    if (state.loaded) return;
+    final deadline = DateTime.now().add(const Duration(seconds: 3));
+    while (!state.loaded) {
+      if (DateTime.now().isAfter(deadline)) return;
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
   }
 }
 

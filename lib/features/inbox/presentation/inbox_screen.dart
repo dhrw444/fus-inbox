@@ -84,8 +84,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 本次打开号码时账本给出的计划（用哪个代理、哪个身份）。
   ///
-  /// 在 initState 里算好，_startUp 里执行 —— 顺序不能反：
+  /// 在 `_startUp` 里算，算之前先等代理清单读完 —— 顺序不能反：
   /// 代理必须在 loadRequest 之前设好，否则第一个请求已经漏了真实 IP。
+  ///
+  /// 以前在 initState 里算。那时 [proxyProvider] 还没回填磁盘上的池子，
+  /// `pool` 和 `builtin` 都是空的，于是计划被判成「直连」—— 用户配的
+  /// 几百条代理全被跳过，第一个号直接拿真实 IP 开，还白吃一个额度。
   OpenPlan? _openPlan;
 
   /// 验证状态轮询。
@@ -162,7 +166,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     });
     _controller = _buildController();
     _webViewFuture = createPlatformWebView(_controller);
-    _openPlan = _planForThisNumber();
     // 两条都要等：垫片得在页面任何脚本之前装好，WebView 实例也得
     // 先挂进视图树（原生侧要遍历 content view 才找得到那个实例）。
     unawaited(_startUp());
@@ -291,6 +294,18 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 生效；先 loadRequest 再装就没有意义了，那一屏的 navigator
   /// 已经被站点和 Turnstile 读过。
   Future<void> _startUp() async {
+    // 代理清单是异步从磁盘读的，读之前 pool/builtin 都是空的 —— 那和
+    // 「用户没配代理」长得一模一样。先等它读完再算计划，否则算出来的是
+    // 一条直连计划：几百条代理全被跳过，真实 IP 直接露给站点。
+    await ref.read(proxyProvider.notifier).ready;
+    if (!mounted) return;
+    // 3 秒兜底之后 `loaded` 仍可能是 false（读盘卡住）。那时 pool 是空的，
+    // 算出来的计划必然是直连 —— 拿真实 IP 去开号，比不开更糟。停下并说清。
+    if (!ref.read(proxyProvider).loaded) {
+      _store.fail('代理清单没读出来，已停下。请到设置里确认代理，或重新打开这个号。');
+      return;
+    }
+    _openPlan = _planForThisNumber();
     // 等 WebView widget 真正 attach 到视图树。
     // createPlatformWebView 只是造参数，原生实例要等下一帧布局后才有。
     try {
