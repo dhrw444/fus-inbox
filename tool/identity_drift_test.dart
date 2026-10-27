@@ -7,8 +7,10 @@
 // 这条路径在 _nextProxy 改成「跳过已满」之后更容易踩到：它专门去找
 // 还有余额的出口，而那些出口大多已经用掉 1~2 个号、带着自己的 UA。
 
-import './identity_ledger.dart';
-import './proxy_config.dart';
+import 'dart:io';
+
+import 'package:fus_inbox/core/proxy/identity_ledger.dart';
+import 'package:fus_inbox/core/proxy/proxy_config.dart';
 
 int passed = 0;
 int failed = 0;
@@ -140,4 +142,5 @@ void main() {
 
   print('');
   print('$passed passed, $failed failed');
+  if (failed > 0) exit(1);
 }

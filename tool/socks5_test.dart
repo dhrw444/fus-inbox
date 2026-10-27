@@ -359,4 +359,5 @@ Future<void> main() async {
   }
 
   print('\n$pass passed, $fail failed');
+  if (fail > 0) exit(1);
 }

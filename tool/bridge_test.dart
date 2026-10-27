@@ -312,5 +312,5 @@ Future<void> main() async {
   await socks.stop();
   await target.close();
   print('\n$pass passed, $fail failed');
-  exit(0);
+  exit(fail == 0 ? 0 : 1);
 }
