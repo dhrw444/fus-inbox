@@ -25,9 +25,6 @@
 /// 3. 站点存储（localStorage / IndexedDB / cookie）
 library;
 
-import 'dart:async';
-import 'dart:io';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
@@ -39,14 +36,12 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 const _channel = MethodChannel('fusinbox/webview');
 
 /// 当前代理的实际生效状态。
-class ActiveProxy {
-  const ActiveProxy({
-    required this.config,
-    required this.bridgePort,
-    required this.ok,
-    required this.detail,
-  });
-
+class const ActiveProxy({
+  required this.config,
+  required this.bridgePort,
+  required this.ok,
+  required this.detail,
+}) {
   final ProxyConfig config;
 
   /// 本地桥监听的端口。0 表示没起桥（直连或 HTTP 代理直通）。
@@ -60,9 +55,7 @@ class ActiveProxy {
 }
 
 /// 管理「当前走哪个代理」。
-class ProxyEngine {
-  ProxyEngine();
-
+class ProxyEngine() {
   LocalProxyBridge? _bridge;
   ActiveProxy? _active;
 

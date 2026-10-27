@@ -5,7 +5,7 @@ import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
-import 'package:fus_inbox/core/proxy/proxy_provider.dart';
+import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/features/settings/presentation/proxy_section.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 
@@ -96,6 +96,14 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
                 subtitle: Text('freeussms.com'),
               ),
               const Divider(height: 1, indent: 16, endIndent: 16),
+              ListTile(
+                leading: const Icon(Icons.code),
+                title: const Text('开源仓库'),
+                subtitle: const Text('github.com/dhrw444/fus-inbox'),
+                trailing: const Icon(Icons.open_in_new, size: 18),
+                onTap: () => _openSource(context),
+              ),
+              const Divider(height: 1, indent: 16, endIndent: 16),
               const ListTile(
                 leading: Icon(Icons.description_outlined),
                 title: Text('许可'),
@@ -115,6 +123,14 @@ class const SettingsScreen({super.key}) extends ConsumerWidget {
         ],
       ),
     );
+  }
+
+  Future<void> _openSource(BuildContext context) async {
+    final ok = await openExternalUrl(AppConstants.appSourceUrl);
+    if (!context.mounted || ok) return;
+    ScaffoldMessenger.of(context)
+      ..clearSnackBars()
+      ..showSnackBar(const SnackBar(content: Text('没有能打开链接的应用')));
   }
 
   Future<void> _clearDirectoryCache(BuildContext context, WidgetRef ref) async {

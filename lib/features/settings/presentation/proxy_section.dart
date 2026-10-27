@@ -94,7 +94,7 @@ class _ProxySectionState extends ConsumerState<ProxySection> {
           Row(
             children: [
               FilledButton.tonalIcon(
-                onPressed: state.probing ? null : () => notifier.probeAll(),
+                onPressed: state.probing ? null : notifier.probeAll,
                 icon: const Icon(Icons.network_check, size: 18),
                 label: Text(
                   state.probing

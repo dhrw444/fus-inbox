@@ -24,9 +24,8 @@ import 'dart:typed_data';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
 
 /// SOCKS5 握手失败。
-class SocksException implements Exception {
-  const SocksException(this.message, {this.replyCode});
-
+class const SocksException(this.message, {this.replyCode})
+    implements Exception {
   final String message;
 
   /// 服务器回的 REP 字段（RFC 1928 §6）。null 表示没走到那一步。

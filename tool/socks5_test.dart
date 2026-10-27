@@ -7,8 +7,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'proxy_config.dart';
-import 'socks5_client.dart';
+import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/socks5_client.dart';
 
 int pass = 0, fail = 0;
 void ok(bool c, String label) {

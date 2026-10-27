@@ -37,16 +37,14 @@ ProxyConfig _directProxy() => const ProxyConfig(
 );
 
 /// 一个代理上绑定的身份。
-class IdentityBinding {
-  const IdentityBinding({
-    required this.proxyId,
-    required this.userAgent,
-    required this.model,
-    required this.chromeMajor,
-    required this.openedNumbers,
-    required this.createdAtMs,
-  });
-
+class const IdentityBinding({
+  required this.proxyId,
+  required this.userAgent,
+  required this.model,
+  required this.chromeMajor,
+  required this.openedNumbers,
+  required this.createdAtMs,
+}) {
   /// 绑在哪个代理上。
   final String proxyId;
 
@@ -124,14 +122,12 @@ enum OpenAction {
   rotate,
 }
 
-class OpenPlan {
-  const OpenPlan({
-    required this.action,
-    required this.proxy,
-    required this.binding,
-    required this.reason,
-  });
-
+class const OpenPlan({
+  required this.action,
+  required this.proxy,
+  required this.binding,
+  required this.reason,
+}) {
   final OpenAction action;
 
   /// 应该用哪个代理。

@@ -19,6 +19,9 @@ analyzer:
     strict-raw-types: true
   exclude:
     - build/**
+    # tool/ 下是手跑的实测脚本，靠 print 出结果，不是产品代码。
+    # 不排掉的话 CI 的 --fatal-infos 会把每一条 print 都当失败。
+    - tool/**
     - android/**
     - ios/**
     - web/**

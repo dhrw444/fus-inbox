@@ -2,6 +2,7 @@ package com.yg.fusinbox
 
 import android.app.Activity
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.webkit.WebView
 import androidx.webkit.WebViewCompat
@@ -140,6 +141,27 @@ class MainActivity : FlutterActivity() {
     /// 的唯一可靠证据——只看 DOM 猜（挑战容器消失、有消息节点）
     /// 会把导航栏和广告当成通过，之前那版就是这么误判的。
     ///
+    /// 交给系统浏览器打开一个链接。
+    ///
+    /// 用 ACTION_VIEW 而不是 WebView —— 用户点仓库链接是想在真浏览器
+    /// 里看，不是想在 App 内嵌的 WebView 里再开一个页面。
+    ///
+    /// 返回 false 表示设备上没有能处理这个 URL 的应用，调用方据此
+    /// 提示用户，而不是静默失败。
+    private fun openExternalUrl(url: String): Boolean {
+        return try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                // 从非 Activity 上下文启动时要带，这里是 Activity，
+                // 但显式声明能避免某些 ROM 的歧义。
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            startActivity(intent)
+            true
+        } catch (error: Exception) {
+            false
+        }
+    }
+
     /// `CookieManager.getCookie(url)` 返回的是 `a=1; b=2` 这种串，
     /// 这里解析成 map 交给 Dart，方便按名字查。
     private fun readCookies(url: String): Map<String, String> {
@@ -243,6 +265,17 @@ class MainActivity : FlutterActivity() {
                     "clearProxy" -> result.success(proxyBridge.clearProxy())
                     "supportsProxy" -> result.success(proxyBridge.supportsProxy())
                     "webViewVersion" -> result.success(proxyBridge.webViewVersion())
+                    // 用系统浏览器打开外部链接。不用 url_launcher 是
+                    // 为了不动 pubspec.lock —— CI 跑 --enforce-lockfile，
+                    // 加依赖就得同步改锁文件，不值当。
+                    "openUrl" -> {
+                        val url = call.argument<String>("url")
+                        if (url.isNullOrBlank()) {
+                            result.error("bad_args", "url is required", null)
+                        } else {
+                            result.success(openExternalUrl(url))
+                        }
+                    }
                     else -> result.notImplemented()
                 }
             }

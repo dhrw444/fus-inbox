@@ -6,15 +6,13 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 import 'package:fus_inbox/core/proxy/socks5_client.dart';
 
 /// 一条代理的实测结果。
-class ProxyProbeResult {
-  const ProxyProbeResult({
-    required this.proxy,
-    required this.ok,
-    this.latencyMs = 0,
-    this.egressIp = '',
-    this.failure = '',
-  });
-
+class const ProxyProbeResult({
+  required this.proxy,
+  required this.ok,
+  this.latencyMs = 0,
+  this.egressIp = '',
+  this.failure = '',
+}) {
   /// 没测出东西就判死的快捷构造，给外面兜异常用。
   factory ProxyProbeResult.dead(ProxyConfig proxy, String reason) =>
       ProxyProbeResult(proxy: proxy, ok: false, failure: reason);
@@ -48,9 +46,7 @@ class ProxyProbeResult {
 /// 2. 经隧道真连一次目标，证明链路是通的
 ///
 /// 再取一次出口 IP，用来判断这条代理的 IP 是不是跟别的重复。
-class ProxyProbe {
-  ProxyProbe({this.timeout = const Duration(seconds: 10)});
-
+class ProxyProbe({this.timeout = const Duration(seconds: 10)}) {
   final Duration timeout;
 
   /// 用来验链路的目标。选一个轻量且稳定的 HTTPS 端点。

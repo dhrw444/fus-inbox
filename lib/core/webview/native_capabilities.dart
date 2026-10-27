@@ -53,6 +53,26 @@ Future<Map<String, String>> readCookies(String url) async {
   }
 }
 
+/// 交给系统浏览器打开一个链接。
+///
+/// 走原生而不是 WebView：用户点仓库链接是想在真浏览器里看。
+/// 设备上没有能处理该 URL 的应用时返回 false，调用方据此提示。
+Future<bool> openExternalUrl(String url) async {
+  try {
+    final ok = await platformWebViewChannel
+        .invokeMethod<bool>('openUrl', {'url': url})
+        .timeout(const Duration(seconds: 2));
+    return ok ?? false;
+  } on MissingPluginException {
+    return false;
+  } on PlatformException catch (e) {
+    debugPrint('打开链接失败：$e');
+    return false;
+  } on TimeoutException {
+    return false;
+  }
+}
+
 /// 给 WebView 装上浏览器能力垫片。
 ///
 /// ## 为什么

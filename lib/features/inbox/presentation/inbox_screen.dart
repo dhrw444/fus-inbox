@@ -232,7 +232,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _rotating = true;
     try {
       final notifier = ref.read(proxyProvider.notifier);
-      if (!notifier.canRotate) {
+      if (!ref.read(proxyProvider).canRotate) {
         _store.note('代理池里没有别的出口可换，需要你换个网络再点重置');
         return;
       }
@@ -621,10 +621,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
       String phase = '';
       try {
-        final raw = await _controller.runJavaScript(
+        // 必须用 runJavaScriptReturningResult：runJavaScript 返回
+        // Future<void>，拿不到值（同文件 777 行的注释也记着这点）。
+        final raw = (await _controller.runJavaScriptReturningResult(
           '(window.FUSReader && window.FUSReader.status)'
           ' ? JSON.stringify(window.FUSReader.status()) : ""',
-        );
+        )).toString();
         if (raw.isNotEmpty && raw != '""') {
           // runJavaScript 返回的是 JSON 字符串里的字符串，剥两层引号。
           final decoded = jsonDecode(raw) as String;

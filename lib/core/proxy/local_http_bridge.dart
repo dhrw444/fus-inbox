@@ -42,9 +42,7 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 import 'package:fus_inbox/core/proxy/socks5_client.dart';
 
 /// 一条正在运行的桥。
-class LocalProxyBridge {
-  LocalProxyBridge._(this._server, this.proxy);
-
+class LocalProxyBridge._(this._server, this.proxy) {
   final ServerSocket _server;
 
   /// 出口代理。换代理就是关掉重建，不在这里改。
@@ -62,11 +60,7 @@ class LocalProxyBridge {
   static Future<LocalProxyBridge> start(ProxyConfig proxy) async {
     // 绑回环即可。绑 0.0.0.0 会让同一 WiFi 下的其他设备也能用，
     // 那是个不该开的口子。
-    final server = await ServerSocket.bind(
-      InternetAddress.loopbackIPv4,
-      0,
-      shared: false,
-    );
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final bridge = LocalProxyBridge._(server, proxy);
     server.listen(bridge._handle, onError: (Object _) {});
     return bridge;
@@ -164,7 +158,7 @@ class LocalProxyBridge {
           t.close();
           client.destroy();
         }
-      }, onDone: () => t.close());
+      }, onDone: t.close);
 
       // 隧道 → 客户端
       down = t.incoming.listen(
@@ -241,7 +235,7 @@ class LocalProxyBridge {
 /// 「原样转发」，两件事必须共用同一个订阅。
 class _ClientReader {
   _ClientReader(Socket socket) {
-    _sub = socket.listen(
+    socket.listen(
       (chunk) {
         if (_sink != null) {
           _sink!(chunk);
@@ -259,7 +253,6 @@ class _ClientReader {
     );
   }
 
-  late final StreamSubscription<Uint8List> _sub;
   final List<int> _buffer = [];
   final Completer<String?> _done = Completer<String?>();
   void Function(Uint8List)? _sink;

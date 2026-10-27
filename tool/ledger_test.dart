@@ -2,8 +2,8 @@
 // 运行：dart run tool/ledger_test.dart
 import 'dart:convert';
 
-import 'proxy_config.dart';
-import 'identity_ledger.dart';
+import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/identity_ledger.dart';
 
 int pass = 0;
 int fail = 0;

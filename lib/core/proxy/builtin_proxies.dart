@@ -13,9 +13,7 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 /// 这样「内置」和「手动添加」在界面上是同一种东西 —— 都能删，
 /// 删掉都真的不出现。区别只在：内置的删了之后，清空排除表就能
 /// 恢复；手动添加的删了就没了。
-class BuiltinProxies {
-  const BuiltinProxies();
-
+class const BuiltinProxies() {
   static const _assetPath = 'assets/proxies/builtin.txt';
   static const _excludedKey = 'proxy.builtin.excluded.v1';
 

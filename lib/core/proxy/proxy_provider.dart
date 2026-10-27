@@ -19,18 +19,36 @@ const _kLedger = 'fus:identity:ledger:v1';
 const _kAutoProxy = 'fus:proxy:auto:v1';
 
 class ProxyState {
-  const ProxyState({
+  ProxyState({
     this.pool = const [],
     this.builtin = const [],
     this.excludedBuiltin = const {},
     this.currentId = '',
-    this.ledger = const IdentityLedger(),
+    IdentityLedger? ledger,
     this.autoRotate = true,
     this.probing = false,
     this.progress = 0,
     this.probeTotal = 0,
     this.results = const {},
-  });
+  }) : ledger = ledger ?? IdentityLedger();
+
+  /// 全部代理（内置 + 手动），顺序是内置在前。
+  List<ProxyConfig> get all => [...builtin, ...pool];
+
+  /// 还有没有别的代理可换。
+  ///
+  /// 只有一条（或全被判死只剩一条）时返回 false —— 那种情况下
+  /// 「自动换」只会原地打转，界面该让用户自己去换 IP。
+  ///
+  /// 放在 [ProxyState] 上而不是 notifier 上：notifier 的公开 API
+  /// 应该只有 `state`（`avoid_public_notifier_properties`）。
+  bool get canRotate {
+    final usable = all.where((p) => !isUnusable(p.id));
+    return usable.length > 1;
+  }
+
+  /// 这条代理是不是被检测判死了。
+  bool isUnusable(String proxyId) => results[proxyId]?.ok == false;
 
   /// 用户手动添加的代理。
   final List<ProxyConfig> pool;
@@ -93,12 +111,15 @@ class ProxyState {
   );
 }
 
-class ProxyNotifier extends Notifier<ProxyState> {
+class ProxyNotifier() extends Notifier<ProxyState> {
+  /// 检测器。无状态，整个 notifier 共用一个就够。
+  final ProxyProbe _probe = ProxyProbe();
+
   @override
   ProxyState build() {
     // 先给空状态，异步回填。界面不会因为读盘而卡住。
     Future<void>.microtask(_load);
-    return const ProxyState();
+    return ProxyState();
   }
 
   Future<void> _load() async {
@@ -286,21 +307,6 @@ class ProxyNotifier extends Notifier<ProxyState> {
     state.ledger.clearProxy(next.id);
     await _persist();
     return next;
-  }
-
-  /// 还有没有别的代理可换。
-  ///
-  /// 只有一条（或全被判死只剩一条）时返回 false —— 那种情况下
-  /// 「自动换」只会原地打转，界面该让用户自己去换 IP。
-  bool get canRotate {
-    final all = state.all;
-    if (all.length <= 1) return false;
-    final unusable = state.results.entries
-        .where((e) => !e.value.ok)
-        .map((e) => e.key)
-        .toSet();
-    final usable = all.where((p) => !unusable.contains(p.id));
-    return usable.length > 1;
   }
 
   Future<void> clearLedger() async {

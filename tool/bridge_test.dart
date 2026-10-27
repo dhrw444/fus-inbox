@@ -7,8 +7,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'proxy_config.dart';
-import 'local_http_bridge.dart';
+import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/local_http_bridge.dart';
 
 int pass = 0, fail = 0;
 void ok(bool c, String label) {
@@ -31,7 +31,7 @@ void eq(Object? a, Object? b, String label) {
 
 class _R {
   _R(Socket s) {
-    _sub = s.listen(
+    s.listen(
       (c) {
         // 切到收集模式后字节直接进 sink —— Socket 只能 listen 一次，
         // 读头和读 body 必须共用同一个订阅。
@@ -47,7 +47,6 @@ class _R {
       onDone: () {},
     );
   }
-  late final StreamSubscription<Uint8List> _sub;
   final List<int> _b = [];
   void Function(Uint8List)? _fwd;
   Completer<Uint8List>? _w;
