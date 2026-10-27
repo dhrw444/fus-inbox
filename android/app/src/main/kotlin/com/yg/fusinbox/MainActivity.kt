@@ -13,6 +13,52 @@ class MainActivity : FlutterActivity() {
     private var backupResult: MethodChannel.Result? = null
     private val backupRequestCode = 4102
 
+    /// 清空 WebView 的全部站点数据。
+    ///
+    /// ## 为什么必须清，不能只换 UA
+    ///
+    /// 站点把访客身份绑在一对 ECDSA 密钥上，密钥存在 IndexedDB
+    /// （`fus-reader-v1`）。每次请求的 `X-FUS-Proof` 都用这把私钥签名，
+    /// 服务端据此认出「还是那个访客」。
+    ///
+    /// 只改 User-Agent 的话：UA 变了，密钥没变，服务端看到的仍然是
+    /// 同一个身份 —— 换了个马甲而已，配额、限流、信誉全都跟着走。
+    ///
+    /// 真正的「换一个浏览器」= cookie + localStorage + IndexedDB
+    /// 全部清空，让站点在下次加载时重新生成密钥对。
+    ///
+    /// 注意清的只有 **WebView 的站点数据**。App 自己的 SharedPreferences
+    /// （号码目录缓存、收录时间、译文缓存）完全不受影响。
+    ///
+    /// IndexedDB 没有公开的清除 API，由 Dart 侧在页面里用
+    /// `indexedDB.deleteDatabase()` 处理，这里负责剩下三样。
+    private fun clearBrowsingData(): Boolean {
+        return try {
+            val latch = java.util.concurrent.CountDownLatch(1)
+            // removeAllCookies 要 ValueCallback<Boolean>。这是 Java 接口，
+            // Kotlin 里不能写 lambda 直接转换，必须显式实现对象。
+            val callback = object : android.webkit.ValueCallback<Boolean> {
+                override fun onReceiveValue(value: Boolean?) {
+                    latch.countDown()
+                }
+            }
+            android.webkit.CookieManager.getInstance().removeAllCookies(callback)
+            // 最多等 2 秒。等不到也继续清剩下的 ——
+            // 不能因为 cookie 回调慢就整件事都不做。
+            latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+
+            // localStorage / sessionStorage 全站点清空。
+            android.webkit.WebStorage.getInstance().deleteAllData()
+            // HTTP 认证凭据，顺手一起。
+            android.webkit.WebViewDatabase.getInstance(this)
+                .clearHttpAuthUsernamePassword()
+
+            true
+        } catch (error: Exception) {
+            false
+        }
+    }
+
     /// 读某个 URL 下的全部 cookie，包括 HttpOnly。
     ///
     /// 为什么必须走原生：`cf_clearance` 是 **HttpOnly**，JS 的
@@ -95,6 +141,9 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "getAndroidSdkVersion" -> result.success(Build.VERSION.SDK_INT)
                     "getDeviceProfile" -> result.success(deviceProfile())
+                    "clearBrowsingData" -> {
+                        result.success(clearBrowsingData())
+                    }
                     "getCookies" -> {
                         val url = call.argument<String>("url")
                         if (url == null) {

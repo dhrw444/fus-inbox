@@ -74,6 +74,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 叠起来就是每次点开面板都排一队通道调用，白白压主线程。
   bool _clearanceBusy = false;
 
+  /// 重置身份后置 true：等站点页加载完成，立刻删掉它的密钥。
+  ///
+  /// 不能提前删 —— about:blank 的 origin 和站点不同，碰不到站点的
+  /// IndexedDB。也不能等站点自己发完请求再删，那时旧密钥已经用来
+  /// 签名过了。所以卡在 onPageFinished 这一刻：
+  /// 站点还没发首屏请求，文档已经就绪，删得掉。
+  bool _wipeSiteStorageOnLoad = false;
+
   @override
   void initState() {
     super.initState();
@@ -155,7 +163,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 注入失败无所谓——onPageFinished 会再补一次；JS 有 __fusInboxHooked
           // 守卫，重复注入不会叠加定时器。
           onPageStarted: (url) => unawaited(_injectQuietly()),
-          onPageFinished: (url) => unawaited(_inject()),
+          onPageFinished: (url) {
+            if (_wipeSiteStorageOnLoad) {
+              _wipeSiteStorageOnLoad = false;
+              unawaited(_wipeThenReload());
+              return;
+            }
+            unawaited(_inject());
+          },
           onWebResourceError: (error) {
             // isForMainFrame 是 bool?：null 表示不确定，别当成主框架失败。
             if (error.isForMainFrame == false) return;
@@ -194,30 +209,49 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 换一个浏览器身份并重新打开收件页。
   ///
-  /// 站点会判断「是不是同一个浏览器」：UA 固定会让 Cloudflare 的挑战变严，
-  /// 表现就是一直转圈拿不到短信。
+  /// ## 只换 UA 是没用的
   ///
-  /// **只换身份，不碰任何本地数据**：
-  ///   - 不清 cookie / 缓存 / localStorage —— 那会把用户的收藏、
-  ///     已缓存的号码和译文缓存一起洗掉
-  ///   - 只做两件事：设新 UA + 重新加载这个收件页
+  /// 站点把访客身份绑在一对 **ECDSA 密钥**上，密钥存在 IndexedDB
+  /// `fus-reader-v1`，每次请求的 `X-FUS-Proof` 都用它签名。
+  /// 上一版这里只做了 `setUserAgent` + reload：UA 变了，密钥没变，
+  /// 服务端认出的还是同一个访客 —— 换了个马甲而已，
+  /// 配额、限流、信誉全都跟着走。
   ///
-  /// 换完只影响这一个 WebView 实例的请求特征，App 自己的磁盘缓存原封不动。
+  /// 真正的「换一个浏览器」必须把这四样一起清掉：
+  ///   1. cookie（含 HttpOnly 的 cf_clearance）
+  ///   2. localStorage / sessionStorage
+  ///   3. IndexedDB（那对密钥）
+  ///   4. UA
   ///
-  /// 注意换的是**整份身份**：UA 版本、机型串、client hints 一起换。
-  /// 旧实现只换 UA 字符串、hints 不动，那正好制造出
-  /// 「UA 说 Chrome 120、Sec-CH-UA 说 Chrome 141」的撕裂，
-  /// 比不换更容易被风控。
+  /// 然后重新加载，站点会当成全新访客，重新生成密钥对。
+  ///
+  /// **不碰 App 自己的数据**：号码目录缓存、收录时间、译文缓存
+  /// 都存在 SharedPreferences 里，和 WebView 的站点数据完全隔离。
   Future<void> _rotateIdentity() async {
     final messenger = ScaffoldMessenger.of(context);
-    _store.note('正在更换浏览器身份…');
+    _store.note('正在重置浏览器身份…');
 
     try {
+      // 分三步，顺序不能换：
+      //
+      // 1) clearBrowsingData() —— 原生清 cookie / WebStorage / HTTP 凭据。
+      //    必须在导航前调：它清的是「这个 WebView 里所有站点的数据」，
+      //    和当前文档在哪个页面无关；先清掉能保证 next 这次加载是
+      //    一个没有 cookie 的请求。
+      //
+      // 2) 设新 UA。
+      //
+      // 3) 打开收件页，等它 onPageFinished 那一刻删 IndexedDB，
+      //    然后再重载一次（见 _wipeThenReload）。密钥必须卡在那个
+      //    时间点删：about:blank 的 origin 碰不到站点库，
+      //    而等站点自己发完请求再删，旧密钥已经用过了。
+      final ok = await clearBrowsingData();
+
       final identity = rotateIdentity();
       await _controller.setUserAgent(identity.userAgent);
 
-      // 重置的只是这个页面的内存状态（已抓到的消息、看门狗），
-      // 和磁盘上的目录缓存 / 收录时间缓存无关。
+      // 下一次加载完成时删密钥，然后重载。
+      _wipeSiteStorageOnLoad = true;
       _store.reset();
       _armWatchdog();
       await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
@@ -228,9 +262,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         ..showSnackBar(
           SnackBar(
             content: Text(
-              '已换新身份：${identity.model} · Chrome ${identity.chromeMajor}',
+              ok
+                  ? '已换新身份：${identity.model} · Chrome ${identity.chromeMajor}'
+                  : 'UA 已换，但站点数据没清干净，可能仍被认成同一个人',
             ),
-            duration: const Duration(milliseconds: 1800),
+            duration: const Duration(milliseconds: 2200),
           ),
         );
     } catch (e) {
@@ -239,6 +275,80 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       messenger
         ..clearSnackBars()
         ..showSnackBar(SnackBar(content: Text('换身份失败：$e')));
+    }
+  }
+
+  /// 站点页刚加载完：删掉它的密钥，然后重载一次。
+  ///
+  /// 为什么是「加载完 → 删 → 再加载」两趟：
+  ///   - about:blank 的 origin 不是站点，碰不到站点的 IndexedDB，
+  ///     所以不能在空白页删
+  ///   - 站点页面加载完成的那一刻，文档就绪但首屏请求还没发出去，
+  ///     这是唯一能抢在「旧密钥被用来签名」之前删掉的窗口
+  ///   - 删完这个文档已经没用了（密钥没了，发请求会 401），
+  ///     重载一次让站点在干净状态下重新生成密钥
+  Future<void> _wipeThenReload() async {
+    await _clearSiteStorage();
+    if (!mounted) return;
+    _store.reset();
+    _armWatchdog();
+    try {
+      await _controller.reload();
+    } catch (e) {
+      debugPrint('重载失败: $e');
+    }
+  }
+
+  /// 在收件页里删掉站点自己的 IndexedDB 密钥。
+  ///
+  /// 必须在站点页面**加载完成之后立刻**执行，而且要在站点自己
+  /// 发请求之前 —— 它会先用旧密钥签名。删完重载一次，
+  /// 这次站点找不到密钥，会生成新的。
+  Future<void> _clearSiteStorage() async {
+    try {
+      await _controller.runJavaScript('''
+(async function () {
+  // reader.js 每次用完都会 db.close()，而且注册了 onversionchange，
+  // 所以 deleteDatabase 一般会立刻成功。但仍然要 await 它，
+  // 不能发完就 reload —— 删到一半重载，站点会读到半删除的库。
+  function dropOne(name) {
+    return new Promise(function (res) {
+      var settled = false;
+      function done(ok) { if (settled) return; settled = true; res(ok); }
+      try {
+        var req = indexedDB.deleteDatabase(name);
+        req.onsuccess = function () { done(true); };
+        req.onerror = function () { done(false); };
+        // blocked = 站点还连着。最多等 1.2 秒，超时也返回，
+        // 让上层照常 reload（新文档不会再握着旧连接）。
+        req.onblocked = function () { setTimeout(function () { done(false); }, 1200); };
+        setTimeout(function () { done(false); }, 2000);
+      } catch (e) { done(false); }
+    });
+  }
+
+  try { localStorage.clear(); } catch (e) {}
+  try { sessionStorage.clear(); } catch (e) {}
+
+  var names = [];
+  try {
+    if (indexedDB.databases) {
+      var dbs = await indexedDB.databases();
+      for (var i = 0; i < dbs.length; i++) if (dbs[i] && dbs[i].name) names.push(dbs[i].name);
+    }
+  } catch (e) {}
+  // 拿不到列表也要删这个 —— 它是身份的根。
+  if (names.indexOf('fus-reader-v1') < 0) names.push('fus-reader-v1');
+
+  var results = [];
+  for (var k = 0; k < names.length; k++) {
+    results.push(names[k] + ':' + (await dropOne(names[k]) ? 'ok' : 'blocked'));
+  }
+  return results.join(',');
+})();
+''');
+    } catch (e) {
+      debugPrint('清站点存储失败: $e');
     }
   }
 

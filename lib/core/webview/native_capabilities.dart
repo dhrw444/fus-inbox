@@ -48,6 +48,34 @@ Future<Map<String, String>> readCookies(String url) async {
   }
 }
 
+/// 清空 WebView 的全部站点数据（cookie / localStorage / IndexedDB）。
+///
+/// 站点把访客身份绑在一对 ECDSA 密钥上，密钥存在 IndexedDB。
+/// 只换 UA 的话密钥不变，服务端认出的还是同一个身份 —— 那等于没换。
+///
+/// 原生侧负责 cookie / WebStorage / HTTP 凭据。
+/// IndexedDB 没有原生清除 API，必须回到页面里用 JS 删
+/// （见 inbox_screen 的 `_clearSiteStorage`），两步都做完才算真的换了。
+///
+/// 只动 WebView 的站点数据，App 自己的磁盘缓存（号码目录、
+/// 收录时间、译文）完全不受影响。
+Future<bool> clearBrowsingData() async {
+  try {
+    final ok = await platformWebViewChannel
+        .invokeMethod<bool>('clearBrowsingData')
+        .timeout(const Duration(seconds: 4));
+    return ok ?? false;
+  } on MissingPluginException {
+    return false;
+  } on PlatformException catch (e) {
+    debugPrint('清站点数据失败：$e');
+    return false;
+  } on TimeoutException {
+    debugPrint('清站点数据超时');
+    return false;
+  }
+}
+
 /// 探测设备的真实浏览器身份并装载。
 ///
 /// 这一步必须在**任何网络请求之前**完成：UA 和 client hints 都要用
