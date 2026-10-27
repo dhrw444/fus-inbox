@@ -46,9 +46,7 @@ class _ProxySectionState extends ConsumerState<_ProxySection> {
     }
     if (!mounted) return;
     setState(() {
-      _message = failed == 0
-          ? '加了 $added 条'
-          : '加了 $added 条，$failed 条格式不对';
+      _message = failed == 0 ? '加了 $added 条' : '加了 $added 条，$failed 条格式不对';
     });
     if (added > 0) _input.clear();
   }
@@ -98,7 +96,8 @@ class _ProxySectionState extends ConsumerState<_ProxySection> {
                 Text(
                   '这个出口已看 ${ledger.usedOnCurrent} / ${IdentityLedger.slotsPerIdentity} 个号',
                   style: theme.textTheme.bodySmall?.copyWith(
-                    color: ledger.usedOnCurrent >= IdentityLedger.slotsPerIdentity
+                    color:
+                        ledger.usedOnCurrent >= IdentityLedger.slotsPerIdentity
                         ? theme.colorScheme.error
                         : theme.colorScheme.onSurfaceVariant,
                   ),
@@ -239,9 +238,13 @@ class _ProxyRow extends StatelessWidget {
         ),
       ),
       subtitle: Text(
-        full ? '已用满 $used 个号，下次会跳过' : '已用 $used / ${IdentityLedger.slotsPerIdentity}',
+        full
+            ? '已用满 $used 个号，下次会跳过'
+            : '已用 $used / ${IdentityLedger.slotsPerIdentity}',
         style: theme.textTheme.labelSmall?.copyWith(
-          color: full ? theme.colorScheme.error : theme.colorScheme.onSurfaceVariant,
+          color: full
+              ? theme.colorScheme.error
+              : theme.colorScheme.onSurfaceVariant,
         ),
       ),
       trailing: IconButton(

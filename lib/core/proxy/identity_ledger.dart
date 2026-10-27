@@ -178,7 +178,8 @@ class IdentityLedger {
     required String Function() mintChromeMajor,
   }) {
     final current =
-        pool.where((p) => p.id == currentProxyId).firstOrNull ?? pool.firstOrNull;
+        pool.where((p) => p.id == currentProxyId).firstOrNull ??
+        pool.firstOrNull;
     if (current == null) {
       // 没配代理：用直连，绑一个占位身份。这样界面逻辑不用分叉。
       final binding = IdentityBinding(

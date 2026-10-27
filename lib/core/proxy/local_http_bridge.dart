@@ -119,7 +119,9 @@ class LocalProxyBridge {
           return;
         }
         final host = uri.host;
-        final port = uri.hasPort ? uri.port : (uri.scheme == 'https' ? 443 : 80);
+        final port = uri.hasPort
+            ? uri.port
+            : (uri.scheme == 'https' ? 443 : 80);
         tunnel = await SocksTunnel.open(proxy, host, port);
 
         // 重写请求行：绝对 URI → 路径。源服务器不认绝对 URI。
@@ -155,17 +157,14 @@ class LocalProxyBridge {
       // 不能再 `client.listen(...)` —— Socket 是单订阅流，_ClientReader
       // 已经订阅了，第二次 listen 直接抛「Stream has already been
       // listened to」。改成让 reader 自己切到转发模式。
-      head.forwardTo(
-        (chunk) {
-          try {
-            t.write(chunk);
-          } catch (_) {
-            t.close();
-            client.destroy();
-          }
-        },
-        onDone: () => t.close(),
-      );
+      head.forwardTo((chunk) {
+        try {
+          t.write(chunk);
+        } catch (_) {
+          t.close();
+          client.destroy();
+        }
+      }, onDone: () => t.close());
 
       // 隧道 → 客户端
       down = t.incoming.listen(
@@ -183,12 +182,7 @@ class LocalProxyBridge {
     } catch (e) {
       // 失败要把话说清楚：500 比「连接被重置」有用得多。
       try {
-        await _sendStatus(
-          client,
-          'HTTP/1.1',
-          502,
-          'Upstream proxy failed: $e',
-        );
+        await _sendStatus(client, 'HTTP/1.1', 502, 'Upstream proxy failed: $e');
       } catch (_) {}
       client.destroy();
     } finally {
@@ -208,7 +202,9 @@ class LocalProxyBridge {
   ) async {
     final body = utf8.encode(message);
     final head = StringBuffer()
-      ..write('${version.startsWith('HTTP') ? version : 'HTTP/1.1'} $code X\r\n')
+      ..write(
+        '${version.startsWith('HTTP') ? version : 'HTTP/1.1'} $code X\r\n',
+      )
       ..write('Content-Type: text/plain; charset=utf-8\r\n')
       ..write('Content-Length: ${body.length}\r\n')
       ..write('Connection: close\r\n\r\n');
@@ -290,10 +286,8 @@ class _ClientReader {
     return -1;
   }
 
-  Future<String?> readHeaderBlock() => _done.future.timeout(
-    const Duration(seconds: 20),
-    onTimeout: () => null,
-  );
+  Future<String?> readHeaderBlock() =>
+      _done.future.timeout(const Duration(seconds: 20), onTimeout: () => null);
 
   /// 取走读头之后残留的 body 字节。
   Uint8List takeBuffer() {

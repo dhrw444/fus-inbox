@@ -12,15 +12,33 @@ import 'local_http_bridge.dart';
 
 int pass = 0, fail = 0;
 void ok(bool c, String label) {
-  if (c) { pass++; } else { fail++; print('FAIL  $label'); }
+  if (c) {
+    pass++;
+  } else {
+    fail++;
+    print('FAIL  $label');
+  }
 }
+
 void eq(Object? a, Object? b, String label) {
-  if (a == b) { pass++; } else { fail++; print('FAIL  $label  got=$a want=$b'); }
+  if (a == b) {
+    pass++;
+  } else {
+    fail++;
+    print('FAIL  $label  got=$a want=$b');
+  }
 }
 
 class _R {
   _R(Socket s) {
-    _sub = s.listen((c) { _b.addAll(c); _p(); }, onError: (Object _) {}, onDone: () {});
+    _sub = s.listen(
+      (c) {
+        _b.addAll(c);
+        _p();
+      },
+      onError: (Object _) {},
+      onDone: () {},
+    );
   }
   late final StreamSubscription<Uint8List> _sub;
   final List<int> _b = [];
@@ -34,6 +52,7 @@ class _R {
     _w = null;
     w.complete(o);
   }
+
   Future<Uint8List> read(int n) {
     if (_b.length >= n) {
       final o = Uint8List.fromList(_b.sublist(0, n));
@@ -41,7 +60,8 @@ class _R {
       return Future.value(o);
     }
     final c = Completer<Uint8List>();
-    _w = c; _n = n;
+    _w = c;
+    _n = n;
     return c.future.timeout(const Duration(seconds: 5));
   }
 }
@@ -57,6 +77,7 @@ class FakeSocks5 {
     _srv = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     _srv.listen(_handle);
   }
+
   Future<void> stop() async => _srv.close();
 
   Future<void> _handle(Socket s) async {
@@ -64,7 +85,10 @@ class FakeSocks5 {
     try {
       final g = await r.read(2);
       final m = await r.read(g[1]);
-      if (!m.contains(0x00)) { s.destroy(); return; }
+      if (!m.contains(0x00)) {
+        s.destroy();
+        return;
+      }
       s.add(Uint8List.fromList([0x05, 0x00]));
       await s.flush();
 
@@ -89,21 +113,35 @@ class FakeSocks5 {
       // 真的连过去
       Socket up;
       try {
-        up = await Socket.connect(host, port, timeout: const Duration(seconds: 4));
+        up = await Socket.connect(
+          host,
+          port,
+          timeout: const Duration(seconds: 4),
+        );
       } catch (_) {
         s.add(Uint8List.fromList([0x05, 0x05, 0x00, 0x01, 0, 0, 0, 0, 0, 0]));
         await s.flush();
         s.destroy();
         return;
       }
-      s.add(Uint8List.fromList([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x1F, 0x90]));
+      s.add(
+        Uint8List.fromList([0x05, 0x00, 0x00, 0x01, 127, 0, 0, 1, 0x1F, 0x90]),
+      );
       await s.flush();
 
       // 双向转发
-      s.listen(up.add, onError: (Object _) => up.destroy(),
-          onDone: () => up.destroy(), cancelOnError: true);
-      up.listen(s.add, onError: (Object _) => s.destroy(),
-          onDone: () => s.destroy(), cancelOnError: true);
+      s.listen(
+        up.add,
+        onError: (Object _) => up.destroy(),
+        onDone: () => up.destroy(),
+        cancelOnError: true,
+      );
+      up.listen(
+        s.add,
+        onError: (Object _) => s.destroy(),
+        onDone: () => s.destroy(),
+        cancelOnError: true,
+      );
     } catch (_) {
       s.destroy();
     }
@@ -129,17 +167,25 @@ Future<void> main() async {
         final c = await r.read(1);
         buf.addAll(c);
         if (buf.length >= 4 &&
-            buf[buf.length - 4] == 13 && buf[buf.length - 3] == 10 &&
-            buf[buf.length - 2] == 13 && buf[buf.length - 1] == 10) break;
+            buf[buf.length - 4] == 13 &&
+            buf[buf.length - 3] == 10 &&
+            buf[buf.length - 2] == 13 &&
+            buf[buf.length - 1] == 10)
+          break;
       }
       final req = utf8.decode(buf);
       seen.add(req);
-      s.add(utf8.encode(
-        'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n'
-        'Content-Length: 11\r\nConnection: close\r\n\r\nhello-world'));
+      s.add(
+        utf8.encode(
+          'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n'
+          'Content-Length: 11\r\nConnection: close\r\n\r\nhello-world',
+        ),
+      );
       await s.flush();
       s.destroy();
-    } catch (_) { s.destroy(); }
+    } catch (_) {
+      s.destroy();
+    }
   });
 
   final bridge = await LocalProxyBridge.start(proxy);
@@ -148,8 +194,10 @@ Future<void> main() async {
   // ---------- 1. CONNECT 隧道（HTTPS 主路径）----------
   {
     final c = await Socket.connect('127.0.0.1', bridge.port);
-    c.write('CONNECT 127.0.0.1:$targetPort HTTP/1.1\r\n'
-        'Host: 127.0.0.1:$targetPort\r\n\r\n');
+    c.write(
+      'CONNECT 127.0.0.1:$targetPort HTTP/1.1\r\n'
+      'Host: 127.0.0.1:$targetPort\r\n\r\n',
+    );
     await c.flush();
     final r = _R(c);
     final resp = <int>[];
@@ -157,8 +205,11 @@ Future<void> main() async {
       final b = await r.read(1);
       resp.addAll(b);
       if (resp.length >= 4 &&
-          resp[resp.length - 4] == 13 && resp[resp.length - 3] == 10 &&
-          resp[resp.length - 2] == 13 && resp[resp.length - 1] == 10) break;
+          resp[resp.length - 4] == 13 &&
+          resp[resp.length - 3] == 10 &&
+          resp[resp.length - 2] == 13 &&
+          resp[resp.length - 1] == 10)
+        break;
     }
     final head = utf8.decode(resp);
     ok(head.startsWith('HTTP/1.1 200'), 'CONNECT returns 200');
@@ -180,9 +231,11 @@ Future<void> main() async {
   {
     seen.clear();
     final c = await Socket.connect('127.0.0.1', bridge.port);
-    c.write('GET http://127.0.0.1:$targetPort/path?q=1 HTTP/1.1\r\n'
-        'Host: 127.0.0.1:$targetPort\r\n'
-        'Proxy-Connection: keep-alive\r\n\r\n');
+    c.write(
+      'GET http://127.0.0.1:$targetPort/path?q=1 HTTP/1.1\r\n'
+      'Host: 127.0.0.1:$targetPort\r\n'
+      'Proxy-Connection: keep-alive\r\n\r\n',
+    );
     await c.flush();
     final body = <int>[];
     final sub = c.listen(body.addAll, onDone: () {});
@@ -192,10 +245,14 @@ Future<void> main() async {
     ok(text.contains('hello-world'), 'absolute URI reaches target');
     ok(seen.isNotEmpty, 'target saw the request');
     if (seen.isNotEmpty) {
-      ok(seen.first.startsWith('GET /path?q=1 HTTP/1.1'),
-          'request line rewritten to path: ${seen.first.split('\r\n').first}');
-      ok(!seen.first.toLowerCase().contains('proxy-connection'),
-          'proxy-connection stripped');
+      ok(
+        seen.first.startsWith('GET /path?q=1 HTTP/1.1'),
+        'request line rewritten to path: ${seen.first.split('\r\n').first}',
+      );
+      ok(
+        !seen.first.toLowerCase().contains('proxy-connection'),
+        'proxy-connection stripped',
+      );
     }
     c.destroy();
   }
@@ -209,8 +266,10 @@ Future<void> main() async {
     final sub = c.listen(b.addAll, onDone: () {});
     await Future<void>.delayed(const Duration(milliseconds: 400));
     await sub.cancel();
-    ok(utf8.decode(b, allowMalformed: true).contains('400'),
-        'bad CONNECT gives 400');
+    ok(
+      utf8.decode(b, allowMalformed: true).contains('400'),
+      'bad CONNECT gives 400',
+    );
     c.destroy();
   }
 

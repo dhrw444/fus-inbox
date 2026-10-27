@@ -108,7 +108,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 比单个爬虫更显眼，还白耗 Turnstile 验证次数。
   final _rotationPolicy = IdentityRotationPolicy();
 
-
   @override
   void initState() {
     super.initState();
@@ -261,11 +260,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
     // 代理设成了才记账。没设成就记一笔的话，这个出口的 3 个额度
     // 会被白白吃掉 —— 而且记的还是别人的账。
-    await ref.read(proxyProvider.notifier).commitOpen(
-      plan.proxy.id,
-      widget.number.id,
-      plan.binding,
-    );
+    await ref
+        .read(proxyProvider.notifier)
+        .commitOpen(plan.proxy.id, widget.number.id, plan.binding);
     if (!mounted) return;
     if (plan.rotated) {
       _store.note('换到新出口：${plan.proxy.displayName}（${plan.reason}）');
@@ -527,7 +524,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void _pumpVerification() {
     _verifyPoll?.cancel();
     _verifyElapsed = Duration.zero;
-    _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (timer) async {
+    _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (
+      timer,
+    ) async {
       if (!mounted) {
         timer.cancel();
         return;
@@ -562,9 +561,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             if (phase == 'error') {
               timer.cancel();
               _store.note(
-                message.isNotEmpty
-                    ? '站点验证失败：$message'
-                    : '站点验证失败（$category）',
+                message.isNotEmpty ? '站点验证失败：$message' : '站点验证失败（$category）',
               );
               return;
             }
@@ -1113,10 +1110,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               label: const Text('重试'),
             ),
             const SizedBox(height: 6),
-            TextButton(
-              onPressed: _openChallenge,
-              child: const Text('自己过验证'),
-            ),
+            TextButton(onPressed: _openChallenge, child: const Text('自己过验证')),
           ],
         ),
       );
@@ -1163,9 +1157,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       ],
     );
   }
-
 }
-
 
 /// 骨架卡：给「消息还没到」一个形状，而不是空白转圈。
 class const _SkeletonTile({required this.theme}) extends StatelessWidget {

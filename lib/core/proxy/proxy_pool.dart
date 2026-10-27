@@ -31,11 +31,7 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 
 /// 一条代理当前的运行状态。
 class ProxySlot {
-  const ProxySlot({
-    required this.proxy,
-    required this.identity,
-    this.used = 0,
-  });
+  const ProxySlot({required this.proxy, required this.identity, this.used = 0});
 
   final ProxyConfig proxy;
 
@@ -221,8 +217,7 @@ class ProxyRotationEngine {
 ///
 /// 存成 JSON 字符串的 map：`{proxyId: {userAgent, chromeMajor, model, ...}}`。
 class IdentityCache {
-  IdentityCache([Map<String, Map<String, Object?>>? seed])
-    : _map = {...?seed};
+  IdentityCache([Map<String, Map<String, Object?>>? seed]) : _map = {...?seed};
 
   final Map<String, Map<String, Object?>> _map;
 

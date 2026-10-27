@@ -3,10 +3,21 @@ import 'package:fus_inbox/core/proxy/proxy_pool.dart';
 
 int pass = 0, fail = 0;
 void ok(bool c, String label) {
-  if (c) { pass++; } else { fail++; print('FAIL  $label'); }
+  if (c) {
+    pass++;
+  } else {
+    fail++;
+    print('FAIL  $label');
+  }
 }
+
 void eq(Object? a, Object? b, String label) {
-  if (a == b) { pass++; } else { fail++; print('FAIL  $label  got=$a want=$b'); }
+  if (a == b) {
+    pass++;
+  } else {
+    fail++;
+    print('FAIL  $label  got=$a want=$b');
+  }
 }
 
 void main() {
@@ -75,14 +86,21 @@ void main() {
   eq(rt.password, 'pw1', 'roundtrip password');
   eq(rt.id, withPw.id, 'roundtrip id');
   ok(ProxyConfig.fromJson({'host': ''}) == null, 'bad json null');
-  ok(ProxyConfig.fromJson({'host': 'x', 'port': 70000}) == null, 'bad port null');
-  eq(ProxyConfig.fromJson({'host': 'x'})!.scheme, ProxyScheme.socks5, 'missing scheme default');
+  ok(
+    ProxyConfig.fromJson({'host': 'x', 'port': 70000}) == null,
+    'bad port null',
+  );
+  eq(
+    ProxyConfig.fromJson({'host': 'x'})!.scheme,
+    ProxyScheme.socks5,
+    'missing scheme default',
+  );
 
   // ---------- 轮换 ----------
   ProxySlot slot(String id) => ProxySlot(
-        proxy: parseProxyLine('socks5://$id:1080')!,
-        identity: {'userAgent': 'ua-$id'},
-      );
+    proxy: parseProxyLine('socks5://$id:1080')!,
+    identity: {'userAgent': 'ua-$id'},
+  );
 
   final engine = ProxyRotationEngine(
     slots: [slot('1.1.1.1'), slot('2.2.2.2'), slot('3.3.3.3')],
@@ -147,7 +165,10 @@ void main() {
   eq(d.next!.proxy.host, '2.2.2.2', 'restore then rotate');
   // 恢复一个已删除的代理 → 忽略
   restored.restore(currentId: 'socks5://7.7.7.7:1080', used: 1);
-  ok(restored.currentId != 'socks5://7.7.7.7:1080', 'restore ignores unknown proxy');
+  ok(
+    restored.currentId != 'socks5://7.7.7.7:1080',
+    'restore ignores unknown proxy',
+  );
 
   // 上限可调
   final five = ProxyRotationEngine(
@@ -155,7 +176,9 @@ void main() {
     perProxyLimit: 5,
   );
   five.beforeOpen();
-  for (var i = 0; i < 4; i++) { five.markOpened(); }
+  for (var i = 0; i < 4; i++) {
+    five.markOpened();
+  }
   eq(five.beforeOpen().reason, RotationReason.keep, 'limit 5 keeps at 4');
 
   // ---------- 身份缓存 ----------

@@ -186,8 +186,11 @@ void main() {
     final json = jsonEncode(led.toJson());
     final back = IdentityLedger.fromJson(jsonDecode(json));
     eq(back.forProxy(pool[0].id)!.used, 3, '往返后计数一致');
-    eq(back.forProxy(pool[0].id)!.userAgent,
-        led.forProxy(pool[0].id)!.userAgent, '往返后 UA 一致');
+    eq(
+      back.forProxy(pool[0].id)!.userAgent,
+      led.forProxy(pool[0].id)!.userAgent,
+      '往返后 UA 一致',
+    );
     eq(back.maxPerIdentity, 3, '往返后上限一致');
     final p4 = back.plan(
       pool: pool,
@@ -202,7 +205,14 @@ void main() {
 
   // ---------- 7. 坏 JSON 不崩 ----------
   {
-    for (final bad in [null, 'null', 42, [], {}, {'bindings': 'x'}]) {
+    for (final bad in [
+      null,
+      'null',
+      42,
+      [],
+      {},
+      {'bindings': 'x'},
+    ]) {
       final led = IdentityLedger.fromJson(bad);
       eq(led.maxPerIdentity, 3, '坏数据回落默认上限 ($bad)');
     }

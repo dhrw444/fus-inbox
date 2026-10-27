@@ -12,10 +12,21 @@ import 'socks5_client.dart';
 
 int pass = 0, fail = 0;
 void ok(bool c, String label) {
-  if (c) { pass++; } else { fail++; print('FAIL  $label'); }
+  if (c) {
+    pass++;
+  } else {
+    fail++;
+    print('FAIL  $label');
+  }
 }
+
 void eq(Object? a, Object? b, String label) {
-  if (a == b) { pass++; } else { fail++; print('FAIL  $label  got=$a want=$b'); }
+  if (a == b) {
+    pass++;
+  } else {
+    fail++;
+    print('FAIL  $label  got=$a want=$b');
+  }
 }
 
 /// 假 SOCKS5 服务器。记录收到的字节，按预设回复。
@@ -120,9 +131,8 @@ class FakeSocks5 {
       } else if (atyp == 0x04) {
         final a = await it.read(16);
         connectReq.addAll(a);
-        requestedHost = InternetAddress.fromRawAddress(
-          Uint8List.fromList(a),
-        ).address;
+        requestedHost = InternetAddress.fromRawAddress(Uint8List.fromList(a))
+            .address;
         sawResolveRemotely = false;
       }
       final pb = await it.read(2);
@@ -156,10 +166,14 @@ class FakeSocks5 {
 
 class _Reader {
   _Reader(Socket s) {
-    _sub = s.listen((c) {
-      _buf.addAll(c);
-      _pump();
-    }, onError: (Object _) {}, onDone: () {});
+    _sub = s.listen(
+      (c) {
+        _buf.addAll(c);
+        _pump();
+      },
+      onError: (Object _) {},
+      onDone: () {},
+    );
   }
   late final StreamSubscription<Uint8List> _sub;
   final List<int> _buf = [];
@@ -236,9 +250,15 @@ Future<void> main() async {
 
   // ---------- 3. 认证成功 ----------
   {
-    final srv = FakeSocks5(requireAuth: true, goodUser: 'alice', goodPass: 's3cret');
+    final srv = FakeSocks5(
+      requireAuth: true,
+      goodUser: 'alice',
+      goodPass: 's3cret',
+    );
     await srv.start();
-    final proxy = parseProxyLine('socks5://alice:s3cret@127.0.0.1:${srv.port}')!;
+    final proxy = parseProxyLine(
+      'socks5://alice:s3cret@127.0.0.1:${srv.port}',
+    )!;
     final t = await SocksTunnel.open(proxy, '1.2.3.4', 8080);
     eq(srv.authBytes[0], 0x01, 'auth version');
     eq(srv.authBytes[1], 5, 'user len');
@@ -253,14 +273,21 @@ Future<void> main() async {
 
   // ---------- 4. 认证失败 ----------
   {
-    final srv = FakeSocks5(requireAuth: true, goodUser: 'alice', goodPass: 'right');
+    final srv = FakeSocks5(
+      requireAuth: true,
+      goodUser: 'alice',
+      goodPass: 'right',
+    );
     await srv.start();
     final proxy = parseProxyLine('socks5://alice:wrong@127.0.0.1:${srv.port}')!;
     try {
       await SocksTunnel.open(proxy, '1.2.3.4', 80);
       ok(false, 'bad auth should throw');
     } on SocksException catch (e) {
-      ok(e.message.contains('密码') || e.message.contains('账号'), 'bad auth message');
+      ok(
+        e.message.contains('密码') || e.message.contains('账号'),
+        'bad auth message',
+      );
     }
     await srv.stop();
   }

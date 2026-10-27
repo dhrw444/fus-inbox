@@ -126,9 +126,7 @@ class SocksTunnel {
 
     final vm = await reader.read(2, timeout);
     if (vm[0] != 0x05) {
-      throw SocksException(
-        '代理不是 SOCKS5（版本字节 0x${vm[0].toRadixString(16)}）',
-      );
+      throw SocksException('代理不是 SOCKS5（版本字节 0x${vm[0].toRadixString(16)}）');
     }
     if (vm[1] == 0xFF) {
       throw const SocksException('代理不接受任何认证方式');
@@ -172,8 +170,10 @@ class SocksTunnel {
     // 443 被写成 0x01 0x00 —— 服务端读到端口 256。
     final req = Uint8List(4 + (addr.length - 1) + 2)
       ..[0] = 0x05
-      ..[1] = 0x01 // CONNECT
-      ..[2] = 0x00 // RSV
+      ..[1] =
+          0x01 // CONNECT
+      ..[2] =
+          0x00 // RSV
       ..[3] = addr[0]; // ATYP
     req.setRange(4, 4 + (addr.length - 1), addr, 1);
     req[req.length - 2] = (port >> 8) & 0xFF;
@@ -183,9 +183,7 @@ class SocksTunnel {
 
     final head = await reader.read(4, timeout);
     if (head[0] != 0x05) {
-      throw SocksException(
-        'CONNECT 响应版本错误 0x${head[0].toRadixString(16)}',
-      );
+      throw SocksException('CONNECT 响应版本错误 0x${head[0].toRadixString(16)}');
     }
     if (head[1] != 0x00) {
       throw SocksException(
@@ -205,9 +203,7 @@ class SocksTunnel {
       case 0x04:
         await reader.read(16 + 2, timeout);
       default:
-        throw SocksException(
-          'CONNECT 响应地址类型未知 0x${head[3].toRadixString(16)}',
-        );
+        throw SocksException('CONNECT 响应地址类型未知 0x${head[3].toRadixString(16)}');
     }
   }
 

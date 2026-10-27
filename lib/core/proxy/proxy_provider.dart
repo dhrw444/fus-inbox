@@ -142,7 +142,11 @@ class ProxyNotifier extends Notifier<ProxyState> {
   }
 
   /// 记下这次打开用了哪个代理、哪个号。
-  Future<void> commitOpen(String proxyId, String numberId, IdentityBinding binding) async {
+  Future<void> commitOpen(
+    String proxyId,
+    String numberId,
+    IdentityBinding binding,
+  ) async {
     state.ledger.commit(proxyId, numberId, binding);
     await _persist();
   }

@@ -68,8 +68,7 @@ class const ProxyConfig({
   final String label;
 
   /// 界面上显示的名字。备注优先，否则 host:port。
-  String get displayName =>
-      label.isNotEmpty ? label : '$host:$port';
+  String get displayName => label.isNotEmpty ? label : '$host:$port';
 
   /// 有账号密码时为 true。
   bool get hasAuth => username.isNotEmpty || password.isNotEmpty;
