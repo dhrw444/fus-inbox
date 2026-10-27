@@ -5,10 +5,12 @@
 /// `/sms-api/v1/*` 要求浏览器会话 + 每请求 WebCrypto 签名，签名私钥只存在于
 /// 页面上下文，所以必须借页面自己的请求能力。广告、站点导航、页脚全都不渲染。
 ///
-/// 只有在站点弹出需要人工操作的风控时才手动露出一次页面（见 _showChallenge）。
+/// 验证全程自动 —— 站点的 reader.js 自己完成，不需要用户点任何东西
+/// （见 _pumpVerification）。
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:material_ui/material_ui.dart';
 import 'package:flutter/services.dart';
@@ -23,6 +25,7 @@ import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/core/webview/webview_widget.dart';
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
+import 'package:fus_inbox/features/inbox/domain/identity_rotation_policy.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
@@ -55,24 +58,28 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 必须留引用，否则页面销毁后它还会触发 setState。
   Timer? _loadMoreWatchdog;
 
-  /// 站点要求人工过风控时，临时露一次页面。平时恒为 false。
+  /// 用户主动点开页面、想自己在上面过验证时为 true。
+  ///
+  /// 平时恒为 false —— 验证由站点自己完成（见 [_pumpVerification]），
+  /// 不需要露页面。只有用户点了「自己过验证」才把引擎层放出来。
   bool _showChallenge = false;
 
-  /// 验证通过轮询。
+  /// 验证是否已经走完（reader 到 ready）。
   ///
-  /// 只在用户打开验证面板时跑，一看到 cf_clearance 就停。
-  Timer? _clearancePoll;
+  /// 内部状态，不驱动界面 —— 自动路径不需要用户参与。
+  bool _verifyReady = false;
 
-  /// 验证面板打开后最多等这么久。
-  ///
-  /// 用户可能开着面板一直不动（去看别的了）。无上限轮询会白耗电。
-  static const _clearancePollWindow = Duration(minutes: 3);
+  /// 验证状态轮询。
+  Timer? _verifyPoll;
 
-  /// 防重入：上一轮的原生读 cookie 还没回来，这一轮就别再发。
+  /// 已经等了多久。
+  Duration _verifyElapsed = Duration.zero;
+
+  /// 最多等这么久。
   ///
-  /// Timer.periodic 的回调是 async，1.5 秒周期配 2 秒超时，理论上会叠。
-  /// 叠起来就是每次点开面板都排一队通道调用，白白压主线程。
-  bool _clearanceBusy = false;
+  /// 实测 pending → ready 约 4 秒。给到 90 秒是留给慢网络，
+  /// 再长就是站点那边真出问题了，继续等没意义。
+  static const _verifyWindow = Duration(seconds: 90);
 
   /// 重置身份后置 true：等站点页加载完成，立刻删掉它的密钥。
   ///
@@ -82,12 +89,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 站点还没发首屏请求，文档已经就绪，删得掉。
   bool _wipeSiteStorageOnLoad = false;
 
+  /// 自动换身份的节流器。
+  ///
+  /// 一被限制就重置是错的做法：每次重置在站点眼里都是一个全新的
+  /// 首次访客，连续重置等于「同一个 IP 一分钟来了十个新访客」，
+  /// 比单个爬虫更显眼，还白耗 Turnstile 验证次数。
+  final _rotationPolicy = IdentityRotationPolicy();
+
+
   @override
   void initState() {
     super.initState();
     _store = InboxStore(
       onChanged: () {
-        if (mounted) setState(() {});
+        if (!mounted) return;
+        setState(() {});
+        _maybeAutoRotate();
       },
     );
     _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
@@ -115,7 +132,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void dispose() {
     _watchdog?.cancel();
     _loadMoreWatchdog?.cancel();
-    _clearancePoll?.cancel();
+    _verifyPoll?.cancel();
     // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
     _store.detach();
     unawaited(
@@ -124,6 +141,45 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           .catchError((Object _) {}),
     );
     super.dispose();
+  }
+
+  /// 站点一拒绝就换身份。
+  ///
+  /// 只在「会话坏了」和「服务端临时繁忙」时自动换身份。
+  ///
+  /// 配额和挑战**不**自动换 —— 它们记在 IP 上，换身份是白烧一次
+  /// 新身份（实测：同一 IP 清空 localStorage / IndexedDB / cookie
+  /// 之后，第 4 个号依然 New inboxes are on pause）。这两种把
+  /// 「换 IP 后重置浏览器」摆到界面上，由用户决定什么时候换。
+  ///
+  /// 节流是为了别把新身份一次性打光：刚换完立刻又撞墙，
+  /// 那个身份就白扔了。
+  void _maybeAutoRotate() {
+    final hold = _store.state.hold;
+    final status = _store.state.status;
+    // 没有任何拒绝信号就不动。
+    if (hold == null && !status.contains('reader_verification')) return;
+
+    // 配额和挑战都是 **IP 级** 的，换浏览器身份解决不了。
+    //
+    // 实测：同一个 IP 上清空 localStorage / IndexedDB / cookie（等于换
+    // 全新身份）之后，第 4 个号依然是 New inboxes are on pause。
+    // 配额记在 IP 上，不在身份上。所以这里不烧身份，只把「去换 IP」
+    // 摆到界面上，由用户决定什么时候换。
+    if (hold?.kind == SiteHoldKind.quota ||
+        hold?.kind == SiteHoldKind.challenge) {
+      return;
+    }
+
+    // 已经在这个身份上换过一次还没缓过来，就别连着换。
+    final now = DateTime.now();
+    final (ok, why) = _rotationPolicy.canRotate(now);
+    if (!ok) {
+      _store.note(why);
+      return;
+    }
+    _rotationPolicy.record(now);
+    unawaited(_rotateIdentity());
   }
 
   /// 启动：装垫片 → 打开收件页。
@@ -146,6 +202,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
     if (!mounted) return;
     await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
+    // 页面开始加载就挂上验证驱动器：站点会自己 pending → ready，
+    // 我们只盯状态。全程不需要用户参与 —— 只有用户主动点了
+    // 「自己过验证」才会把页面露出来（见 _openChallenge）。
+    _pumpVerification();
   }
 
   /// 25 秒还没拿到任何东西，提示可能卡在风控上。
@@ -279,6 +339,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _store.reset();
       _armWatchdog();
       await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
+      // 新身份加载完也要盯验证状态 —— 换身份之后站点会重新
+      // pending → ready 走一遍。
+      _pumpVerification();
 
       if (!mounted) return;
       messenger
@@ -321,6 +384,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     } catch (e) {
       debugPrint('重载失败: $e');
     }
+    // 重载完是新文档，重新盯验证状态。
+    _pumpVerification();
   }
 
   /// 在收件页里删掉站点自己的 IndexedDB 密钥。
@@ -376,81 +441,179 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
-  /// 打开验证面板，并开始盯 cf_clearance。
+  /// 驱动器：让站点自己把验证走完。
   ///
-  /// ## 为什么自动退出必须看 cookie，不能看 DOM
+  /// ## 实测结论（不要再凭猜想改）
   ///
-  /// 之前那版自动检测靠三个 DOM 条件：挑战容器消失 + 正文够长 +
-  /// 有消息节点。问题是 `[class*=message]` 会命中导航和广告，
-  /// 页面一加载就满足，面板开了立刻自己关，用户连验证框都看不到。
-  /// 用户当时的原话是「只有我点完成才退」——那条路被整个删掉了。
+  /// 打开收件页后，站点的 reader.js 会自己发起验证：
   ///
-  /// 但每次都要手点「完成」也烦。真正的解法是找一个**不会被误判**
-  /// 的信号：`cf_clearance`。它是 Cloudflare 在验证通过后发下的
-  /// HttpOnly cookie，站点自己不下这个就说明没通过，下了就是真过了。
-  /// 没有第二种解释。
+  ///   phase: pending  →  （静默建立会话，页面里**不会**出现任何
+  ///                        Turnstile iframe 或复选框）
+  ///   phase: ready    →  会话可用，接着才去要消息
   ///
-  /// 所以现在：打开面板 → 每 1.5 秒读一次原生 cookie →
-  /// 看到 cf_clearance 才自动收起面板。读不到就继续等，
-  /// 用户随时可以自己点「完成」。
-  void _openChallenge() {
-    setState(() => _showChallenge = true);
-    _startClearancePoll();
-  }
-
-  void _startClearancePoll() {
-    _clearancePoll?.cancel();
-    final deadline = DateTime.now().add(_clearancePollWindow);
-    _clearancePoll = Timer.periodic(const Duration(milliseconds: 1500), (
-      timer,
-    ) async {
+  /// 实测从加载到 ready 大约 4 秒，全程 `iframes: 0`。也就是说
+  /// 根本不存在「需要用户点一下那个圆框」这件事 —— 之前让你去网页
+  /// 手动点，是我把「等待」误判成「需要交互」。
+  ///
+  /// 所以这里只做一件事：轮询 `FUSReader.status()`，等它自己到
+  /// ready 或 error。不弹面板、不要用户点任何东西。
+  ///
+  /// 真失败时（category/errorCode 有值）才记录原因，由界面说明；
+  /// 仍然不需要用户操作，重新加载就够。
+  void _pumpVerification() {
+    _verifyPoll?.cancel();
+    _verifyElapsed = Duration.zero;
+    _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (timer) async {
       if (!mounted) {
         timer.cancel();
         return;
       }
-      // 用户自己点了完成，就别再轮询。
-      if (!_showChallenge) {
+      _verifyElapsed += const Duration(milliseconds: 900);
+      if (_verifyElapsed > _verifyWindow) {
         timer.cancel();
-        return;
-      }
-      if (DateTime.now().isAfter(deadline)) {
-        timer.cancel();
-        _store.note('等验证超时了。过了的话直接点「完成」即可。');
+        _store.note('站点验证超时，已停止等待');
         return;
       }
 
-      if (_clearanceBusy) return;
-      _clearanceBusy = true;
-      Map<String, String> cookies;
+      // 已经拿到消息就不用再管验证状态。
+      if (_store.state.messages.isNotEmpty) {
+        timer.cancel();
+        return;
+      }
+
+      String phase = '';
       try {
-        cookies = await readCookies(widget.number.inboxUrl);
-      } finally {
-        _clearanceBusy = false;
+        final raw = await _controller.runJavaScript(
+          '(window.FUSReader && window.FUSReader.status)'
+          ' ? JSON.stringify(window.FUSReader.status()) : ""',
+        );
+        if (raw.isNotEmpty && raw != '""') {
+          // runJavaScript 返回的是 JSON 字符串里的字符串，剥两层引号。
+          final decoded = jsonDecode(raw) as String;
+          if (decoded.isNotEmpty) {
+            final obj = jsonDecode(decoded) as Map<String, dynamic>;
+            phase = obj['phase']?.toString() ?? '';
+            final category = obj['category']?.toString() ?? '';
+            final message = obj['message']?.toString() ?? '';
+            if (phase == 'error') {
+              timer.cancel();
+              _store.note(
+                message.isNotEmpty
+                    ? '站点验证失败：$message'
+                    : '站点验证失败（$category）',
+              );
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        // 页面还在加载、没有 FUSReader，属正常，继续等。
       }
-      final clearance = cookies['cf_clearance'];
-      if (clearance == null || clearance.isEmpty) return;
 
-      // 拿到了。这是站点自己发的通行证，不存在误判。
-      timer.cancel();
-      _clearancePoll = null;
-      if (!mounted) return;
-      // 通行证要交给原生 HTTP 那两条链路共用：
-      // 号码目录和收录时间走的是 dart:io，不共享 WebView 的 cookie 库。
-      // 不搬过去，同一个 App 里就有一条链路裸奔。
-      rememberClearance(clearance);
-      // 这两句都会走 store 的 onChanged → setState。所以下面那句
-      // setState 只负责面板开关，不重复刷数据。
-      _store.note('验证通过，已拿到站点通行证。');
-      if (!mounted) return;
-      setState(() => _showChallenge = false);
-      // 面板收起来了，但页面可能还停在挑战页。重载一次，
-      // 这次请求会带上 cf_clearance，站点直接放行。
-      unawaited(_controller.reload());
-      _armWatchdog();
+      if (phase == 'ready') {
+        timer.cancel();
+        _verifyReady = true;
+        // 会话好了，让站点自己去拉消息。
+        unawaited(_rescan());
+        // 顺手把 Cloudflare 通行证搬到原生 HTTP。
+        //
+        // 号码目录和收录时间走 dart:io HttpClient，**不共享 WebView 的
+        // cookie 库**。不搬，那两条链路每次都裸奔着被单独挑战 ——
+        // 这正是「同一个 App 里一条链路有通行证、一条没有」的来源。
+        // cf_clearance 是 HttpOnly，JS 的 document.cookie 永远读不到，
+        // 只有原生 getCookie 拿得到。
+        unawaited(_syncClearance());
+      }
     });
   }
 
   /// 重扫当前页面 DOM。不发网络请求，纯粹是把已经渲染出来的内容再读一遍。
+  /// 把 WebView cookie 库里的 cf_clearance 搬到原生 HTTP 的请求头。
+  ///
+  /// 只在拿到值的时候写。没拿到就保持原样 —— 发一个空的 cf_clearance
+  /// 等于明确告诉站点「我试过但没拿到」，比不发更糟。
+  Future<void> _syncClearance() async {
+    try {
+      final cookies = await readCookies(widget.number.inboxUrl);
+      final value = cookies['cf_clearance'];
+      if (value != null && value.isNotEmpty) rememberClearance(value);
+    } catch (_) {
+      // 读不到就算了，收件箱本身已经能用了。
+    }
+  }
+
+  /// 用户主动要求：把站点页面放出来，自己在上面过验证。
+  ///
+  /// 为什么要留这个入口 —— 自动路径（[_pumpVerification]）覆盖大多数
+  /// 情况，但**有的出口 IP 站点就是不给静默通过**，那时页面里会真的
+  /// 出现一个「Verify you are human」复选框，而且它在跨域 shadow DOM
+  /// 里，JS 摸不到，只能靠人点。所以这个入口是给「自动过不去」用的，
+  /// 不是必经步骤。
+  void _openChallenge() {
+    _verifyPoll?.cancel();
+    setState(() {
+      _showChallenge = true;
+      _verifyReady = false;
+    });
+    // 页面可能停在旧状态，重载一次让站点重新发起验证。
+    unawaited(_controller.reload());
+  }
+
+  /// 用户说验证完了：收起页面，重新要消息。
+  void _closeChallenge() {
+    _verifyPoll?.cancel();
+    setState(() => _showChallenge = false);
+    unawaited(_rescan());
+    // 收起之后继续盯状态，站点可能还没 ready。
+    _pumpVerification();
+  }
+
+  /// 用户已经换了出口 IP，点这个把浏览器身份也一起清掉再重来。
+  ///
+  /// 配额记在 IP 上，换身份单独做没用（实测同一 IP 换身份后第 4 个号
+  /// 依然被拒）。反过来只换 IP 不清身份，站点那边还认旧会话。所以
+  /// 这两半必须一起 —— App 负责身份这一半，IP 那一半用户来做。
+  Future<void> _restartWithNewIdentity() async {
+    _verifyPoll?.cancel();
+    setState(() => _verifyReady = false);
+    _store.reset();
+    _armWatchdog();
+    await _rotateIdentity();
+  }
+
+  /// 手动验证时的底栏：不覆盖引擎区域，只提示怎么回去。
+  Widget _buildChallengeBar(ThemeData theme) {
+    return Positioned(
+      left: 0,
+      right: 0,
+      bottom: 0,
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHigh,
+        elevation: 4,
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    '在上面点掉「Verify you are human」，过完点右边。',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+                TextButton(
+                  onPressed: _closeChallenge,
+                  child: const Text('验证好了'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Future<void> _rescan() async {
     try {
       await _controller.runJavaScript(
@@ -539,19 +702,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         actions: [
           // 换浏览器身份：站点会按 UA 判断是不是同一个浏览器，
           // 卡验证时点一下换新身份比反复重载有用。
+          // 手动验证：自动路径过不去时才用。点开把站点页面放出来，
+          // 自己在上面点掉「Verify you are human」，回来点「验证好了」。
+          IconButton(
+            tooltip: '自己过验证',
+            onPressed: _openChallenge,
+            icon: const Icon(Icons.shield_outlined),
+          ),
           IconButton(
             tooltip: '换浏览器身份',
             onPressed: _rotateIdentity,
             icon: const Icon(Icons.switch_account_outlined),
-          ),
-          // 常驻入口：之前只有「加载失败」时才露出这个按钮，
-          // 一旦消息列表出来了就再也找不到它——而风控恰恰可能在
-          // 列表出来后再次触发（翻页、刷新都会重新走站点会话）。
-          IconButton(
-            tooltip: '打开浏览器过验证',
-            // 只打开面板，不做任何自动检测——退出完全由用户点「完成」决定。
-            onPressed: _openChallenge,
-            icon: const Icon(Icons.shield_outlined),
           ),
           IconButton(
             tooltip: '重新扫描',
@@ -564,6 +725,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               _store.reset();
               _armWatchdog();
               unawaited(_controller.reload());
+              _pumpVerification();
             },
             icon: const Icon(Icons.restart_alt),
           ),
@@ -577,15 +739,15 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           // 引擎层：整个页面树里**只有这一个** WebViewWidget 实例
           // （同一个 controller 挂两处会崩）。
           //
-          // 用 Offstage 藏起来，而不是缩小到 1×1：
-          //   - 布局照常跑完整尺寸，原生 WebView 拿到真实视口，媒体查询、
-          //     懒加载、IntersectionObserver 都按正常手机尺寸算
-          //   - 跳过绘制与命中测试，不占合成层，滚动不掉帧
-          //   - 依然在 widget 树上，页面正常加载、JS 正常执行、消息正常回传
+          // 默认 Offstage 藏着：验证通常由站点自己完成（见
+          // _pumpVerification），不需要人看。只有用户点了「自己过验证」
+          // 才把它放出来 —— 有些出口 IP 站点不给静默通过，会真的弹出
+          // 「Verify you are human」复选框，那个东西在跨域 shadow DOM
+          // 里 JS 摸不到，只能靠人点。
           //
-          // 缩到 1×1 会让站点按 1 像素视口渲染，布局塌成一条、懒加载永不触发，
-          // 反而拿不到数据——那是错的做法。
-          // 用户点「过验证」时 offstage 置 false，同一个实例原地露出来。
+          // 用 Offstage 而不是缩到 1×1：布局照常跑完整尺寸，原生
+          // WebView 拿到真实视口，媒体查询、懒加载、IntersectionObserver
+          // 都按正常手机尺寸算；跳过绘制与命中测试，不占合成层。
           Positioned.fill(
             child: Offstage(
               offstage: !_showChallenge,
@@ -597,7 +759,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
           ),
 
-          // 风控兜底：只在验证态浮一条顶栏，底下的引擎已经露出来了。
+          // 用户自己过验证时的底栏。叠在引擎上方、贴底，不遮住
+          // 复选框区域（实测复选框在视口 y≈600，底栏只占最下面一条）。
           if (_showChallenge) _buildChallengeBar(theme),
         ],
       ),
@@ -799,20 +962,46 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           ],
           const SizedBox(height: 18),
 
-          // 配额和验证都要用户动手；临时繁忙只要等。
-          if (hold.kind == SiteHoldKind.challenge)
+          // 三种拒绝要的动作完全不同：
+          //
+          //   quota      → 配额记在 IP 上，换身份没用（实测同 IP 换身份
+          //                第 4 个号照样被拒）。要用户换出口 IP，换完
+          //                点这个按钮把身份也清掉一起重来。
+          //   challenge  → 先试自动（站点常常静默通过）；真过不去才
+          //                把页面放出来让人点复选框。
+          //   temporary  → 纯等待，重试就行。
+          if (hold.kind == SiteHoldKind.quota) ...[
+            FilledButton.tonalIcon(
+              onPressed: _restartWithNewIdentity,
+              icon: const Icon(Icons.vpn_key_outlined, size: 18),
+              label: const Text('换 IP 后重置浏览器'),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '配额按出口 IP 算，不按号码。先换 IP，再点上面那个 —— '
+              '它会清掉旧浏览器身份（密钥 / cookie / 本地存储）一起重来。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                height: 1.4,
+              ),
+            ),
+          ] else if (hold.kind == SiteHoldKind.challenge) ...[
             FilledButton.tonalIcon(
               onPressed: _openChallenge,
               icon: const Icon(Icons.shield_outlined, size: 18),
-              label: const Text('打开页面过验证'),
-            )
-          else if (hold.kind == SiteHoldKind.quota)
-            FilledButton.tonalIcon(
-              onPressed: _rescan,
-              icon: const Icon(Icons.refresh, size: 18),
-              label: const Text('再试一次'),
-            )
-          else
+              label: const Text('自己过验证'),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '通常会自动通过，只有卡住不动时才需要手动点。',
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+                height: 1.4,
+              ),
+            ),
+          ] else
             FilledButton.tonalIcon(
               onPressed: _rescan,
               icon: const Icon(Icons.refresh, size: 18),
@@ -858,7 +1047,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             const SizedBox(height: 6),
             TextButton(
               onPressed: _openChallenge,
-              child: const Text('打开浏览器自己过验证'),
+              child: const Text('自己过验证'),
             ),
           ],
         ),
@@ -907,53 +1096,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     );
   }
 
-  /// 验证态的顶栏。
-  ///
-  /// 此时引擎已经通过 Offstage 露出来了（占满 body），用户可以直接在页面上
-  /// 过验证、点按钮。这里只叠一条提示，告诉他过完怎么回去——
-  /// 不要覆盖引擎区域，那样点不到底下的验证控件。
-  Widget _buildChallengeBar(ThemeData theme) {
-    return Positioned(
-      left: 0,
-      right: 0,
-      bottom: 0,
-      child: Material(
-        color: theme.colorScheme.surfaceContainerHigh,
-        elevation: 4,
-        child: SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    '在上面过掉站点验证。通过后会自动收起；'
-                    '不想等就点右边。',
-                    style: theme.textTheme.bodySmall,
-                  ),
-                ),
-                TextButton(
-                  // 自动收起的判定看 cf_clearance（见 _startClearancePoll），
-                  // 不看 DOM —— DOM 猜不准，会把导航和广告当成通过。
-                  // 这个按钮是手动兜底：用户不想等、或站点没发 cookie
-                  // 但页面其实能用了，点它直接回列表。
-                  onPressed: () {
-                    _clearancePoll?.cancel();
-                    _clearancePoll = null;
-                    setState(() => _showChallenge = false);
-                    unawaited(_rescan());
-                  },
-                  child: const Text('完成'),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
+
 
 /// 骨架卡：给「消息还没到」一个形状，而不是空白转圈。
 class const _SkeletonTile({required this.theme}) extends StatelessWidget {
