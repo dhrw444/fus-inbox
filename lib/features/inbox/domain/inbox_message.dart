@@ -81,6 +81,45 @@ enum InboxPhase() {
   failed,
 }
 
+/// 站点主动拒绝给消息。
+///
+/// 三种来自 `X-Fair-Use` 响应头（见 assets/js/fus_inbox.js 的
+/// `holdFromResponse`）：
+enum SiteHoldKind {
+  /// `429 + pause`：免费配额用完了。站点限制新号码，
+  /// 已打开过的号码在 24 小时内还能读。
+  quota,
+
+  /// `403 + challenge`：要过人机验证。
+  challenge,
+
+  /// `503 + unavailable`：服务端临时繁忙。和配额无关，等它自己好。
+  temporary,
+}
+
+class const SiteHold({
+  required this.kind,
+  required this.title,
+  required this.message,
+  this.retrySeconds = 0,
+}) {
+  final SiteHoldKind kind;
+
+  /// 站点自己的标题（从它渲染的 DOM 里抄的），没有就是我们的译法。
+  final String title;
+
+  final String message;
+
+  /// 站点建议多少秒后再试。0 表示它没说。
+  final int retrySeconds;
+
+  /// 这个拒绝是不是完全没法自己好。
+  ///
+  /// 配额和验证都要用户动手（等 24 小时 / 过验证），
+  /// 临时繁忙会自动恢复。
+  bool get needsUserAction => kind != SiteHoldKind.temporary;
+}
+
 class const InboxState({
   this.messages = const [],
   this.phase = InboxPhase.waiting,
@@ -91,7 +130,7 @@ class const InboxState({
   this.hasMore = true,
   this.loadingMore = false,
   this.visible = 5,
-  this.clearanceSeen = false,
+  this.hold,
 }) {
   final List<InboxMessage> messages;
   final InboxPhase phase;
@@ -121,12 +160,11 @@ class const InboxState({
   /// 这样「打开就一大坨」和「一上来就翻页」都避免了。
   final int visible;
 
-  /// 站点发过 `cf_clearance` —— Cloudflare 验证确实通过了。
+  /// 站点拒绝了本次读取。null 表示没被拒。
   ///
-  /// 这是唯一可信的「已过验证」信号：DOM 长得像不像收件箱、
-  /// 挑战容器有没有消失，都不算数（导航栏和广告都能命中）。
-  /// 只有站点自己发下的通行证才算。
-  final bool clearanceSeen;
+  /// 这不是错误：[InboxPhase.failed] 是「我们这边出问题了」，
+  /// 而这是站点明确说「现在不给」，要等它自己好。
+  final SiteHold? hold;
 
   /// 列表里实际要渲染的消息（按 [visible] 截断）。
   List<InboxMessage> get shown =>
@@ -148,7 +186,8 @@ class const InboxState({
     bool? hasMore,
     bool? loadingMore,
     int? visible,
-    bool? clearanceSeen,
+    SiteHold? hold,
+    bool clearHold = false,
   }) {
     return InboxState(
       messages: messages ?? this.messages,
@@ -160,7 +199,7 @@ class const InboxState({
       hasMore: hasMore ?? this.hasMore,
       loadingMore: loadingMore ?? this.loadingMore,
       visible: visible ?? this.visible,
-      clearanceSeen: clearanceSeen ?? this.clearanceSeen,
+      hold: clearHold ? null : (hold ?? this.hold),
     );
   }
 }

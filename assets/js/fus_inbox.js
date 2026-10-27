@@ -19,6 +19,16 @@
  *   {type:'messages', items:[{id,sender,text,code,time,phone,protected}], hits, src, phase}
  *   {type:'catalog',  items:[{id,number,count}], hits}
  *   {type:'status',   text}
+ *   {type:'holdup',   kind, scope, message, retry, title}
+ *
+ * holdup = 站点拒绝给消息。不是错误，是它主动说「现在不给」。
+ * 三种 kind（来自站点 live.js 的 holdMessages）：
+ *   pause      —— 429 + X-Fair-Use: pause。配额，最快 retry 秒后自愈
+ *   challenge  —— 403 + X-Fair-Use: challenge。要过人机验证
+ *   unavailable—— 503 + X-Fair-Use: unavailable。服务端临时繁忙
+ *
+ * 必须单独上报：以前这些全被当成「没有消息」，界面一直转圈，
+ * 用户看到的就是「卡住了」，而真正原因是一条都看不到。
  */
 (function () {
   'use strict';
@@ -202,6 +212,19 @@
   function digest(json) {
     if (!json || typeof json !== 'object') return false;
 
+    // 有些路径拿不到响应头（XHR 在被拦截时、或某些中间层去掉了
+    // X-Fair-Use）。这时候只能看 body 里的错误码兜底——
+    // 不认出来就会被当成「没有消息」，界面又转圈。
+    if (json.error === 'fair_use_unavailable') {
+      reportHold('unavailable', 0, json.scope, json.message);
+      return false;
+    }
+    if (json.error === 'reader_session_required') {
+      // 会话过期。站点会自己续，这里只记一条状态，不当作被拒。
+      lastErr = 'reader 会话过期，正在续';
+      return false;
+    }
+
     // 号码目录：d.numbers[] -> {id, number, message_count}
     if (Array.isArray(json.numbers) && json.numbers.length) {
       hits++;
@@ -228,6 +251,10 @@
 
     if (!raw || !raw.length) return false;
 
+    // 拿到真消息 = 这次拒绝结束了。清掉「已上报」，
+    // 下次再被拒才会重新提醒用户。
+    clearHold();
+
     hits++;
     src = '接口';
     var norms = [];
@@ -239,6 +266,84 @@
     merge(norms);
     pushMessages();
     return true;
+  }
+
+  /* ---------------- 服务端拒绝检测 ----------------
+
+   * 站点在 live.js:693 用 X-Fair-Use 这个响应头区分三种拒绝：
+   *
+   *   429 + pause        → 新号配额用完了
+   *   403 + challenge    → 要过人机验证
+   *   503 + unavailable  → 服务端临时繁忙
+   *
+   * 三种都有 Retry-After，表示多少秒后可以自己好。
+   *
+   * 为什么必须识别：这些响应体里**没有 messages 字段**，我们原来的
+   * digest() 直接当作「空」跳过，界面就一直停在「正在加载」。
+   * 用户看不到任何原因，只能反复重试，越重试越糟。
+   */
+  var holdupSeen = {};
+  // 是否已经告诉过用户「被拒了」。用来决定恢复时要发不发「解除」。
+  var holdReported = false;
+
+  function holdFromResponse(res) {
+    var marker = res.headers && res.headers.get('X-Fair-Use');
+    if (!marker) return null;
+    var kind = res.status === 429 ? 'pause'
+      : res.status === 403 ? 'challenge'
+      : res.status === 503 ? 'unavailable'
+      : null;
+    if (!kind) return null;
+    var retry = parseInt(res.headers.get('Retry-After') || '', 10);
+    return { kind: kind, retry: isFinite(retry) ? retry : 0 };
+  }
+
+  // 从页面 DOM 抄站点的原话。站点自己会渲染这段说明，
+  // 我们照抄比编一句准确。
+  function holdCopy(kind) {
+    var box = document.querySelector('[data-fair-use-notice]');
+    if (box) {
+      var t = box.querySelector('[data-fair-use-title]');
+      var m = box.querySelector('[data-fair-use-message]');
+      if (t || m) {
+        return {
+          title: t ? (t.textContent || '').trim() : '',
+          message: m ? (m.textContent || '').trim() : '',
+        };
+      }
+    }
+    // 站点还没渲染出来，用已知的文案。
+    return {
+      pause: { title: '免费额度用完了', message: '站点限制了新号码的免费读取。已打开过的号码仍然可以读。' },
+      challenge: { title: '需要过人机验证', message: '点右上角盾牌，在页面里完成验证，通过后会自动收起。' },
+      unavailable: { title: '站点暂时繁忙', message: '服务器暂时没有响应，稍等一会它会自己恢复。' },
+    }[kind] || { title: '', message: '' };
+  }
+
+  function reportHold(kind, retry, scope, serverMessage) {
+    // 同一种拒绝 + 同一个重试秒数只报一次，避免每帧刷屏。
+    var key = kind + '|' + retry;
+    if (holdupSeen[key]) return;
+    holdupSeen[key] = 1;
+    holdReported = true;
+    var copy = holdCopy(kind);
+    post({
+      type: 'holdup',
+      kind: kind,
+      scope: scope || '',
+      retry: retry || 0,
+      title: copy.title,
+      message: serverMessage || copy.message,
+    });
+  }
+
+  // 清掉「已上报」记录。只在**真的拿到消息**时调用 ——
+  // 拿到消息就说明这次拒绝结束了，下次再被拒要重新告诉用户。
+  function clearHold() {
+    holdupSeen = {};
+    if (!holdReported) return;
+    holdReported = false;
+    post({ type: 'holdup', kind: '', scope: '' });
   }
 
   function interesting(u) {
@@ -257,6 +362,21 @@
         if (interesting(url)) {
           try {
             p.then(function (res) {
+              // 先看有没有被拒。这几条响应的 body 里没有 messages，
+              // 交给 digest 只会被当成「空」，原因就丢了。
+              var hold = holdFromResponse(res);
+              if (hold) {
+                try {
+                  res.clone().json().then(function (d) {
+                    reportHold(hold.kind, hold.retry, d && d.scope, d && d.message);
+                  }).catch(function () {
+                    reportHold(hold.kind, hold.retry, '', '');
+                  });
+                } catch (e) {
+                  reportHold(hold.kind, hold.retry, '', '');
+                }
+                return res;
+              }
               try {
                 res.clone().json().then(function (d) {
                   try { digest(d); } catch (e) { lastErr = 'digest:' + e.message; }
@@ -288,6 +408,21 @@
         var self = this;
         this.addEventListener('load', function () {
           if (!interesting(self.__fusUrl)) return;
+          // 用 status 判断被拒，比 fetch 那边多一步：XHR 拿不到响应头
+          // 之外的信号时只能看状态码。
+          var code = self.status;
+          if (code === 429 || code === 403 || code === 503) {
+            var d = null;
+            try { d = JSON.parse(self.responseText); } catch (e) {}
+            var retry = parseInt(self.getResponseHeader('Retry-After') || '', 10);
+            reportHold(
+              code === 429 ? 'pause' : code === 403 ? 'challenge' : 'unavailable',
+              isFinite(retry) ? retry : 0,
+              d && d.scope,
+              d && d.message
+            );
+            return;
+          }
           try { digest(JSON.parse(self.responseText)); } catch (e) {}
         });
         return origSend.apply(this, arguments);

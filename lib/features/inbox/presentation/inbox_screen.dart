@@ -307,7 +307,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 这两句都会走 store 的 onChanged → setState。所以下面那句
       // setState 只负责面板开关，不重复刷数据。
       _store.note('验证通过，已拿到站点通行证。');
-      _store.markClearance();
       if (!mounted) return;
       setState(() => _showChallenge = false);
       // 面板收起来了，但页面可能还停在挑战页。重载一次，
@@ -620,9 +619,89 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// 之前是整屏居中的转圈 + 一大段文字，视觉上像崩了。改成骨架屏——
   /// 用户一眼就知道「消息正在来的路上」，而不是「这页面卡住了」。
+  /// 站点拒绝时的说明。
+  ///
+  /// 以前这块完全没有：站点的 429/403/503 响应体里没有 messages，
+  /// 注入脚本当作「空」跳过，界面就一直卡在骨架屏转圈。
+  /// 用户看到的是「软件坏了」，实际是站点在明确说不行。
+  Widget _buildHoldState(SiteHold hold, ThemeData theme) {
+    final scheme = theme.colorScheme;
+    final (icon, tint) = switch (hold.kind) {
+      SiteHoldKind.quota => (Icons.hourglass_disabled, scheme.tertiary),
+      SiteHoldKind.challenge => (Icons.shield_outlined, scheme.primary),
+      SiteHoldKind.temporary => (Icons.cloud_sync_outlined, scheme.secondary),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 20, 24, 16),
+      child: Column(
+        children: [
+          Icon(icon, size: 42, color: tint),
+          const SizedBox(height: 14),
+          Text(
+            hold.title.isEmpty ? '站点暂时不给消息' : hold.title,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            hold.message,
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: scheme.onSurfaceVariant,
+              height: 1.5,
+            ),
+          ),
+          if (hold.retrySeconds > 0) ...[
+            const SizedBox(height: 8),
+            Text(
+              '站点建议 ${hold.retrySeconds} 秒后再试',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+          const SizedBox(height: 18),
+
+          // 配额和验证都要用户动手；临时繁忙只要等。
+          if (hold.kind == SiteHoldKind.challenge)
+            FilledButton.tonalIcon(
+              onPressed: _openChallenge,
+              icon: const Icon(Icons.shield_outlined, size: 18),
+              label: const Text('打开页面过验证'),
+            )
+          else if (hold.kind == SiteHoldKind.quota)
+            FilledButton.tonalIcon(
+              onPressed: _rescan,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('再试一次'),
+            )
+          else
+            FilledButton.tonalIcon(
+              onPressed: _rescan,
+              icon: const Icon(Icons.refresh, size: 18),
+              label: const Text('重试'),
+            ),
+          const SizedBox(height: 4),
+          TextButton(
+            onPressed: () => Navigator.of(context).maybePop(),
+            child: const Text('换个号码'),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildEmptyState(InboxState s, ThemeData theme) {
     final failed = s.phase == InboxPhase.failed;
     final scheme = theme.colorScheme;
+
+    // 站点主动拒绝：这不是错误，是它明确说「现在不给」。
+    // 单独一块，因为它需要的动作和「加载失败」完全不同——
+    // 失败是重试，配额是等或换号，验证是去过验证。
+    if (s.hold != null) return _buildHoldState(s.hold!, theme);
 
     if (failed) {
       return Padding(

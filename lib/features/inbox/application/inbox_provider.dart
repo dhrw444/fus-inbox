@@ -58,6 +58,35 @@ class InboxStore({this.onChanged}) {
     // 号码目录走原生 HTTP，这里忽略。
     if (type == 'catalog') return;
 
+    // 站点拒绝给消息。这条要在 messages 分支之前处理：
+    // 被拒时站点根本不会发 messages，只发这个。
+    if (type == 'holdup') {
+      final kind = payload['kind']?.toString() ?? '';
+      if (kind.isEmpty) {
+        // 解除：站点又开始给消息了。
+        _emit(_state.copyWith(clearHold: true, clearError: true));
+        return;
+      }
+      final retry = payload['retry'];
+      _emit(
+        _state.copyWith(
+          hold: SiteHold(
+            kind: switch (kind) {
+              'pause' => SiteHoldKind.quota,
+              'challenge' => SiteHoldKind.challenge,
+              _ => SiteHoldKind.temporary,
+            },
+            title: payload['title']?.toString() ?? '',
+            message: payload['message']?.toString() ?? '',
+            retrySeconds: retry is int ? retry : int.tryParse('$retry') ?? 0,
+          ),
+          phase: InboxPhase.waiting,
+          clearError: true,
+        ),
+      );
+      return;
+    }
+
     // 翻页结果：只更新「还有没有更早的」，消息本身随 messages 帧一起到。
     if (type == 'moreDone') {
       final exhausted = payload['exhausted'] == true;
@@ -184,16 +213,14 @@ class InboxStore({this.onChanged}) {
         // 同上：不带上就会每来一帧就被重置回 5 条，
         // 用户刚滑出来的内容会自己缩回去。
         visible: _state.visible,
+        // 拿到消息 = 站点又开始给了。hold 必须在这里清掉，
+        // 否则界面会一直挂着「站点暂时不给消息」，就算下面已经有内容。
+        hold: merged.isEmpty ? _state.hold : null,
       ),
     );
   }
 
   void note(String text) => _emit(_state.copyWith(status: text));
-
-  /// 站点发过 cf_clearance —— 验证确实通过了。
-  ///
-  /// 由页面在读到 cookie 后调用。纯状态标记，不影响消息列表。
-  void markClearance() => _emit(_state.copyWith(clearanceSeen: true));
 
   /// 标记是否正在拉更早的一页。
   ///
