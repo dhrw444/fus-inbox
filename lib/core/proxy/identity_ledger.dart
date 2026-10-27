@@ -351,16 +351,32 @@ class IdentityLedger {
 
   void clearAll() => _bindings.clear();
 
-  /// 池里下一个非当前代理。池空或只有一个时返回当前那个。
+  /// 池里下一条**还有余额**的代理。
   ///
-  /// 轮转而不是随机：代理池通常按顺序配的，随机容易连着撞同一个
-  /// 已经废掉的出口。
+  /// 之前这里只是 `pool[(idx + 1) % pool.length]` —— 纯粹的 +1，压根
+  /// 没检查下一条是不是也已经用满。可界面在满的代理上写着「下次会跳过」，
+  /// 那是句谎话：真轮到它时照样被选中，照样在那个烧掉的出口上造一个新
+  /// 身份，白耗一次轮转；而且站点那边这个 IP 早被盯上了，很容易直接
+  /// 弹 CF 验证 —— 就是「有的时候会 cf 验证错误」的来源之一。
+  ///
+  /// 现在真的跳：从当前这条往后绕一圈，取第一条 `used < maxPerIdentity`
+  /// 的。一圈下来全满（589 条 × 3 = 1767 个号都看完了）才退回「下一条」，
+  /// 因为总得往前走，不能原地卡死。
+  ///
+  /// 轮转而不是随机：代理池通常按顺序配的，随机容易连着撞同一条。
   ProxyConfig _nextProxy(List<ProxyConfig> pool, String currentId) {
     if (pool.isEmpty) return _directProxy();
     if (pool.length == 1) return pool.first;
     final idx = pool.indexWhere((p) => p.id == currentId);
-    if (idx < 0) return pool.first;
-    return pool[(idx + 1) % pool.length];
+    final start = idx < 0 ? 0 : idx + 1;
+    for (var i = 0; i < pool.length; i++) {
+      final p = pool[(start + i) % pool.length];
+      if (p.id == currentId) continue;
+      if (usedFor(p.id) < maxPerIdentity) return p;
+    }
+    // 全满了。退回「下一条」，至少不会原地卡住 —— 真到这一步说明
+    // 池子的额度整个用完了，该提醒用户加代理。
+    return pool[start % pool.length];
   }
 
   Map<String, Object?> toJson() => {

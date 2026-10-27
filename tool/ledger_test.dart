@@ -429,6 +429,125 @@ void main() {
     eq(again.action, OpenAction.rotate, 'restore 不影响额度判定');
   }
 
+  // ---------- 17. 轮转必须跳过「已经满」的出口 ----------
+  //
+  // 界面在满的代理上写着「下次会跳过」，之前那是句谎话：_nextProxy 只是
+  // pool[(idx+1) % len]，压根不看下一条满没满。真轮到它时照样被选中，
+  // 在那个烧掉的出口上再造一个新身份 —— 白耗一次轮转，而且站点早盯上
+  // 这个 IP 了，很容易直接弹 CF 验证。
+  {
+    final led = IdentityLedger();
+
+    // pool[0] 和 pool[1] 都用满 3 个，pool[2] 空着。
+    for (final id in ['x1', 'x2', 'x3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+    for (final id in ['y1', 'y2', 'y3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[1].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+    eq(led.usedFor(pool[0].id), 3, 'P0 满');
+    eq(led.usedFor(pool[1].id), 3, 'P1 满');
+    eq(led.usedFor(pool[2].id), 0, 'P2 空');
+
+    // 站在 P0 上要开新号：下一条 P1 也是满的 → 必须跳到 P2。
+    final plan = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'x9',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(plan.action, OpenAction.rotate, 'P0 满了要轮转');
+    eq(plan.proxy.id, pool[2].id, '跳过同样满的 P1，直接到 P2');
+    ok(!plan.proxy.id.endsWith('2.2.2.2:1080'), '没有落到满的 P1 上');
+  }
+
+  // ---------- 18. 满的那条留在原地时不会被当成候选 ----------
+  {
+    final led = IdentityLedger();
+    for (final id in ['m1', 'm2', 'm3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+    // 连续轮转三次，每一次都必须落在「没满」的出口上。
+    var cur = pool[0].id;
+    final seen = <String>{};
+    for (var i = 0; i < 3; i++) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: cur,
+        numberId: 'k$i',
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      ok(
+        led.usedFor(p.proxy.id) < IdentityLedger.slotsPerIdentity ||
+            p.action == OpenAction.reuse,
+        '第 ${i + 1} 次轮转落在还有余额的出口上',
+      );
+      led.commit(p.proxy.id, 'k$i', p.binding);
+      cur = p.proxy.id;
+      seen.add(p.proxy.id);
+    }
+    ok(seen.contains(pool[1].id) || seen.contains(pool[2].id), '轮转真的往前走');
+  }
+
+  // ---------- 19. 全满时退回下一条，不原地卡死 ----------
+  {
+    final led = IdentityLedger();
+    for (var i = 0; i < pool.length; i++) {
+      for (var j = 0; j < IdentityLedger.slotsPerIdentity; j++) {
+        final p = led.plan(
+          pool: pool,
+          currentProxyId: pool[i].id,
+          numberId: 'f$i-$j',
+          mintUserAgent: mintUa,
+          mintModel: mintModel,
+          mintChromeMajor: mintChrome,
+        );
+        led.commit(p.proxy.id, 'f$i-$j', p.binding);
+      }
+    }
+    for (var i = 0; i < pool.length; i++) {
+      eq(led.usedFor(pool[i].id), 3, 'P$i 满');
+    }
+    final plan = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'over',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(plan.action, OpenAction.rotate, '全满仍返回轮转');
+    ok(plan.proxy.id != pool[0].id, '不会原地停在当前这条');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }

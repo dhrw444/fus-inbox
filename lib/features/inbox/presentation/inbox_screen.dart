@@ -89,6 +89,25 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 已经等了多久。
   Duration _verifyElapsed = Duration.zero;
 
+  /// 这一轮验证是从什么时候开始等的。
+  ///
+  /// 用时间戳而不是累加计数器：[_pumpVerification] 会被反复调用
+  /// （每次 onPageFinished 都来一次，而站点 SPA 自己跳转会触发好几次），
+  /// 之前每调一次就把 [_verifyElapsed] 归零 —— 页面只要在加载期间
+  /// 多跳几次，「等 6 秒」这个条件就永远凑不满，验证页面永远不弹，
+  /// 用户看到的就是「一直转圈、说换好了、但不弹验证」。
+  ///
+  /// 现在起算点只在**真的开始新一轮**时重置（见 [_beginVerifyRound]），
+  /// 重复调用只是接着算。
+  DateTime? _verifyRoundStart;
+
+  /// 这一轮里站点是不是已经报过 ready 了。
+  ///
+  /// ready 之后 [_rescan] 和 [_syncClearance] 只需要各做一次，不能每
+  /// 900ms 重复做 —— 但轮询本身要继续跑（见 [_pumpVerification] 里
+  /// 为什么 ready 不能 cancel）。
+  bool _readySeen = false;
+
   /// 最多等这么久。
   ///
   /// 实测 pending → ready 约 4 秒。给到 90 秒是留给慢网络，
@@ -289,7 +308,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 页面开始加载就挂上验证驱动器。站点大多会自己 pending → ready，
     // 这一步不需要用户参与；但有的出口站点就是不给静默过，那时过了
     // 余量还没 ready 就把页面弹出来让用户点一下（见 _pumpVerification）。
-    _autoPopped = false;
+    _beginVerifyRound();
     _pumpVerification();
   }
 
@@ -489,8 +508,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _armWatchdog();
       await _controller.loadRequest(Uri.parse(widget.number.inboxUrl));
       // 新身份加载完也要盯验证状态 —— 换身份之后站点会重新
-      // pending → ready 走一遍，这是一次全新的加载，闸门也跟着重置。
-      _autoPopped = false;
+      // pending → ready 走一遍，这是一次全新的加载，计时从头算。
+      _beginVerifyRound();
       _pumpVerification();
 
       if (!mounted) return;
@@ -534,8 +553,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     } catch (e) {
       debugPrint('重载失败: $e');
     }
-    // 重载完是新文档，重新盯验证状态，闸门重置。
-    _autoPopped = false;
+    // 重载完是新文档，重新盯验证状态，计时从头算。
+    _beginVerifyRound();
     _pumpVerification();
   }
 
@@ -592,6 +611,23 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
+  /// 开一轮新的验证等待：起算点归位。
+  ///
+  /// 换号 / 换身份 / 换 IP / 手动重载时调 —— 这些都是「上一个页面作废、
+  /// 从头再来」。除此之外 [_pumpVerification] 只是接着当前这轮算。
+  ///
+  /// 重复调用不归零是**必须**的：[_pumpVerification] 会被反复调用
+  /// （每次 onPageFinished 都来一次，而站点 SPA 自己跳转会触发好几次）。
+  /// 之前每调一次就归零，页面只要在加载期间多跳几次，「等 6 秒」这个
+  /// 条件就永远凑不满 —— 验证页永远不弹，用户看到的就是「一直转圈、
+  /// 说换好了、但不弹验证」。
+  void _beginVerifyRound() {
+    _verifyRoundStart = DateTime.now();
+    _verifyElapsed = Duration.zero;
+    _readySeen = false;
+    _autoPopped = false;
+  }
+
   /// 驱动器：让站点自己把验证走完。
   ///
   /// ## 实测结论（不要再凭猜想改）
@@ -616,6 +652,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 一样把页面放出来，用户至少能看到失败原因、能自己点一下重试。
   void _pumpVerification() {
     _verifyPoll?.cancel();
+    // 起算点只在没有的时候才落 —— 重复调用接着算，不归零。
+    _verifyRoundStart ??= DateTime.now();
     _verifyElapsed = Duration.zero;
     _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (
       timer,
@@ -624,7 +662,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         timer.cancel();
         return;
       }
-      _verifyElapsed += const Duration(milliseconds: 900);
+      // 用真实流逝时间，不是累加 900ms —— 定时器被系统挂起时
+      // 累加值会落后于真实时间，真实时间才代表用户等了多久。
+      final start = _verifyRoundStart ??= DateTime.now();
+      _verifyElapsed = DateTime.now().difference(start);
       if (_verifyElapsed > _verifyWindow) {
         timer.cancel();
         _store.note('站点验证超时，已停止等待');
@@ -636,7 +677,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         timer.cancel();
         return;
       }
-
       String phase = '';
       try {
         // 必须用 runJavaScriptReturningResult：runJavaScript 返回
@@ -672,33 +712,43 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       }
 
       if (phase == 'ready') {
-        timer.cancel();
-        // 会话好了，让站点自己去拉消息。
-        unawaited(_rescan());
-        // 顺手把 Cloudflare 通行证搬到原生 HTTP。
+        // 这里**不能** cancel。
         //
-        // 号码目录和收录时间走 dart:io HttpClient，**不共享 WebView 的
-        // cookie 库**。不搬，那两条链路每次都裸奔着被单独挑战 ——
-        // 这正是「同一个 App 里一条链路有通行证、一条没有」的来源。
-        // cf_clearance 是 HttpOnly，JS 的 document.cookie 永远读不到，
-        // 只有原生 getCookie 拿得到。
-        unawaited(_syncClearance());
-        return;
+        // ready 只说明 FUSReader 的会话建好了，不代表站点肯把消息给你：
+        // 号码是新开的、IP 刚被限流、或者页面上还压着一个没点的人机
+        // 验证，都会出现「ready 了但消息一直不来」。之前这里直接
+        // timer.cancel() + return，轮询当场自杀 —— 于是永远走不到下面
+        // 那个自动弹出，用户只看到状态栏一直转圈，等多久都不弹验证。
+        //
+        // 现在继续盯：消息到了上面那条会自己 cancel，没到就靠下面的
+        // 「等太久」把页面放出来。
+        if (!_readySeen) {
+          _readySeen = true;
+          // 会话好了，让站点自己去拉消息。
+          unawaited(_rescan());
+          // 顺手把 Cloudflare 通行证搬到原生 HTTP。
+          //
+          // 号码目录和收录时间走 dart:io HttpClient，**不共享 WebView 的
+          // cookie 库**。不搬，那两条链路每次都裸奔着被单独挑战 ——
+          // 这正是「同一个 App 里一条链路有通行证、一条没有」的来源。
+          // cf_clearance 是 HttpOnly，JS 的 document.cookie 永远读不到，
+          // 只有原生 getCookie 拿得到。
+          unawaited(_syncClearance());
+        }
       }
 
-      // 静默过不去 → 把页面放出来让用户点一下。
+      // 等太久还没消息 → 把页面放出来让用户点一下。
       //
-      // 上面 ready 那条已经 return 了，能走到这里的都是「站点要人机
-      // 验证、而且静默没过去」的情况 —— 页面里正摆着一个真的
-      // 「Verify you are human」复选框在等人。用户要的就是这一步：
-      // 别让他自己去翻「自己过验证」，到点了直接弹出来，他点一下就行。
+      // 走到这里说明：站点要么在等人机验证（页面里正摆着一个真的
+      // 「Verify you are human」复选框），要么会话好了但一直不给消息。
+      // 两种情况用户能做的事是一样的 —— 把页面亮出来，他点一下就行。
       //
-      // 之前这里只有等满 90 秒报一句「验证超时」，中间页面一直藏着，
-      // 用户看着像是卡死 —— 就是「验证码收不到也不给我弹验证」。
+      // 能在几秒里自己过的出口根本走不到这一步，所以「弹出来的
+      // 必定是需要点一下的那种」。
       if (!_showChallenge &&
           !_autoPopped &&
           _verifyElapsed >= _autoChallengeAfter) {
-        _store.note('这个出口要手动点一下验证，已把页面放出来');
+        _store.note('这个出口卡住了，已把页面放出来让你点一下');
         _openChallenge();
       }
     });
@@ -726,7 +776,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 出现一个「Verify you are human」复选框，而且它在跨域 shadow DOM
   /// 里，JS 摸不到，只能靠人点。所以这个入口是给「自动过不去」用的，
   /// 不是必经步骤。
-  void _openChallenge() {
+  /// 把站点页面亮出来。
+  ///
+  /// [reload] 只给「用户主动点自己过验证」用 —— 那种情况页面可能停在
+  /// 旧状态，重载一次让站点重新发起验证。**自动弹出绝不能重载**：
+  /// 页面本来就是刚加载的，重载只会把用户正要点的那个验证框销毁重建，
+  /// 点下去落在已经不存在的 DOM 上，等于白点。
+  void _openChallenge({bool reload = false}) {
     // 不管是谁弹的（用户点的还是到点自动弹的），都算「这次加载弹过了」，
     // 免得收起之后又被自动弹回来。
     _autoPopped = true;
@@ -734,16 +790,28 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     setState(() {
       _showChallenge = true;
     });
-    // 页面可能停在旧状态，重载一次让站点重新发起验证。
-    unawaited(_controller.reload());
+    if (reload) {
+      // 页面可能停在旧状态，重载一次让站点重新发起验证。
+      unawaited(_controller.reload());
+    }
   }
 
-  /// 用户说验证完了：收起页面，重新要消息。
-  void _closeChallenge() {
+  /// 用户说验证过了：收起页面，重新要消息。
+  ///
+  /// 和 [_closeChallenge]（收起）的区别：收起是「先退出来」，状态还继续
+  /// 盯着；这个是真的断言「我过了」，所以立刻重扫一次。
+  void _confirmChallengeDone() {
     _verifyPoll?.cancel();
     setState(() => _showChallenge = false);
     unawaited(_rescan());
-    // 收起之后继续盯状态，站点可能还没 ready。
+    _pumpVerification();
+  }
+
+  /// 用户说先不弄了：收起页面，但继续盯状态。
+  void _closeChallenge() {
+    _verifyPoll?.cancel();
+    setState(() => _showChallenge = false);
+    // 收起之后继续盯状态，站点可能自己就 ready 了。
     _pumpVerification();
   }
 
@@ -780,12 +848,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    '在上面点掉「Verify you are human」，过完点右边。'
-                    '不想过就按返回键收起。',
+                    '在上面点掉「Verify you are human」。过完点「验证好了」，'
+                    '不想过点「收起」。',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
+                // 两个按钮必须分开 —— 之前这里只有一个，而且被改名成
+                // 「收起」。结果提示让用户「过完点右边」，右边却是「收起」：
+                // 明明过完了，按下去等于告诉 App「我没过」，语义正好相反。
+                // 这两个动作的后果也不一样：「验证好了」要重扫要消息，
+                // 「收起」只是先退出来、状态继续盯着。
                 TextButton(onPressed: _closeChallenge, child: const Text('收起')),
+                const SizedBox(width: 4),
+                FilledButton(
+                  onPressed: _confirmChallengeDone,
+                  child: const Text('验证好了'),
+                ),
               ],
             ),
           ),
@@ -922,7 +1000,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 _store.reset();
                 _armWatchdog();
                 unawaited(_controller.reload());
-                _autoPopped = false;
+                _beginVerifyRound();
                 _pumpVerification();
               },
               icon: const Icon(Icons.restart_alt),
@@ -1187,7 +1265,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
           ] else if (hold.kind == SiteHoldKind.challenge) ...[
             FilledButton.tonalIcon(
-              onPressed: _openChallenge,
+              onPressed: () => _openChallenge(reload: true),
               icon: const Icon(Icons.shield_outlined, size: 18),
               label: const Text('自己过验证'),
             ),
@@ -1244,7 +1322,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               label: const Text('重试'),
             ),
             const SizedBox(height: 6),
-            TextButton(onPressed: _openChallenge, child: const Text('自己过验证')),
+            TextButton(
+              onPressed: () => _openChallenge(reload: true),
+              child: const Text('自己过验证'),
+            ),
           ],
         ),
       );
