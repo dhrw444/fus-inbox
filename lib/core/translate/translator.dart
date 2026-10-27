@@ -196,7 +196,7 @@ class Translator({this.client, this.toLang = 'zh-CN', this.preferred}) {
     // 就是去重。实测过——把 e != lastGood 加回去，行为一模一样，
     // 也就是说那个条件是不可测的冗余分支。
     final base = <TranslateEngine>[
-      if (lastGood != null) lastGood,
+      ?lastGood,
       head,
       for (final e in TranslateEngine.values)
         if (e != head) e,
