@@ -18,6 +18,8 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
 import 'package:fus_inbox/core/webview/browser_identity.dart';
+import 'package:fus_inbox/core/webview/http_headers.dart';
+import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/core/webview/webview_widget.dart';
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
@@ -56,6 +58,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 站点要求人工过风控时，临时露一次页面。平时恒为 false。
   bool _showChallenge = false;
 
+  /// 验证通过轮询。
+  ///
+  /// 只在用户打开验证面板时跑，一看到 cf_clearance 就停。
+  Timer? _clearancePoll;
+
+  /// 验证面板打开后最多等这么久。
+  ///
+  /// 用户可能开着面板一直不动（去看别的了）。无上限轮询会白耗电。
+  static const _clearancePollWindow = Duration(minutes: 3);
+
+  /// 防重入：上一轮的原生读 cookie 还没回来，这一轮就别再发。
+  ///
+  /// Timer.periodic 的回调是 async，1.5 秒周期配 2 秒超时，理论上会叠。
+  /// 叠起来就是每次点开面板都排一队通道调用，白白压主线程。
+  bool _clearanceBusy = false;
+
   @override
   void initState() {
     super.initState();
@@ -87,6 +105,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void dispose() {
     _watchdog?.cancel();
     _loadMoreWatchdog?.cancel();
+    _clearancePoll?.cancel();
     // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
     _store.detach();
     unawaited(
@@ -178,19 +197,24 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 站点会判断「是不是同一个浏览器」：UA 固定会让 Cloudflare 的挑战变严，
   /// 表现就是一直转圈拿不到短信。
   ///
-  /// **只换 UA，不碰任何本地数据**：
+  /// **只换身份，不碰任何本地数据**：
   ///   - 不清 cookie / 缓存 / localStorage —— 那会把用户的收藏、
   ///     已缓存的号码和译文缓存一起洗掉
   ///   - 只做两件事：设新 UA + 重新加载这个收件页
   ///
   /// 换完只影响这一个 WebView 实例的请求特征，App 自己的磁盘缓存原封不动。
+  ///
+  /// 注意换的是**整份身份**：UA 版本、机型串、client hints 一起换。
+  /// 旧实现只换 UA 字符串、hints 不动，那正好制造出
+  /// 「UA 说 Chrome 120、Sec-CH-UA 说 Chrome 141」的撕裂，
+  /// 比不换更容易被风控。
   Future<void> _rotateIdentity() async {
     final messenger = ScaffoldMessenger.of(context);
     _store.note('正在更换浏览器身份…');
 
     try {
-      final ua = rotateUserAgent();
-      await _controller.setUserAgent(ua);
+      final identity = rotateIdentity();
+      await _controller.setUserAgent(identity.userAgent);
 
       // 重置的只是这个页面的内存状态（已抓到的消息、看门狗），
       // 和磁盘上的目录缓存 / 收录时间缓存无关。
@@ -203,7 +227,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         ..clearSnackBars()
         ..showSnackBar(
           SnackBar(
-            content: Text('已换新身份：${_shortUa(ua)}'),
+            content: Text(
+              '已换新身份：${identity.model} · Chrome ${identity.chromeMajor}',
+            ),
             duration: const Duration(milliseconds: 1800),
           ),
         );
@@ -216,28 +242,81 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
-  /// UA 太长，提示里只留关键片段。
-  static String _shortUa(String ua) {
-    final m = RegExp(r'Android ([\d.]+); ([^)]+)\)').firstMatch(ua);
-    final c = RegExp(r'Chrome/([\d.]+)').firstMatch(ua);
-    if (m == null) return ua;
-    return '${m.group(2)!.trim()} · Chrome ${c?.group(1) ?? ''}';
+  /// 打开验证面板，并开始盯 cf_clearance。
+  ///
+  /// ## 为什么自动退出必须看 cookie，不能看 DOM
+  ///
+  /// 之前那版自动检测靠三个 DOM 条件：挑战容器消失 + 正文够长 +
+  /// 有消息节点。问题是 `[class*=message]` 会命中导航和广告，
+  /// 页面一加载就满足，面板开了立刻自己关，用户连验证框都看不到。
+  /// 用户当时的原话是「只有我点完成才退」——那条路被整个删掉了。
+  ///
+  /// 但每次都要手点「完成」也烦。真正的解法是找一个**不会被误判**
+  /// 的信号：`cf_clearance`。它是 Cloudflare 在验证通过后发下的
+  /// HttpOnly cookie，站点自己不下这个就说明没通过，下了就是真过了。
+  /// 没有第二种解释。
+  ///
+  /// 所以现在：打开面板 → 每 1.5 秒读一次原生 cookie →
+  /// 看到 cf_clearance 才自动收起面板。读不到就继续等，
+  /// 用户随时可以自己点「完成」。
+  void _openChallenge() {
+    setState(() => _showChallenge = true);
+    _startClearancePoll();
   }
 
-  /// 检测 Cloudflare 验证是否通过，并把 cf_clearance 存下来。
-  ///
-  /// 手法学自 Han1meViewer 的 CloudflareActivity：
-  ///   1. 轮询页面 HTML，确认挑战容器（#challenge-form 等）已经消失
-  ///   2. 用 CookieManager 取出该站点的 cookie 串
-  ///   3. 串里出现 cf_clearance 才认为真过了
-  ///
-  /// 关键在**存下来**：cf_clearance 是站点信任浏览器的凭证，
-  /// 后续同域名请求带上它就不会再被挑战。我们这里的价值是——
-  /// 用户手动过一次之后，这个 WebView 下次打开不用再过。
-  ///
-  /// 之所以不能在 Dart 侧直接读 cookie：webview_flutter 没有暴露
-  /// 读 cookie 的 API。走 JS 读 document.cookie 又拿不到 HttpOnly
-  /// 的那部分，而 cf_clearance 恰恰可能是 HttpOnly。
+  void _startClearancePoll() {
+    _clearancePoll?.cancel();
+    final deadline = DateTime.now().add(_clearancePollWindow);
+    _clearancePoll = Timer.periodic(const Duration(milliseconds: 1500), (
+      timer,
+    ) async {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      // 用户自己点了完成，就别再轮询。
+      if (!_showChallenge) {
+        timer.cancel();
+        return;
+      }
+      if (DateTime.now().isAfter(deadline)) {
+        timer.cancel();
+        _store.note('等验证超时了。过了的话直接点「完成」即可。');
+        return;
+      }
+
+      if (_clearanceBusy) return;
+      _clearanceBusy = true;
+      Map<String, String> cookies;
+      try {
+        cookies = await readCookies(widget.number.inboxUrl);
+      } finally {
+        _clearanceBusy = false;
+      }
+      final clearance = cookies['cf_clearance'];
+      if (clearance == null || clearance.isEmpty) return;
+
+      // 拿到了。这是站点自己发的通行证，不存在误判。
+      timer.cancel();
+      _clearancePoll = null;
+      if (!mounted) return;
+      // 通行证要交给原生 HTTP 那两条链路共用：
+      // 号码目录和收录时间走的是 dart:io，不共享 WebView 的 cookie 库。
+      // 不搬过去，同一个 App 里就有一条链路裸奔。
+      rememberClearance(clearance);
+      // 这两句都会走 store 的 onChanged → setState。所以下面那句
+      // setState 只负责面板开关，不重复刷数据。
+      _store.note('验证通过，已拿到站点通行证。');
+      _store.markClearance();
+      if (!mounted) return;
+      setState(() => _showChallenge = false);
+      // 面板收起来了，但页面可能还停在挑战页。重载一次，
+      // 这次请求会带上 cf_clearance，站点直接放行。
+      unawaited(_controller.reload());
+      _armWatchdog();
+    });
+  }
+
   /// 重扫当前页面 DOM。不发网络请求，纯粹是把已经渲染出来的内容再读一遍。
   Future<void> _rescan() async {
     try {
@@ -338,7 +417,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           IconButton(
             tooltip: '打开浏览器过验证',
             // 只打开面板，不做任何自动检测——退出完全由用户点「完成」决定。
-            onPressed: () => setState(() => _showChallenge = true),
+            onPressed: _openChallenge,
             icon: const Icon(Icons.shield_outlined),
           ),
           IconButton(
@@ -565,7 +644,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
             const SizedBox(height: 6),
             TextButton(
-              onPressed: () => setState(() => _showChallenge = true),
+              onPressed: _openChallenge,
               child: const Text('打开浏览器自己过验证'),
             ),
           ],
@@ -636,16 +715,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    '在上面过掉站点验证，完成后点右边回短信列表。',
+                    '在上面过掉站点验证。通过后会自动收起；'
+                    '不想等就点右边。',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
                 TextButton(
-                  // 唯一退出方式。刻意不做自动检测：
-                  // 之前那版靠「挑战容器消失 + DOM 够长 + 有消息节点」判断，
-                  // 而 [class*=message] 这种选择器会命中导航和广告，
-                  // 页面刚加载就满足条件，面板一开就自动关，用户根本没法过验证。
+                  // 自动收起的判定看 cf_clearance（见 _startClearancePoll），
+                  // 不看 DOM —— DOM 猜不准，会把导航和广告当成通过。
+                  // 这个按钮是手动兜底：用户不想等、或站点没发 cookie
+                  // 但页面其实能用了，点它直接回列表。
                   onPressed: () {
+                    _clearancePoll?.cancel();
+                    _clearancePoll = null;
                     setState(() => _showChallenge = false);
                     unawaited(_rescan());
                   },

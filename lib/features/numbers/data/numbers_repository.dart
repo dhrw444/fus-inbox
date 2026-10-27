@@ -16,7 +16,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
-import 'package:fus_inbox/core/webview/browser_identity.dart';
+import 'package:fus_inbox/core/webview/http_headers.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 /// 一页目录抓下来的结果。
@@ -159,32 +159,7 @@ class NumbersRepository({this.client}) {
     late final HttpClientResponse res;
     try {
       final req = await _http.getUrl(uri).timeout(const Duration(seconds: 20));
-      req.headers
-        // 用当前浏览器身份里的 UA。
-        // 必须和收件箱 WebView 用同一个值——同一台设备对同一站点
-        // 呈现两种 UA 是最可疑的信号。用户点「换浏览器身份」后，
-        // 这里也会自动跟着变。
-        ..set(HttpHeaders.userAgentHeader, currentUserAgent)
-        // 请求头要凑齐一整套：只有 UA 一个头本身就是特征。
-        // 真实 Chrome 发目录页时至少带这些。
-        ..set(
-          HttpHeaders.acceptHeader,
-          'text/html,application/xhtml+xml,application/xml;q=0.9,'
-          'image/avif,image/webp,*/*;q=0.8',
-        )
-        ..set(HttpHeaders.acceptLanguageHeader, 'en-US,en;q=0.9')
-        ..set(HttpHeaders.refererHeader, '$_base/numbers/')
-        ..set(
-          'sec-ch-ua',
-          '"Chromium";v="120", "Google Chrome";v="120", "Not?A_Brand";v="99"',
-        )
-        ..set('sec-ch-ua-mobile', '?1')
-        ..set('sec-ch-ua-platform', '"Android"')
-        ..set('sec-fetch-dest', 'document')
-        ..set('sec-fetch-mode', 'navigate')
-        ..set('sec-fetch-site', 'same-origin')
-        ..set('sec-fetch-user', '?1')
-        ..set('upgrade-insecure-requests', '1');
+      applyBrowserHeaders(req.headers, base: _base, referer: _pageUrl(page));
       res = await req.close().timeout(const Duration(seconds: 20));
     } on Exception catch (e) {
       throw NumberFetchException('网络请求失败：$e');

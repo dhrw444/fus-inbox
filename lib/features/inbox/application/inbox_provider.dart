@@ -190,6 +190,11 @@ class InboxStore({this.onChanged}) {
 
   void note(String text) => _emit(_state.copyWith(status: text));
 
+  /// 站点发过 cf_clearance —— 验证确实通过了。
+  ///
+  /// 由页面在读到 cookie 后调用。纯状态标记，不影响消息列表。
+  void markClearance() => _emit(_state.copyWith(clearanceSeen: true));
+
   /// 标记是否正在拉更早的一页。
   ///
   /// [done] 为 true 时清掉 loading 标记（请求结束，无论成功失败）。

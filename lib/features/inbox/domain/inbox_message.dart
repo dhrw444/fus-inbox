@@ -91,6 +91,7 @@ class const InboxState({
   this.hasMore = true,
   this.loadingMore = false,
   this.visible = 5,
+  this.clearanceSeen = false,
 }) {
   final List<InboxMessage> messages;
   final InboxPhase phase;
@@ -120,6 +121,13 @@ class const InboxState({
   /// 这样「打开就一大坨」和「一上来就翻页」都避免了。
   final int visible;
 
+  /// 站点发过 `cf_clearance` —— Cloudflare 验证确实通过了。
+  ///
+  /// 这是唯一可信的「已过验证」信号：DOM 长得像不像收件箱、
+  /// 挑战容器有没有消失，都不算数（导航栏和广告都能命中）。
+  /// 只有站点自己发下的通行证才算。
+  final bool clearanceSeen;
+
   /// 列表里实际要渲染的消息（按 [visible] 截断）。
   List<InboxMessage> get shown =>
       messages.length <= visible ? messages : messages.sublist(0, visible);
@@ -140,6 +148,7 @@ class const InboxState({
     bool? hasMore,
     bool? loadingMore,
     int? visible,
+    bool? clearanceSeen,
   }) {
     return InboxState(
       messages: messages ?? this.messages,
@@ -151,6 +160,7 @@ class const InboxState({
       hasMore: hasMore ?? this.hasMore,
       loadingMore: loadingMore ?? this.loadingMore,
       visible: visible ?? this.visible,
+      clearanceSeen: clearanceSeen ?? this.clearanceSeen,
     );
   }
 }

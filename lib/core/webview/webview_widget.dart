@@ -8,14 +8,10 @@
 /// 查询失败一律退回插件默认，不让一次能力探测挡住页面渲染。
 library;
 
-import 'dart:async';
-
-import 'package:flutter/services.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 
-/// 原生侧能力查询通道。
-const platformWebViewChannel = MethodChannel('fusinbox/webview');
+import 'package:fus_inbox/core/webview/native_capabilities.dart';
 
 /// 用给定的 controller 造一个可挂进 widget 树的 [WebViewWidget]。
 ///
@@ -28,19 +24,8 @@ Future<WebViewWidget> createPlatformWebView(
   );
 
   if (WebViewPlatform.instance is AndroidWebViewPlatform) {
-    var useNativeComposition = false;
-    try {
-      final sdk = await platformWebViewChannel
-          .invokeMethod<int>('getAndroidSdkVersion')
-          .timeout(const Duration(seconds: 1));
-      useNativeComposition = sdk != null && sdk >= 29;
-    } on MissingPluginException {
-      // 测试或其它嵌入环境没有原生实现，保留插件默认。
-    } on PlatformException {
-      // 能力探测失败不应该阻断页面。
-    } on TimeoutException {
-      // 原生侧不响应时同样退回默认。
-    }
+    final sdk = await androidSdkVersion();
+    final useNativeComposition = sdk != null && sdk >= 29;
     params =
         AndroidWebViewWidgetCreationParams.fromPlatformWebViewWidgetCreationParams(
           params,

@@ -18,7 +18,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:fus_inbox/core/webview/browser_identity.dart';
+import 'package:fus_inbox/core/webview/http_headers.dart';
 
 const _kCacheKey = 'number_first_seen_v1';
 
@@ -244,14 +244,7 @@ Future<DateTime?> fetchFirstSeen(String e164, {HttpClient? client}) async {
     final req = await http
         .getUrl(Uri.parse('https://freeussms.com/numbers/$e164/'))
         .timeout(const Duration(seconds: 8));
-    req.headers
-      // 同一身份：与 WebView / 目录抓取用同一个 UA。
-      ..set(HttpHeaders.userAgentHeader, currentUserAgent)
-      ..set(
-        HttpHeaders.acceptHeader,
-        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-      )
-      ..set(HttpHeaders.acceptLanguageHeader, 'en-US,en;q=0.9');
+    applyBrowserHeaders(req.headers, referer: 'https://freeussms.com/numbers/');
     final res = await req.close().timeout(const Duration(seconds: 10));
     if (res.statusCode != HttpStatus.ok) {
       unawaited(res.drain<void>().catchError((Object _) {}));
