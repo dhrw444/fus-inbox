@@ -171,8 +171,15 @@ class ProxyEngine {
       final ok = await _channel.invokeMethod<bool>('applyProxy', {
         'host': host,
         'port': port,
-        // 回环必须绕过，否则桥自己的连接会绕回自己形成死循环。
-        'bypass': const ['127.0.0.1', 'localhost', '*'],
+        // 只绕过回环，**绝不能加 `*`**。
+        //
+        // 这里的规则是 Chrome 的 proxy-bypass-list 语法，按**目标主机**
+        // 匹配，`*` 等于「所有目标都直连」—— 加上它整个代理就静默失效，
+        // 一条流量都不走代理，而且没有任何报错。
+        //
+        // 代理服务器自己（127.0.0.1:桥端口）不受 bypass 影响：bypass
+        // 只管「去哪个目标」，不管「怎么连到代理」。
+        'bypass': const ['127.0.0.1', 'localhost'],
       });
       return ok ?? false;
     } on MissingPluginException {
@@ -191,26 +198,5 @@ class ProxyEngine {
     } on PlatformException catch (e) {
       debugPrint('清代理失败：$e');
     }
-  }
-}
-
-/// 一个代理是否真的能用 —— 起桥后本地握手一次。
-///
-/// 用户配代理时最容易填错 host/port/账号密码。这里不做真实外网请求
-/// （那会把用户的代理额度烧掉），只做 TCP 连通 + SOCKS5 握手。
-Future<String?> probeProxy(ProxyConfig config) async {
-  if (config.isDirectProxy) return null;
-  try {
-    final socket = await Socket.connect(
-      config.host,
-      config.port,
-      timeout: const Duration(seconds: 8),
-    );
-    socket.destroy();
-    return null;
-  } on SocketException catch (e) {
-    return '连不上 ${config.host}:${config.port} — ${e.message}';
-  } catch (e) {
-    return '连不上 ${config.host}:${config.port} — $e';
   }
 }

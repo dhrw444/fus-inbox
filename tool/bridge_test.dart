@@ -33,6 +33,13 @@ class _R {
   _R(Socket s) {
     _sub = s.listen(
       (c) {
+        // 切到收集模式后字节直接进 sink —— Socket 只能 listen 一次，
+        // 读头和读 body 必须共用同一个订阅。
+        final fwd = _fwd;
+        if (fwd != null) {
+          fwd(c);
+          return;
+        }
         _b.addAll(c);
         _p();
       },
@@ -42,8 +49,25 @@ class _R {
   }
   late final StreamSubscription<Uint8List> _sub;
   final List<int> _b = [];
+  void Function(Uint8List)? _fwd;
   Completer<Uint8List>? _w;
   int _n = 0;
+
+  /// 读头阶段结束，之后来的字节直接交给 [sink]。
+  ///
+  /// 必须走这条路 —— Socket 是单订阅流，读头和转发不能各自
+  /// `listen` 一次，第二次直接抛「Stream has already been listened to」。
+  void forwardTo(void Function(Uint8List) sink) {
+    _fwd = sink;
+    if (_b.isNotEmpty) {
+      sink(Uint8List.fromList(_b));
+      _b.clear();
+    }
+  }
+
+  /// 读头结束，之后来的字节攒进 [sink]，调用方过一会自己取。
+  void collectInto(List<int> sink) => forwardTo(sink.addAll);
+
   void _p() {
     final w = _w;
     if (w == null || _b.length < _n) return;
@@ -129,13 +153,8 @@ class FakeSocks5 {
       );
       await s.flush();
 
-      // 双向转发
-      s.listen(
-        up.add,
-        onError: (Object _) => up.destroy(),
-        onDone: () => up.destroy(),
-        cancelOnError: true,
-      );
+      // 双向转发。同样不能对 s 再 listen 一次 —— _R 已经订过了。
+      r.forwardTo(up.add);
       up.listen(
         s.add,
         onError: (Object _) => s.destroy(),
@@ -218,9 +237,8 @@ Future<void> main() async {
     c.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n');
     await c.flush();
     final body = <int>[];
-    final sub = c.listen(body.addAll, onDone: () {});
+    r.collectInto(body);
     await Future<void>.delayed(const Duration(milliseconds: 500));
-    await sub.cancel();
     final text = utf8.decode(body, allowMalformed: true);
     ok(text.contains('hello-world'), 'CONNECT tunnel carries real HTTP');
     eq(socks.lastPort, targetPort, 'SOCKS5 got right target port');
@@ -237,10 +255,11 @@ Future<void> main() async {
       'Proxy-Connection: keep-alive\r\n\r\n',
     );
     await c.flush();
+    // 这条不走 CONNECT，没有 200 响应头要读，直接收 body。
     final body = <int>[];
-    final sub = c.listen(body.addAll, onDone: () {});
+    final r = _R(c);
+    r.collectInto(body);
     await Future<void>.delayed(const Duration(milliseconds: 500));
-    await sub.cancel();
     final text = utf8.decode(body, allowMalformed: true);
     ok(text.contains('hello-world'), 'absolute URI reaches target');
     ok(seen.isNotEmpty, 'target saw the request');

@@ -4,14 +4,19 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:fus_inbox/core/webview/browser_identity.dart';
 
 /// 原生侧能力查询通道。
 const platformWebViewChannel = MethodChannel('fusinbox/webview');
+
+/// 浏览器身份在磁盘上的键。
+const _kIdentityKey = 'fus:identity:current:v1';
 
 /// 读 Android SDK 版本，决定 WebView 用哪种合成方式。
 Future<int?> androidSdkVersion() async {
@@ -141,6 +146,21 @@ Future<bool> clearBrowsingData() async {
 /// 探测失败不抛异常——退回 [BrowserIdentity.fallback]，App 照常启动。
 /// 一次能力探测不该挡住整个应用。
 Future<BrowserIdentity> bootstrapBrowserIdentity() async {
+  // 先看磁盘上有没有上次用的身份。有就先用它 —— 站点那边每对
+  // reader 密钥是跟身份绑的，重启回到设备真实值等于拿旧密钥配新
+  // 机型，反而更容易被认出来。探测失败时也回落到它，不要落回
+  // 出厂兜底值（那会换掉用户的身份）。
+  BrowserIdentity? saved;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    saved = identityFromJson(
+      jsonDecode(prefs.getString(_kIdentityKey) ?? 'null'),
+    );
+    if (saved != null) restoreIdentity(saved);
+  } catch (e) {
+    debugPrint('读回浏览器身份失败：$e');
+  }
+
   try {
     final raw = await platformWebViewChannel
         .invokeMapMethod<String, Object?>('getDeviceProfile')
@@ -148,12 +168,17 @@ Future<BrowserIdentity> bootstrapBrowserIdentity() async {
     if (raw != null) {
       final ua = raw['userAgent'] as String?;
       if (ua != null && ua.isNotEmpty) {
-        final identity = parseWebViewUserAgent(
-          ua,
-          model: raw['model'] as String?,
-          platformVersion: raw['release'] as String?,
-        );
+        // 探测出来的真实身份只在**第一次**用 —— 之后一切以磁盘上
+        // 那份为准，否则用户换过的身份每次启动都会被真实值顶掉。
+        final identity =
+            saved ??
+            parseWebViewUserAgent(
+              ua,
+              model: raw['model'] as String?,
+              platformVersion: raw['release'] as String?,
+            );
         initBrowserIdentity(identity);
+        await _persistIdentity(identity);
         return identity;
       }
     }
@@ -165,4 +190,18 @@ Future<BrowserIdentity> bootstrapBrowserIdentity() async {
     debugPrint('浏览器身份探测超时，用兜底身份');
   }
   return currentIdentity;
+}
+
+/// 记下当前身份。换身份之后必须调，否则重启就丢了。
+Future<void> persistCurrentIdentity() async {
+  await _persistIdentity(currentIdentity);
+}
+
+Future<void> _persistIdentity(BrowserIdentity identity) async {
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kIdentityKey, jsonEncode(identityToJson(identity)));
+  } catch (e) {
+    debugPrint('存浏览器身份失败：$e');
+  }
 }

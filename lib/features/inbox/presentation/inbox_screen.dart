@@ -108,6 +108,25 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 比单个爬虫更显眼，还白耗 Turnstile 验证次数。
   final _rotationPolicy = IdentityRotationPolicy();
 
+  /// 正在换出口/换身份。见 [_maybeAutoRotate] —— 换的过程中会写状态，
+  /// 状态一变又回调进来，没有这个闸门会自激。
+  bool _rotating = false;
+
+  /// 上一次因为配额换出口的时间。
+  ///
+  /// 单独记一份、而且比 [_rotationPolicy] 长得多：换出口之后站点要
+  /// 重新握手、重新验人机，这期间 hold 还是旧的，状态一变就又会
+  /// 触发一次。真连着换下去会把 589 条池子在一分钟内烧穿 ——
+  /// 而且每换一次在站点眼里都是「同一个 IP 又来一个新访客」的
+  /// 反向操作（换出口不换 IP 是不可能的，但换太快本身也可疑）。
+  DateTime? _lastProxyRotate;
+
+  /// 两次换出口之间至少隔这么久。
+  ///
+  /// 一次换出口 ≈ 清数据 + 换 UA + 重载 + 站点重新握手，几秒钟。
+  /// 冷却比这稍长一点，避免同一次限额信号重复触发。
+  static const _proxyRotateCooldown = Duration(seconds: 6);
+
   @override
   void initState() {
     super.initState();
@@ -167,19 +186,27 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 节流是为了别把新身份一次性打光：刚换完立刻又撞墙，
   /// 那个身份就白扔了。
   void _maybeAutoRotate() {
+    if (_rotating) return;
     final hold = _store.state.hold;
     final status = _store.state.status;
     // 没有任何拒绝信号就不动。
     if (hold == null && !status.contains('reader_verification')) return;
 
-    // 配额和挑战都是 **IP 级** 的，换浏览器身份解决不了。
-    //
+    // 配额和挑战都是 **IP 级** 的，换浏览器身份解决不了 ——
     // 实测：同一个 IP 上清空 localStorage / IndexedDB / cookie（等于换
     // 全新身份）之后，第 4 个号依然是 New inboxes are on pause。
-    // 配额记在 IP 上，不在身份上。所以这里不烧身份，只把「去换 IP」
-    // 摆到界面上，由用户决定什么时候换。
+    //
+    // 但「换 IP」是 App 自己能做的事：代理池里还有别的出口就直接
+    // 换下一条，连身份一起重置（只换一样站点都还认得出是同一个人）。
+    // 池子空或只剩一条时才退化成让用户自己换 IP。
     if (hold?.kind == SiteHoldKind.quota ||
         hold?.kind == SiteHoldKind.challenge) {
+      if (!ref.read(proxyProvider).autoRotate) return;
+      final now = DateTime.now();
+      final last = _lastProxyRotate;
+      if (last != null && now.difference(last) < _proxyRotateCooldown) return;
+      _lastProxyRotate = now;
+      unawaited(_rotateToNextProxy());
       return;
     }
 
@@ -192,6 +219,39 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
     _rotationPolicy.record(now);
     unawaited(_rotateIdentity());
+  }
+
+  /// 换下一条代理 + 重置浏览器身份。
+  ///
+  /// 两步必须都做：只换 IP，站点的 reader 密钥还是那一对，服务端认得
+  /// 这是同一个人换了个出口；只换身份，配额还记在同一个 IP 上。
+  ///
+  /// 没得换时（池空 / 只剩一条可用）就什么都不做，界面上的
+  /// 「换 IP 后重置浏览器」还留着，由用户自己换。
+  Future<void> _rotateToNextProxy() async {
+    _rotating = true;
+    try {
+      final notifier = ref.read(proxyProvider.notifier);
+      if (!notifier.canRotate) {
+        _store.note('代理池里没有别的出口可换，需要你换个网络再点重置');
+        return;
+      }
+      final next = await notifier.rotateToNext();
+      if (next == null || !mounted) return;
+
+      // 出口要先换掉。_rotateIdentity 最后会 loadRequest，那一下的流量
+      // 必须已经走新出口 —— 晚一步就是拿旧 IP 又去撞一次限额。
+      final active = await _proxyEngine.apply(next);
+      if (!mounted) return;
+      if (!active.ok && !next.isDirectProxy) {
+        _store.note('换到 ${next.displayName} 没设上：${active.detail}');
+        return;
+      }
+      _store.note('配额用满，换到 ${next.displayName}（${active.detail}）');
+      await _rotateIdentity();
+    } finally {
+      _rotating = false;
+    }
   }
 
   /// 启动：装垫片 → 打开收件页。
@@ -232,12 +292,24 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 身份必须是「新造」或「复用」，所以这里给账本三个 mint 函数，
     // 它只在需要新身份时才调用 —— 不会白烧。
     return proxyState.ledger.plan(
-      pool: proxyState.pool,
+      // 必须用 all：内置的 589 条和用户手加的分开存（内置的在 APK
+      // 资源里，只能靠排除表隐藏），只传 pool 的话内置代理在运行时
+      // 一条都用不上，等于白内置。
+      pool: proxyState.all,
       currentProxyId: proxyState.currentId,
       numberId: widget.number.id,
-      // rotateIdentity 是唯一会真的换身份的函数：UA、client hints、
-      // 机型串一起换，保持自洽。账本只在需要新身份时调它。
-      mintUserAgent: () => rotateIdentity().userAgent,
+      // 检测判死的直接不进候选。没测过的照常进 —— 不能因为用户没点
+      // 「全部检测」就退化成直连，那会烧掉真实 IP 的额度。
+      unusable: proxyState.results.entries
+          .where((e) => !e.value.ok)
+          .map((e) => e.key)
+          .toSet(),
+      // 这三个都必须是**只读**的当前值。之前 mintUserAgent 写成
+      // rotateIdentity().userAgent —— 读一个字段顺手换了身份，副作用
+      // 藏在取值里：账本记下的 UA 和页面真正在用的 UA 会是两个，
+      // 站点那边看到的还是旧身份，等于白记。换身份只有 _rotateIdentity
+      // 一处，别的地方不许偷偷换。
+      mintUserAgent: () => currentIdentity.userAgent,
       mintModel: () => currentIdentity.model,
       mintChromeMajor: () => currentIdentity.chromeMajor,
     );
@@ -394,6 +466,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
       final identity = rotateIdentity();
       await _controller.setUserAgent(identity.userAgent);
+      // 立刻落盘。不存的话重启会回到设备真实机型，而站点那边的
+      // reader 密钥还是这一对 —— 同一个身份换了台「设备」，比不换更扎眼。
+      await persistCurrentIdentity();
 
       // 下一次加载完成时删密钥，然后重载。
       _wipeSiteStorageOnLoad = true;

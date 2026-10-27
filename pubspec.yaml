@@ -44,6 +44,7 @@ flutter:
   assets:
     - assets/icon/icon.png
     - assets/js/
+    - assets/proxies/
 
 flutter_launcher_icons:
   android: "ic_launcher"

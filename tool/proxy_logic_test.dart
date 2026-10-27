@@ -1,5 +1,6 @@
+import 'dart:io';
+
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
-import 'package:fus_inbox/core/proxy/proxy_pool.dart';
 
 int pass = 0, fail = 0;
 void ok(bool c, String label) {
@@ -96,114 +97,6 @@ void main() {
     'missing scheme default',
   );
 
-  // ---------- 轮换 ----------
-  ProxySlot slot(String id) => ProxySlot(
-    proxy: parseProxyLine('socks5://$id:1080')!,
-    identity: {'userAgent': 'ua-$id'},
-  );
-
-  final engine = ProxyRotationEngine(
-    slots: [slot('1.1.1.1'), slot('2.2.2.2'), slot('3.3.3.3')],
-  );
-
-  var d = engine.beforeOpen();
-  eq(d.reason, RotationReason.quotaExhausted, 'first open picks proxy');
-  eq(d.next!.proxy.host, '1.1.1.1', 'first proxy = 1.1.1.1');
-
-  d = engine.beforeOpen();
-  eq(d.reason, RotationReason.keep, 'second open keeps proxy');
-  eq(engine.currentId, 'socks5://1.1.1.1:1080', 'still 1.1.1.1');
-
-  engine.markOpened();
-  engine.markOpened();
-  eq(engine.used, 2, 'used 2');
-  d = engine.beforeOpen();
-  eq(d.reason, RotationReason.keep, 'third open still keep');
-  engine.markOpened();
-  eq(engine.used, 3, 'used 3');
-
-  // 第 4 个 → 换代理
-  d = engine.beforeOpen();
-  eq(d.reason, RotationReason.quotaExhausted, '4th rotates');
-  eq(d.next!.proxy.host, '2.2.2.2', 'rotated to 2.2.2.2');
-  eq(engine.used, 0, 'counter reset');
-
-  // 站点拒绝 → 立刻换，不等 3 个
-  d = engine.beforeOpen(reason: RotationReason.rejected);
-  eq(d.reason, RotationReason.rejected, 'rejected rotates');
-  eq(d.next!.proxy.host, '3.3.3.3', 'rejected → 3.3.3.3');
-
-  // 循环回到第一条
-  d = engine.beforeOpen(reason: RotationReason.rejected);
-  eq(d.next!.proxy.host, '1.1.1.1', 'wraps around to 1.1.1.1');
-
-  // 单条代理：用满也不报错，回到自己
-  final solo = ProxyRotationEngine(slots: [slot('9.9.9.9')], perProxyLimit: 1);
-  solo.beforeOpen();
-  solo.markOpened();
-  d = solo.beforeOpen();
-  eq(d.reason, RotationReason.quotaExhausted, 'solo rotates');
-  eq(d.next!.proxy.host, '9.9.9.9', 'solo reuses itself');
-  eq(solo.used, 0, 'solo counter reset');
-
-  // 无代理
-  final empty = ProxyRotationEngine(slots: []);
-  d = empty.beforeOpen();
-  eq(d.reason, RotationReason.noProxy, 'empty → noProxy');
-  ok(d.next == null, 'empty next null');
-  ok(d.message.isNotEmpty, 'empty has message');
-
-  // 恢复进度
-  final restored = ProxyRotationEngine(
-    slots: [slot('1.1.1.1'), slot('2.2.2.2')],
-  )..restore(currentId: 'socks5://1.1.1.1:1080', used: 2);
-  eq(restored.used, 2, 'restore used');
-  d = restored.beforeOpen();
-  eq(d.reason, RotationReason.keep, 'restore keeps until full');
-  restored.markOpened();
-  d = restored.beforeOpen();
-  eq(d.next!.proxy.host, '2.2.2.2', 'restore then rotate');
-  // 恢复一个已删除的代理 → 忽略
-  restored.restore(currentId: 'socks5://7.7.7.7:1080', used: 1);
-  ok(
-    restored.currentId != 'socks5://7.7.7.7:1080',
-    'restore ignores unknown proxy',
-  );
-
-  // 上限可调
-  final five = ProxyRotationEngine(
-    slots: [slot('1.1.1.1'), slot('2.2.2.2')],
-    perProxyLimit: 5,
-  );
-  five.beforeOpen();
-  for (var i = 0; i < 4; i++) {
-    five.markOpened();
-  }
-  eq(five.beforeOpen().reason, RotationReason.keep, 'limit 5 keeps at 4');
-
-  // ---------- 身份缓存 ----------
-  final cache = IdentityCache();
-  ok(!cache.has('a'), 'empty cache');
-  cache.put('a', {'userAgent': 'UA-A', 'chromeMajor': '141'});
-  cache.put('b', {'userAgent': 'UA-B'});
-  eq(cache.get('a')!['userAgent'], 'UA-A', 'cache get');
-
-  final encoded = cache.encode();
-  final decoded = IdentityCache.decode(encoded);
-  eq(decoded.get('a')!['userAgent'], 'UA-A', 'cache survives encode/decode');
-  eq(decoded.get('b')!['userAgent'], 'UA-B', 'second identity kept');
-
-  decoded.put('a', {'userAgent': 'UA-A2'});
-  eq(decoded.get('a')!['userAgent'], 'UA-A2', 'overwrite identity');
-
-  decoded.pruneTo(['a']);
-  ok(decoded.has('a'), 'prune keeps live');
-  ok(!decoded.has('b'), 'prune drops dead');
-
-  ok(IdentityCache.decode(null).raw.isEmpty, 'decode null → empty');
-  ok(IdentityCache.decode('').raw.isEmpty, 'decode empty → empty');
-  ok(IdentityCache.decode('{bad').raw.isEmpty, 'decode garbage → empty');
-  ok(IdentityCache.decode('[1,2]').raw.isEmpty, 'decode non-map → empty');
-
   print('\n$pass passed, $fail failed');
+  if (fail > 0) exit(1);
 }

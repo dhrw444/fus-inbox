@@ -165,6 +165,48 @@ void initBrowserIdentity(BrowserIdentity identity) {
   _current = identity;
 }
 
+/// 从磁盘恢复上次的身份。
+///
+/// 必须持久化，不能每次启动都回到设备真实值：
+/// 站点给每个身份发一对 reader 密钥（存在 IndexedDB 里），密钥是**跟着
+/// 身份走**的。重启后身份变回真实机型、密钥还是那一对，等于「同一个人
+/// 换了台设备又拿旧密钥来」，比不换更显眼。
+///
+/// 代理账本也依赖这一点：它记着「出口 A 用身份 X」，重启后身份若变了，
+/// 那条记录就是假的 —— 新出口会拿到一个站点已经见过的身份。
+void restoreIdentity(BrowserIdentity identity) {
+  _current = identity;
+}
+
+/// 序列化成能落盘的形状。
+Map<String, Object?> identityToJson(BrowserIdentity identity) => {
+  'ua': identity.userAgent,
+  'major': identity.chromeMajor,
+  'model': identity.model,
+  'platform': identity.platformVersion,
+  'mobile': identity.isMobile,
+};
+
+/// 从落盘数据恢复。字段不全或类型不对就返回 null，由调用方回落到真实值。
+BrowserIdentity? identityFromJson(Object? raw) {
+  if (raw is! Map) return null;
+  final ua = raw['ua'];
+  final major = raw['major'];
+  final model = raw['model'];
+  final platform = raw['platform'];
+  if (ua is! String || major is! String || model is! String) return null;
+  if (ua.isEmpty || major.isEmpty || model.isEmpty) return null;
+  return BrowserIdentity(
+    userAgent: ua,
+    chromeMajor: major,
+    model: model,
+    platformVersion: platform is String && platform.isNotEmpty
+        ? platform
+        : '14',
+    isMobile: raw['mobile'] is bool ? raw['mobile']! as bool : true,
+  );
+}
+
 /// UA 字符串。收件箱 WebView 和所有原生 HTTP 都用这一个。
 String get currentUserAgent => _current.userAgent;
 

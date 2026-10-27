@@ -162,10 +162,22 @@ class IdentityLedger {
 
   IdentityBinding? forProxy(String proxyId) => _bindings[proxyId];
 
+  /// 一个身份最多看几个号。
+  ///
+  /// 实测：一个身份 + 一个出口 IP 只给 3 个新号，第 4 个直接
+  /// `New inboxes are on pause`。这个数不是猜的。
+  static const int slotsPerIdentity = 3;
+
+  /// 这个出口已经用掉几个号。
+  int usedFor(String proxyId) => _bindings[proxyId]?.used ?? 0;
+
   /// 决定这次打开该用哪个代理、哪个身份。
   ///
-  /// [pool] 是用户配的代理池，[currentProxyId] 是当前选中的代理，
+  /// [pool] 是代理池（内置 + 手加），[currentProxyId] 是当前选中的代理，
   /// [numberId] 是这次要看的号。
+  ///
+  /// [unusable] 是检测已判死的代理 id，会被排除在候选外 —— 但只
+  /// 在还剩别的可选时才排，见下面的注释。
   ///
   /// 不会修改账本 —— 落账由 [commit] 做，这样界面可以先把决定
   /// 显示出来再执行。
@@ -176,10 +188,18 @@ class IdentityLedger {
     required String Function() mintUserAgent,
     required String Function() mintModel,
     required String Function() mintChromeMajor,
+    Set<String> unusable = const {},
   }) {
+    // 检测已经判死的代理不进候选，但**只在还有别的可选时**才剔。
+    // 全都被判死时退化成不剔 —— 那说明检测本身有问题（比如用户
+    // 在没网的时候点了一次全部检测），按检测结果走会变成直连，
+    // 拿真实 IP 去撞站点比用一条可疑代理更糟。
+    final usable = pool.where((p) => !unusable.contains(p.id)).toList();
+    final candidates = usable.isNotEmpty ? usable : pool;
+
     final current =
-        pool.where((p) => p.id == currentProxyId).firstOrNull ??
-        pool.firstOrNull;
+        candidates.where((p) => p.id == currentProxyId).firstOrNull ??
+        candidates.firstOrNull;
     if (current == null) {
       // 没配代理：用直连，绑一个占位身份。这样界面逻辑不用分叉。
       final binding = IdentityBinding(
@@ -240,7 +260,7 @@ class IdentityLedger {
     }
 
     // 满了 → 换代理 + 换身份。
-    final nextProxy = _nextProxy(pool, current.id);
+    final nextProxy = _nextProxy(candidates, current.id);
     final binding = IdentityBinding(
       proxyId: nextProxy.id,
       userAgent: mintUserAgent(),

@@ -235,6 +235,67 @@ void main() {
     ok(led.forProxy(pool[0].id) == null, 'clear 后没了');
   }
 
+  // ---------- 9. unusable 过滤 ----------
+  //
+  // 检测判死的代理不进候选。但**只在还有别的可选时**才剔 ——
+  // 全判死说明检测本身有问题（比如没网时点了一次全部检测），
+  // 那时候按检测结果走会退化成直连，拿真实 IP 去撞站点更糟。
+  {
+    final led = IdentityLedger();
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'u1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+      unusable: {pool[0].id, pool[1].id},
+    );
+    ok(p.proxy.id == pool[2].id, '判死的跳过，选到第三条');
+  }
+  {
+    // 全判死 → 退回不剔，仍然用池子里的代理，绝不落到直连。
+    final led = IdentityLedger();
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'u2',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+      unusable: pool.map((e) => e.id).toSet(),
+    );
+    ok(!p.proxy.isDirectProxy, '全判死也不退化成直连');
+    ok(p.proxy.id == pool[0].id, '全判死时仍用当前这条');
+  }
+  {
+    // 满了 + 当前判死 → 换到下一个**活的**，不能换回自己。
+    final led = IdentityLedger();
+    for (final n in ['a', 'b', 'c']) {
+      final q = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: n,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(q.proxy.id, n, q.binding);
+    }
+    final r = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'd',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+      unusable: {pool[1].id},
+    );
+    ok(r.rotated, '用满后轮换');
+    ok(r.proxy.id != pool[1].id, '跳过判死的第二条');
+    ok(r.proxy.id != pool[0].id, '不换回已经满的自己');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }
