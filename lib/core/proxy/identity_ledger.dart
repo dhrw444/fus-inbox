@@ -120,6 +120,13 @@ enum OpenAction() {
 
   /// 该身份看满额度了：换代理 + 换身份，然后再开。
   rotate,
+
+  /// 这个号之前被另一条出口上的身份看过：切回那条出口，复用那个身份。
+  ///
+  /// 不新造身份、也不占新额度。站点把「看过哪些号」记在 reader 身份
+  /// 自己的 localStorage / IndexedDB 里，24 小时内重看同一个号是放行的；
+  /// 换个身份再进来，它根本不知道你看过 —— 直接当成全新收件箱。
+  restore,
 }
 
 class const OpenPlan({
@@ -140,6 +147,12 @@ class const OpenPlan({
   final String reason;
 
   bool get rotated => action == OpenAction.rotate;
+
+  /// 为了回到「看过这个号的那条出口」而换了代理。
+  ///
+  /// 和 [rotated] 分开：rotate 是额度用满、被迫换新的；
+  /// restore 是特意切回原来那条 —— 不新造身份，也不吃新额度。
+  bool get restored => action == OpenAction.restore;
 }
 
 /// 账本。纯逻辑，不碰磁盘不碰网络。
@@ -159,6 +172,20 @@ class IdentityLedger {
   Map<String, IdentityBinding> get bindings => Map.unmodifiable(_bindings);
 
   IdentityBinding? forProxy(String proxyId) => _bindings[proxyId];
+
+  /// 哪个绑定已经看过这个号。没有就返回 null。
+  ///
+  /// 多个绑定都看过时取**最早创建**的那个 —— 正常情况下一个号只会
+  /// 落在一个绑定上（commit 只在代理真设成之后才写），这里只是兜底，
+  /// 取个确定的顺序，免得行为飘。
+  IdentityBinding? _bindingSeeing(String numberId) {
+    IdentityBinding? found;
+    for (final b in _bindings.values) {
+      if (!b.hasSeen(numberId)) continue;
+      if (found == null || b.createdAtMs < found.createdAtMs) found = b;
+    }
+    return found;
+  }
 
   /// 一个身份最多看几个号。
   ///
@@ -217,6 +244,30 @@ class IdentityLedger {
     }
 
     final existing = _bindings[current.id];
+
+    // 这个号之前是谁看的？必须回到那条出口、那个身份。
+    //
+    // 站点把「看过哪些号」记在 reader 身份自己的 localStorage /
+    // IndexedDB 里 —— 24 小时内重看同一个号是放行的，不扣额度。
+    // 换个身份再进来，它不知道你看过，直接当成全新收件箱：既吃一次
+    // 新额度，又更容易撞人机验证。
+    //
+    // 之前这里只查 _bindings[current.id]，轮换过之后回头点老号必然
+    // 落到新身份上 —— 就是「重新点进去不是之前那条 socks5 + 身份」。
+    final owner = _bindingSeeing(numberId);
+    if (owner != null && owner.proxyId != current.id) {
+      final ownerProxy = candidates
+          .where((p) => p.id == owner.proxyId)
+          .firstOrNull;
+      if (ownerProxy != null) {
+        return OpenPlan(
+          action: OpenAction.restore,
+          proxy: ownerProxy,
+          binding: owner,
+          reason: '这个号是 ${ownerProxy.displayName} 上的身份看过的，切回去复用',
+        );
+      }
+    }
 
     // 这个身份已经看过这个号 → 不计数，直接复用。
     // 站点对「24 小时内打开过的号」是放行的，重看同一个号不消耗额度。

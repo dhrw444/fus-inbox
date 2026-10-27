@@ -296,6 +296,139 @@ void main() {
     ok(r.proxy.id != pool[0].id, '不换回已经满的自己');
   }
 
+  // ---------- 14. 回头点老号：必须切回原来那条出口 + 原来那个身份 ----------
+  //
+  // 这是「之前验证过的号码，我重新点进去为何不是之前的 socks5 + 身份」。
+  {
+    final led = IdentityLedger();
+
+    // 在 pool[0] 上看满 3 个号。
+    Object? uaOnP0;
+    for (final id in ['a1', 'a2', 'a3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+      uaOnP0 = p.binding.userAgent;
+    }
+    eq(led.forProxy(pool[0].id)!.used, 3, 'P0 已用满 3 个');
+
+    // 第 4 个号 → 额度满，轮换到别的出口 + 新身份。
+    final d = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'a4',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(d.action, OpenAction.rotate, '满 3 个后轮换');
+    led.commit(d.proxy.id, 'a4', d.binding);
+    // commitOpen 会把当前出口设成轮换后的那条，这里手工模拟。
+    final nowCurrent = d.proxy.id;
+    ok(nowCurrent != pool[0].id, '轮换后当前出口确实换了');
+
+    // 回头点 a1 —— 它之前是 P0 上的身份看的。
+    final back = led.plan(
+      pool: pool,
+      currentProxyId: nowCurrent,
+      numberId: 'a1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(back.action, OpenAction.restore, '回头点老号要切回原出口');
+    eq(back.proxy.id, pool[0].id, '切回的是 P0');
+    eq(back.binding.userAgent, uaOnP0, '复用 P0 上那个原身份，不新造');
+    ok(back.restored, 'restored 标记为真');
+    ok(!back.rotated, 'restore 不算轮换');
+
+    // 落账不该多算 —— a1 本来就在 P0 的名单里。
+    final usedP0 = led.forProxy(pool[0].id)!.used;
+    led.commit(back.proxy.id, 'a1', back.binding);
+    eq(led.forProxy(pool[0].id)!.used, usedP0, '重看老号不增加计数');
+    eq(led.forProxy(nowCurrent)!.used, 1, '轮换后那条没被老号污染');
+  }
+
+  // ---------- 15. 原出口被删掉时不硬切 ----------
+  {
+    final led = IdentityLedger();
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'z1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(p.proxy.id, 'z1', p.binding);
+
+    // 池子里已经没有 pool[0] 了（用户把它删了）。
+    final gone = led.plan(
+      pool: [pool[1], pool[2]],
+      currentProxyId: pool[1].id,
+      numberId: 'z1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(gone.proxy.id, pool[1].id, '原出口不在池子里就正常走当前这条');
+    ok(!gone.restored, '不应报 restore');
+  }
+
+  // ---------- 16. restore 之后下一步仍能正常轮换 ----------
+  {
+    final led = IdentityLedger();
+    for (final id in ['r1', 'r2', 'r3']) {
+      final p = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: id,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      led.commit(p.proxy.id, id, p.binding);
+    }
+    final next = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'r4',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(next.action, OpenAction.rotate, '满额轮换');
+    led.commit(next.proxy.id, 'r4', next.binding);
+
+    final back = led.plan(
+      pool: pool,
+      currentProxyId: next.proxy.id,
+      numberId: 'r2',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(back.action, OpenAction.restore, '切回原出口');
+    led.commit(back.proxy.id, 'r2', back.binding);
+
+    // 切回去之后，P0 还是满的 → 再开新号仍要轮换。
+    final again = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'r5',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(again.action, OpenAction.rotate, 'restore 不影响额度判定');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }

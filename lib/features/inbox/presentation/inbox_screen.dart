@@ -333,6 +333,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     if (!mounted) return;
     if (plan.rotated) {
       _store.note('换到新出口：${plan.proxy.displayName}（${plan.reason}）');
+    } else if (plan.restored) {
+      // 回头点老号才会走到这 —— 说清楚是「切回原来那条」，不是又轮换。
+      _store.note('切回原出口：${plan.proxy.displayName}（${plan.reason}）');
     }
   }
 
@@ -732,14 +735,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               children: [
                 Expanded(
                   child: Text(
-                    '在上面点掉「Verify you are human」，过完点右边。',
+                    '在上面点掉「Verify you are human」，过完点右边。'
+                    '不想过就按返回键收起。',
                     style: theme.textTheme.bodySmall,
                   ),
                 ),
-                TextButton(
-                  onPressed: _closeChallenge,
-                  child: const Text('验证好了'),
-                ),
+                TextButton(onPressed: _closeChallenge, child: const Text('收起')),
               ],
             ),
           ),
@@ -816,87 +817,105 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     final s = _store.state;
     final theme = Theme.of(context);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(widget.number.pretty, style: theme.textTheme.titleMedium),
-            if (widget.number.regionLabel.isNotEmpty)
-              Text(
-                s.messages.isEmpty
-                    ? widget.number.regionLabel
-                    : '${widget.number.regionLabel} · ${s.messages.length} 条',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
+    // 验证层开着的时候，返回键只收验证层，不退出号码页。
+    //
+    // 系统返回键和 AppBar 自动生成的返回箭头走的都是
+    // Navigator.maybePop，而 maybePop 会先问 PopScope 的 canPop，
+    // 所以这一处能同时管住两个入口。
+    //
+    // 用户点「自己过验证」是想亲眼看一眼站点页面、必要时点掉那个
+    // 跨域 shadow DOM 里的复选框（JS 摸不到，只能人点）。看完按返回
+    // 的意图是「回到我刚才看消息的地方」，不是「这个号我不看了」。
+    // 之前没有这道拦截，返回键会直接 pop 掉整个 InboxScreen 回到
+    // 号码列表，用户还得重新点进来、重新走一遍加载和验证。
+    return PopScope<Object?>(
+      canPop: !_showChallenge,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        if (_showChallenge) _closeChallenge();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(widget.number.pretty, style: theme.textTheme.titleMedium),
+              if (widget.number.regionLabel.isNotEmpty)
+                Text(
+                  s.messages.isEmpty
+                      ? widget.number.regionLabel
+                      : '${widget.number.regionLabel} · ${s.messages.length} 条',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
+            ],
+          ),
+          actions: [
+            // 换浏览器身份：站点会按 UA 判断是不是同一个浏览器，
+            // 卡验证时点一下换新身份比反复重载有用。
+            // 手动验证：自动路径过不去时才用。点开把站点页面放出来，
+            // 自己在上面点掉「Verify you are human」，回来点「验证好了」。
+            IconButton(
+              tooltip: '自己过验证',
+              onPressed: _openChallenge,
+              icon: const Icon(Icons.shield_outlined),
+            ),
+            IconButton(
+              tooltip: '换浏览器身份',
+              onPressed: _rotateIdentity,
+              icon: const Icon(Icons.switch_account_outlined),
+            ),
+            IconButton(
+              tooltip: '重新扫描',
+              onPressed: _rescan,
+              icon: const Icon(Icons.refresh),
+            ),
+            IconButton(
+              tooltip: '重新加载',
+              onPressed: () {
+                _store.reset();
+                _armWatchdog();
+                unawaited(_controller.reload());
+                _pumpVerification();
+              },
+              icon: const Icon(Icons.restart_alt),
+            ),
           ],
         ),
-        actions: [
-          // 换浏览器身份：站点会按 UA 判断是不是同一个浏览器，
-          // 卡验证时点一下换新身份比反复重载有用。
-          // 手动验证：自动路径过不去时才用。点开把站点页面放出来，
-          // 自己在上面点掉「Verify you are human」，回来点「验证好了」。
-          IconButton(
-            tooltip: '自己过验证',
-            onPressed: _openChallenge,
-            icon: const Icon(Icons.shield_outlined),
-          ),
-          IconButton(
-            tooltip: '换浏览器身份',
-            onPressed: _rotateIdentity,
-            icon: const Icon(Icons.switch_account_outlined),
-          ),
-          IconButton(
-            tooltip: '重新扫描',
-            onPressed: _rescan,
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: '重新加载',
-            onPressed: () {
-              _store.reset();
-              _armWatchdog();
-              unawaited(_controller.reload());
-              _pumpVerification();
-            },
-            icon: const Icon(Icons.restart_alt),
-          ),
-        ],
-      ),
-      body: Stack(
-        children: [
-          // 界面层铺满，永远可见。
-          _buildList(s, theme),
+        body: Stack(
+          children: [
+            // 界面层铺满，永远可见。
+            _buildList(s, theme),
 
-          // 引擎层：整个页面树里**只有这一个** WebViewWidget 实例
-          // （同一个 controller 挂两处会崩）。
-          //
-          // 默认 Offstage 藏着：验证通常由站点自己完成（见
-          // _pumpVerification），不需要人看。只有用户点了「自己过验证」
-          // 才把它放出来 —— 有些出口 IP 站点不给静默通过，会真的弹出
-          // 「Verify you are human」复选框，那个东西在跨域 shadow DOM
-          // 里 JS 摸不到，只能靠人点。
-          //
-          // 用 Offstage 而不是缩到 1×1：布局照常跑完整尺寸，原生
-          // WebView 拿到真实视口，媒体查询、懒加载、IntersectionObserver
-          // 都按正常手机尺寸算；跳过绘制与命中测试，不占合成层。
-          Positioned.fill(
-            child: Offstage(
-              offstage: !_showChallenge,
-              child: FutureBuilder<WebViewWidget>(
-                future: _webViewFuture,
-                builder: (context, snap) =>
-                    snap.hasData ? snap.data! : const SizedBox.shrink(),
+            // 引擎层：整个页面树里**只有这一个** WebViewWidget 实例
+            // （同一个 controller 挂两处会崩）。
+            //
+            // 默认 Offstage 藏着：验证通常由站点自己完成（见
+            // _pumpVerification），不需要人看。只有用户点了「自己过验证」
+            // 才把它放出来 —— 有些出口 IP 站点不给静默通过，会真的弹出
+            // 「Verify you are human」复选框，那个东西在跨域 shadow DOM
+            // 里 JS 摸不到，只能靠人点。
+            //
+            // 用 Offstage 而不是缩到 1×1：布局照常跑完整尺寸，原生
+            // WebView 拿到真实视口，媒体查询、懒加载、IntersectionObserver
+            // 都按正常手机尺寸算；跳过绘制与命中测试，不占合成层。
+            Positioned.fill(
+              child: Offstage(
+                offstage: !_showChallenge,
+                child: FutureBuilder<WebViewWidget>(
+                  future: _webViewFuture,
+                  builder: (context, snap) =>
+                      snap.hasData ? snap.data! : const SizedBox.shrink(),
+                ),
               ),
             ),
-          ),
 
-          // 用户自己过验证时的底栏。叠在引擎上方、贴底，不遮住
-          // 复选框区域（实测复选框在视口 y≈600，底栏只占最下面一条）。
-          if (_showChallenge) _buildChallengeBar(theme),
-        ],
+            // 用户自己过验证时的底栏。叠在引擎上方、贴底，不遮住
+            // 复选框区域（实测复选框在视口 y≈600，底栏只占最下面一条）。
+            if (_showChallenge) _buildChallengeBar(theme),
+          ],
+        ),
       ),
     );
   }
