@@ -225,6 +225,48 @@ void main() {
   }
 
   print('');
+  print('');
+  print('=== 13. 【回归】用户正在过验证时，不该被超时淘汰 ===');
+  {
+    // 用户在页面上点复选框、等 Cloudflare 转圈，很容易超过 90 秒的窗口。
+    // 旧行为：到点 timer.cancel() + 「已停止等待」，之后再也不看状态 ——
+    // 用户过完回来发现界面没变，看起来就是「切过去了但回来还是不让我过」。
+    final c = FakeClock();
+    final r = VerifyRound(clock: c.call);
+    r.begin();
+    c.advance(const Duration(seconds: 120));
+    r.refresh();
+    check('13.1 确实超窗口了', r.timedOut);
+
+    // 修法：界面那边判的是 `timedOut && !_showChallenge`。
+    // 这里把两个分支都验一遍，防止有人把那个 `!showChallenge` 删掉。
+    bool shouldGiveUp({required bool challengeOpen}) =>
+        r.timedOut && !challengeOpen;
+    check('13.2 弹层没开 → 让放弃', shouldGiveUp(challengeOpen: false));
+    check('13.3 弹层开着 → 不放弃（继续盯着）', !shouldGiveUp(challengeOpen: true));
+  }
+
+  print('');
+  print('=== 14. 【回归】弹层打开时起算点归零，但不解开自动弹出闸门 ===');
+  {
+    final c = FakeClock();
+    final r = VerifyRound(clock: c.call);
+    r.begin();
+    c.advance(const Duration(seconds: 8));
+    r.refresh();
+    check('14.1 等满 8 秒，该自动弹了', r.shouldAutoPop);
+
+    r.markPopped();
+    r.begin(rearm: false);
+    check('14.2 起算点归零之后不再超窗口', !r.timedOut);
+    check('14.3 闸门仍关着（收起后不会又弹回来）', !r.shouldAutoPop);
+
+    r.begin(rearm: false);
+    c.advance(const Duration(seconds: 10));
+    r.refresh();
+    check('14.4 收起后再等 10 秒也不会自动弹回来', !r.shouldAutoPop);
+  }
+
   print('$_pass passed, $_fail failed');
   if (_fail > 0) throw StateError('$_fail 条失败');
 }
