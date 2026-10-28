@@ -10,6 +10,7 @@ library;
 
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:fus_inbox/core/widgets/app_bar_search_field.dart';
 
 class const InboxAppBar({
   required this.number,
@@ -66,16 +67,9 @@ class const InboxAppBar({
     final theme = Theme.of(context);
     return AppBar(
       title: searching
-          ? TextField(
+          ? AppBarSearchField(
               controller: controller,
-              autofocus: true,
-              textInputAction: TextInputAction.search,
-              keyboardType: TextInputType.text,
-              // 提示词直接说清能搜什么 —— 验证码排第一，因为那是最常用的。
-              decoration: const InputDecoration(
-                hintText: '验证码 / 发送方 / 正文',
-                border: InputBorder.none,
-              ),
+              hintText: '验证码 / 发送方 / 正文',
               onChanged: onQuery,
             )
           : Column(
@@ -112,7 +106,7 @@ class const InboxAppBar({
             ]
           : [
               IconButton(
-                tooltip: '搜索验证码',
+                tooltip: '搜索',
                 onPressed: onOpenSearch,
                 icon: const Icon(Icons.search),
               ),

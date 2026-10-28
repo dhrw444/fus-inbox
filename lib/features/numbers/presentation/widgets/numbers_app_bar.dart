@@ -7,6 +7,7 @@ library;
 
 import 'package:fus_inbox/features/numbers/domain/number_sort.dart';
 import 'package:material_ui/material_ui.dart';
+import 'package:fus_inbox/core/widgets/app_bar_search_field.dart';
 
 class const NumbersAppBar({
   required this.searching,
@@ -45,15 +46,9 @@ class const NumbersAppBar({
   Widget build(BuildContext context) {
     return AppBar(
       title: searching
-          ? TextField(
+          ? AppBarSearchField(
               controller: controller,
-              autofocus: true,
-              textInputAction: TextInputAction.search,
-              keyboardType: TextInputType.text,
-              decoration: const InputDecoration(
-                hintText: '号码 / 区号 / 州，例如 419、Ohio',
-                border: InputBorder.none,
-              ),
+              hintText: '号码 / 区号 / 州，例如 419、Ohio',
               onChanged: onQuery,
             )
           : const Text('接码号码'),
