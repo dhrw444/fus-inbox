@@ -1,4 +1,10 @@
-"""Bundle the exact obfuscation maps for one Android release build."""
+"""把一个 Android release 构建的混淆符号表打进 zip。
+
+每次 release 的 R8 映射表都不一样，丢了就再也没法还原线上堆栈。
+所以它跟着构建产物一起归档，而不是留在开发机上。
+
+用法：python3 tool/package_release_symbols.py <build 目录> <输出 zip>
+"""
 
 import hashlib
 import os

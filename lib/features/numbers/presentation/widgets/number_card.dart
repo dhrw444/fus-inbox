@@ -1,7 +1,13 @@
-import 'package:material_ui/material_ui.dart';
+/// 号码列表里的一张卡片。
+///
+/// 显示号码、州、区号、短信条数和收录时间，并提供复制/收藏。
+/// 号码页和收藏页共用它（收藏页不传 [now]，时间相对当前时刻算）。
+/// 单独一个文件是为了让 `numbers_screen` 只管编排，不掺排版。
+library;
 
 import 'package:fus_inbox/core/time/site_time.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 号码卡片。
 ///
@@ -36,6 +42,7 @@ class const NumberCard({
   /// 号码首次被站点收录的时间。缓存里没有就是 null —— 这时整行不渲染。
   final DateTime? firstSeen;
 
+  /// 「现在」的注入点，测试用；null 则用站点时间工具自己的当前时刻。
   final DateTime? now;
 
   @override

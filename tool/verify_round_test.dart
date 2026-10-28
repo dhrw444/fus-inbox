@@ -225,6 +225,6 @@ void main() {
   }
 
   print('');
-  print('$_pass/$_pass 通过，$_fail 失败');
+  print('$_pass passed, $_fail failed');
   if (_fail > 0) throw StateError('$_fail 条失败');
 }

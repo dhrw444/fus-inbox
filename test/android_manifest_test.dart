@@ -1,3 +1,9 @@
+/// 清单文件里那条「关掉 Flutter 深层链接」的开关。
+///
+/// 不关的话，站点上的任何链接都可能被系统当成 App 的深链拉起来，
+/// 而本 App 没有注册任何路由 —— 表现是点了链接 App 闪一下又回来。
+library;
+
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

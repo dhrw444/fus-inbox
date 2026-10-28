@@ -1,28 +1,33 @@
-/// 代理池的持久化 + 当前选中项 + 身份账本 + 连通性检测。
+/// 代理池的状态机：当前选中项、增删、以及身份账本上的动作。
+///
+/// 值状态见 `proxy_state.dart`（在这里转出去）；磁盘读写见 `proxy_store.dart`；
+/// 「下一步是什么」的纯决策见 `proxy_pool_ops.dart`。
+///
+/// 这个文件只做**接线**：每个方法 = 调一条纯决策 + 写回 state + 落盘。
+/// 不放 prefs key、不放 `jsonDecode`、不放挑选规则 —— 那些都在别的层里，
+/// 改它们不该动这里。
 ///
 /// 全部落 SharedPreferences，字段少、读写快，不需要数据库。
 library;
 
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:fus_inbox/core/proxy/builtin_proxies.dart';
 import 'package:fus_inbox/core/proxy/identity_ledger.dart';
+import 'package:fus_inbox/core/proxy/probe_session.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/proxy_pool_ops.dart';
 import 'package:fus_inbox/core/proxy/proxy_probe.dart';
 import 'package:fus_inbox/core/proxy/proxy_state.dart';
+import 'package:fus_inbox/core/proxy/proxy_store.dart';
 
 export 'package:fus_inbox/core/proxy/proxy_state.dart';
 
-const _kPool = 'fus:proxy:pool:v1';
-const _kCurrent = 'fus:proxy:current:v1';
-const _kLedger = 'fus:identity:ledger:v1';
-const _kAutoProxy = 'fus:proxy:auto:v1';
-
 class ProxyNotifier() extends Notifier<ProxyState> {
+  /// 无状态的存储层，随手 new 一个不花代价。
+  static const _store = ProxyStore();
+
   /// 检测器。无状态，整个 notifier 共用一个就够。
   final ProxyProbe _probe = ProxyProbe();
 
@@ -38,41 +43,14 @@ class ProxyNotifier() extends Notifier<ProxyState> {
 
   Future<void> _load() async {
     try {
-      final p = await SharedPreferences.getInstance();
-      final poolRaw = p.getString(_kPool) ?? '[]';
-      final list = <ProxyConfig>[];
-      final decoded = jsonDecode(poolRaw);
-      if (decoded is List) {
-        for (final item in decoded) {
-          if (item is Map) {
-            final cfg = ProxyConfig.fromJson(item.cast<String, Object?>());
-            if (cfg != null) list.add(cfg);
-          }
-        }
-      }
-      final excludedRaw =
-          p.getStringList(BuiltinProxies.excludedPrefsKey) ?? const <String>[];
-      final excluded = excludedRaw.toSet();
-
-      final ledgerRaw = p.getString(_kLedger);
-      final ledger = ledgerRaw == null
-          ? IdentityLedger()
-          : IdentityLedger.fromJson(jsonDecode(ledgerRaw));
-      final current = p.getString(_kCurrent) ?? '';
-      final auto = p.getBool(_kAutoProxy) ?? true;
-
-      final builtin = await const BuiltinProxies().load(excluded: excluded);
-      final all = [...builtin, ...list];
-
+      final data = await _store.read();
       state = ProxyState(
-        pool: list,
-        builtin: builtin,
-        excludedBuiltin: excluded,
-        currentId: current.isNotEmpty && all.any((e) => e.id == current)
-            ? current
-            : (all.firstOrNull?.id ?? ''),
-        ledger: ledger,
-        autoRotate: auto,
+        pool: data.pool,
+        builtin: data.builtin,
+        excludedBuiltin: data.excludedBuiltin,
+        currentId: data.currentId,
+        ledger: data.ledger,
+        autoRotate: data.autoRotate,
       );
     } catch (_) {
       // 读不出来就用默认值，别让启动挂在这。
@@ -86,80 +64,77 @@ class ProxyNotifier() extends Notifier<ProxyState> {
   }
 
   Future<void> _persist() async {
+    // 清单还没从磁盘读出来时落盘 = 拿出厂默认值覆盖用户数据。
+    //
+    // 这条路真的会走到：`_applyProxyPlan` 在 initState 之后约 120ms 就可能
+    // `commitOpen` → `_persist`，而 `_load` 至少要过
+    // `SharedPreferences.getInstance()` + 读内置资源两个 await。落下去的是
+    // pool=[]、excludedBuiltin={}、currentId='' —— **用户手动加的代理在磁盘
+    // 上被抹掉，删掉的内置代理全部复活**。而内存随后被 `_load` 用「它早先
+    // 读到的旧值」覆盖，当场看不出任何异常，下次启动才发现数据没了。
+    //
+    // 等一等就好：`ready` 在 `_load` 的 finally 里必然完成（成功失败都完成），
+    // 所以这里不会永久挂住。等完之后写的是内存里的当前态，这次改动不会丢。
+    if (!state.loaded) {
+      await ready;
+    }
+    // 兜底超时之后 `loaded` 仍可能是 false（读盘卡了 3 秒以上 —— 上面那句
+    // `await` 到点就返回，不会一直等）。那时 `state` 里还是空池，写下去
+    // 正是上面那段要防的事：**用户手动加的代理在磁盘上被抹掉**。
+    //
+    // 所以复查一次，没读完就不写。这次改动留在内存里，下一次状态变化
+    // 会再试一遍（`_load` 只要成功过一次，`loaded` 就一直是 true）。
+    if (!state.loaded) return;
     try {
-      final p = await SharedPreferences.getInstance();
-      await p.setString(
-        _kPool,
-        jsonEncode(state.pool.map((e) => e.toJson()).toList()),
-      );
-      await p.setString(_kCurrent, state.currentId);
-      await p.setString(_kLedger, jsonEncode(state.ledger.toJson()));
-      await p.setBool(_kAutoProxy, state.autoRotate);
-      await p.setStringList(
-        BuiltinProxies.excludedPrefsKey,
-        state.excludedBuiltin.toList(),
-      );
-    } catch (_) {}
+      await _store.write(state);
+    } catch (_) {
+      // 写盘失败不回滚内存状态：用户看到的是当前这一次的选择，
+      // 回滚会让他觉得「点了没反应」。下一次状态变化还会再写一次。
+    }
   }
 
   /// 加一条。重复的（同 id）直接覆盖。
   Future<void> add(ProxyConfig config) async {
-    final next = [...state.pool.where((e) => e.id != config.id), config];
+    final pool = mergeIntoPool(state.pool, [config]);
     state = state.copyWith(
-      pool: next,
-      currentId: state.currentId.isEmpty ? config.id : state.currentId,
+      pool: pool,
+      currentId: currentAfterAdd(state.currentId, [config]),
     );
     await _persist();
   }
 
   /// 批量添加。返回每条的错误信息（成功的不列）。
   Future<List<String>> addLines(List<String> lines) async {
-    final errors = <String>[];
-    final added = <ProxyConfig>[];
-    for (final raw in lines) {
-      final trimmed = raw.trim();
-      if (trimmed.isEmpty || trimmed.startsWith('#')) continue;
-      final cfg = parseProxyLine(trimmed);
-      if (cfg == null) {
-        errors.add(trimmed);
-      } else {
-        added.add(cfg);
-      }
-    }
+    final (added, errors) = parseProxyLines(lines);
     if (added.isEmpty) return errors;
-    final ids = added.map((e) => e.id).toSet();
-    final next = [...state.pool.where((e) => !ids.contains(e.id)), ...added];
     state = state.copyWith(
-      pool: next,
-      currentId: state.currentId.isEmpty ? added.first.id : state.currentId,
+      pool: mergeIntoPool(state.pool, added),
+      currentId: currentAfterAdd(state.currentId, added),
     );
     await _persist();
     return errors;
   }
 
   Future<void> remove(String id) async {
-    final isBuiltin = state.builtin.any((e) => e.id == id);
-    final nextPool = state.pool.where((e) => e.id != id).toList();
-    final nextBuiltin = state.builtin.where((e) => e.id != id).toList();
-    final nextExcluded = isBuiltin
-        ? {...state.excludedBuiltin, id}
-        : state.excludedBuiltin;
-
-    final all = [...nextBuiltin, ...nextPool];
+    final r = poolAfterRemoval(
+      pool: state.pool,
+      builtin: state.builtin,
+      excludedBuiltin: state.excludedBuiltin,
+      currentId: state.currentId,
+      id: id,
+    );
     state = state.copyWith(
-      pool: nextPool,
-      builtin: nextBuiltin,
-      excludedBuiltin: nextExcluded,
-      currentId: state.currentId == id
-          ? (all.firstOrNull?.id ?? '')
-          : state.currentId,
+      pool: r.pool,
+      builtin: r.builtin,
+      excludedBuiltin: r.excludedBuiltin,
+      currentId: r.currentId,
     );
     await _persist();
   }
 
   /// 恢复所有被删掉的内置代理。
   Future<void> restoreBuiltin() async {
-    final builtin = await const BuiltinProxies().load();
+    final builtin = await _store.readBuiltin();
     state = state.copyWith(builtin: builtin, excludedBuiltin: const {});
     await _persist();
   }
@@ -189,7 +164,12 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     // 新号都判一次「满了」，都造一个新身份，都写进同一条记录的
     // openedNumbers —— 号数在涨，但用的还是同一个出口，站点那边
     // 早就拒了，本地账本却一路显示「已用 N 个」。
-    if (state.currentId != proxyId) {
+    //
+    // `proxyId` 为空 = 这次走的是直连。**不能拿空串去覆盖用户选的那条**：
+    // 冷启动首开（或池子读失败）时 `commitOpen('')` 会把 currentId 写成
+    // 空串并落盘，设置页于是拿 `ProxyState.current` 的兜底（`all.firstOrNull`）
+    // 把「直连」那笔账挂到**另一条代理**名下，显示「这个出口已看 1/3 个号」。
+    if (proxyId.isNotEmpty && state.currentId != proxyId) {
       state = state.copyWith(currentId: proxyId);
     }
     await _persist();
@@ -201,45 +181,26 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     await _persist();
   }
 
-  /// 换到下一条**还能用的**代理。
+  /// 换到下一条**还能用的**代理。挑选规则在 `proxy_pool_ops.dart`
+  /// （[pickRotation]），这里只负责写回 + 清绑定 + 落盘。
   ///
-  /// 挑选规则和 [IdentityLedger.plan] 完全一致（都走
-  /// [IdentityLedger.nextUsableProxy]）—— 之前这里是纯 `(idx + 1)`，
-  /// 于是「站点报限额时自动换」这条最需要跳过的路径，恰恰会落回一条
-  /// 用满的出口上，白烧一次轮转。
-  ///
-  /// **不**再无条件清目标出口的绑定。目标出口上如果已经有一台设备
-  /// （绑过、还有余额），清掉它等于让同一个 IP 换台机器，比不动更扎眼；
-  /// 调用方会读到残留的绑定并沿用那个身份。只有目标出口是干净的、或者
-  /// 已经用满时，才清掉让调用方造新身份。
-  ///
-  /// 判死的代理会跳过，除非全部都被判死。返回换到的那条，池子空时返回 null。
+  /// **不**无条件清目标出口的绑定 —— 那个判断在 [pickRotation] 里。
+  /// 返回换到的那条，池子空时返回 null。
   Future<ProxyConfig?> rotateToNext() async {
-    final all = state.all;
-    if (all.isEmpty) return null;
+    final choice = pickRotation(
+      all: state.all,
+      results: state.results,
+      ledger: state.ledger,
+      currentId: state.currentId,
+    );
+    if (choice == null) return null;
 
-    final unusable = state.results.entries
-        .where((e) => !e.value.ok)
-        .map((e) => e.key)
-        .toSet();
-    final usable = all.where((p) => !unusable.contains(p.id)).toList();
-    final candidates = usable.isNotEmpty ? usable : all;
-
-    final next =
-        state.ledger.nextUsableProxy(candidates, state.currentId) ??
-        candidates.first;
-
-    state = state.copyWith(currentId: next.id);
-
-    // 只在「这条出口上没有可沿用的身份」时清。
-    // 用满的也要清 —— 那个身份已经没额度了，留着只会让下一次 plan
-    // 又把它当成「还有余额」然后原地打转。
-    final bound = state.ledger.forProxy(next.id);
-    if (bound == null || bound.used >= state.ledger.maxPerIdentity) {
-      state.ledger.clearProxy(next.id);
+    state = state.copyWith(currentId: choice.next.id);
+    if (choice.clearBinding) {
+      state.ledger.clearProxy(choice.next.id);
     }
     await _persist();
-    return next;
+    return choice.next;
   }
 
   Future<void> clearLedger() async {
@@ -264,30 +225,32 @@ class ProxyNotifier() extends Notifier<ProxyState> {
       results: const {},
     );
 
-    final results = <String, ProxyProbeResult>{};
-    var done = 0;
-    final queue = [...targets];
-
-    Future<void> worker() async {
-      while (queue.isNotEmpty) {
-        final cfg = queue.removeAt(0);
-        ProxyProbeResult r;
-        try {
-          r = await _probe.probeOne(cfg);
-        } catch (e) {
-          r = ProxyProbeResult.dead(cfg, '${e.runtimeType}');
-        }
-        results[cfg.id] = r;
-        done++;
-        state = state.copyWith(
-          progress: done,
-          results: Map<String, ProxyProbeResult>.unmodifiable(results),
-        );
-      }
+    // 进度怎么写回 state、怎么收尾，全在 [runProbeSession] —— 以前这里
+    // 自己实现了一遍 queue + worker + 快照，于是同一个逻辑有了两处：
+    // `proxy_probe.dart` 里那份是死代码（零调用），两边的并发参数
+    // （24 / `clamp(1,64)`）和异常汇总语义已经不一样了 —— provider 把异常
+    // 压成 `'${e.runtimeType}'`，probe 那份交给调用方处理。改一处忘另一处
+    // 就漂。
+    try {
+      await runProbeSession(
+        probe: _probe,
+        targets: targets,
+        concurrency: concurrency,
+        apply: (progress, probeTotal, results) {
+          state = state.copyWith(
+            progress: progress,
+            probeTotal: probeTotal,
+            // 每一轮都给一份不可变快照：界面直接 watch 这个 map，
+            // 原地改的话 Riverpod 看不到变化。
+            results: results,
+          );
+        },
+      );
+    } finally {
+      // 被打断（异常、provider 被销毁）也不能把 `probing` 卡在 true ——
+      // 卡住之后「全部检测」按钮永远是禁用的，用户以为在测。
+      state = state.copyWith(probing: false);
     }
-
-    await Future.wait(List.generate(concurrency, (_) => worker()));
-    state = state.copyWith(probing: false);
   }
 
   /// 等到磁盘上的代理清单读完（`state.loaded == true`）。

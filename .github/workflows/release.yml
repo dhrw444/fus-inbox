@@ -90,9 +90,55 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Windows 版单独一个 job：Flutter 的 Windows 目标**只能在 Windows 上构建**，
+  # ubuntu runner 编不出来（不支持交叉编译）。
+  build-release-windows:
+    name: Build Windows release
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version_name || '0.1.0' }}
+      RELEASE_BUILD_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          channel: "stable"
+          flutter-version: "3.47.5"
+          cache: true
+
+      - name: Install locked dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Validate and update release version
+        run: dart run tool/set_release_version.dart "$env:RELEASE_VERSION" "$env:RELEASE_BUILD_NUMBER"
+
+      - name: Build Windows
+        run: flutter build windows --release
+
+      # 打成 zip 是为了配得上「解压即用」：里面已经带着 flutter_windows.dll
+      # 和 WebView2 loader，目标机器只要装了 WebView2 运行时就能跑。
+      - name: Package
+        run: Compress-Archive -Path build/windows/x64/runner/Release/* -DestinationPath fus-inbox-windows-x64.zip
+
+      - name: Upload Windows build
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fus-inbox-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
   publish-release:
     name: Publish release
-    needs: build-release
+    needs: [build-release, build-release-windows]
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -102,6 +148,11 @@ jobs:
         with:
           name: release-apks-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-apks
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-windows
 
       - name: Create GitHub Release
         uses: ncipollo/release-action@339a81892b84b4eeb0f6e744e4574d79d0d9b8dd # v1
@@ -115,4 +166,5 @@ jobs:
           prerelease: ${{ needs.build-release.outputs.prerelease }}
           artifacts: |
             release-apks/app-arm64-v8a-release.apk
+            release-windows/fus-inbox-windows-x64.zip
           generateReleaseNotes: true

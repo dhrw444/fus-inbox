@@ -1,191 +1,52 @@
-/// 号码目录状态。
+/// 号码目录的**加载流程**：缓存、出口、拉取、进度、错误。
 ///
-/// 数据全部来自原生 HTTP 抓取（见 NumbersRepository），WebView 不参与。
+/// 值状态（筛选 / 计数 / `copyWith`）见 `number_directory_state.dart`；
+/// 排序规则见 `domain/number_sort.dart` —— 两个都在这里转出去，引用方
+/// （目录页、设置页、筛选栏）只认这一个入口，免得动一串 import。
+///
+/// 这个文件只管「状态怎么从网络和磁盘变出来」：什么时候读缓存、什么时候
+/// 备出口、失败时怎么不把好数据洗掉。数据全部来自原生 HTTP 抓取
+/// （见 NumbersRepository），WebView 不参与。
 library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-
+import 'package:fus_inbox/core/log.dart';
+import 'package:fus_inbox/core/prefs/prefs_provider.dart';
+import 'package:fus_inbox/core/proxy/proxy_engine_provider.dart';
+import 'package:fus_inbox/core/proxy/proxy_provider.dart';
+import 'package:fus_inbox/features/numbers/application/number_directory_state.dart';
 import 'package:fus_inbox/features/numbers/data/directory_cache.dart';
 import 'package:fus_inbox/features/numbers/data/numbers_repository.dart';
-import 'package:fus_inbox/features/numbers/domain/available_number.dart';
+import 'package:fus_inbox/features/numbers/domain/number_sort.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-/// 目录页签（对应界面上可横向滚动的 TabBar）。
-enum NumberTab(this.label) {
-  all('全部'),
-  fresh('最新活跃'),
-  byState('按州');
-
-  final String label;
-}
-
-/// 排序方式。
-enum NumberSort(this.label) {
-  recent('最近活跃'),
-  firstSeen('收录时间'),
-  messages('短信最多'),
-  number('号码顺序');
-
-  final String label;
-}
+export 'package:fus_inbox/features/numbers/application/number_directory_state.dart';
+export 'package:fus_inbox/features/numbers/domain/number_sort.dart'
+    show NumberSort;
 
 final numbersRepositoryProvider = Provider<NumbersRepository>((ref) {
-  final repo = NumbersRepository();
+  final repo = NumbersRepository(
+    // 目录页的出口由用户偏好决定：
+    //   关（默认）→ 'DIRECT'，走真实 IP
+    //   开        → 当前那条出口（本地桥 / 直通 HTTP 代理）
+    //
+    // 每次请求都读一遍，不能把指令在构造时抓成常量 —— 代理会轮换，
+    // 桥也会重建，端口每次都不一样。
+    //
+    // 注意这里返回 'DIRECT' 和返回 null 是**两件事**：
+    // DIRECT 是用户明确选了直连；null 是「选了走代理但代理不可用」，
+    // 那种情况 _findProxy 会抛异常让请求失败，不会静默退回直连。
+    egress: () {
+      if (!ref.read(prefsProvider).directoryViaProxy) return 'DIRECT';
+      return ref.read(proxyEngineProvider).nativeEgressDirective;
+    },
+  );
   ref.onDispose(repo.dispose);
   return repo;
 });
 
-class const NumberDirectoryState({
-  this.all = const [],
-  this.loading = false,
-  this.error,
-  this.tab = NumberTab.all,
-  this.sort = NumberSort.recent,
-  this.query = '',
-  this.progress = '',
-  this.status = '',
-  this.lastLoadedAt,
-}) {
-  final List<AvailableNumber> all;
-  final bool loading;
-  final String? error;
-  final NumberTab tab;
-  final NumberSort sort;
-  final String query;
-
-  /// 加载中的进度文案，例如「已加载 48 个号（第 2 页）」。
-  final String progress;
-
-  /// 状态提示，例如「显示缓存（3 分钟前），正在取最新…」。
-  ///
-  /// 和 [error] 分开：error 会让界面显示成失败页，status 只是列表上方一行附注。
-  final String status;
-
-  final DateTime? lastLoadedAt;
-
-  bool get isEmpty => all.isEmpty;
-
-  /// 去重后的州列表（按州页签用）。
-  List<String> get states {
-    final set = <String>{};
-    for (final n in all) {
-      if (n.state.isNotEmpty) set.add(n.state);
-    }
-    final list = set.toList()..sort();
-    return list;
-  }
-
-  /// 当前页签 + 搜索词 + 排序之后真正要显示的号码。
-  ///
-  /// [firstSeen] 只有 [NumberSort.firstSeen] 用得上，所以做成可选参数：
-  /// 收录时间存在 FirstSeenStore 里（另一个 provider），不在这个 state 上。
-  /// 不把它塞进 state 是有意的 —— 目录 state 不该反向依赖收录时间仓库，
-  /// 而且收录时间会在「打开一个新号」时单独变化，塞进来就还要再维护一层
-  /// 同步，容易变成两个真相。
-  List<AvailableNumber> visibleFor(
-    NumberTab tab, {
-    Map<String, DateTime> firstSeen = const {},
-  }) {
-    Iterable<AvailableNumber> items = all;
-
-    final q = query.trim().toLowerCase();
-    if (q.isNotEmpty) {
-      final digits = q.replaceAll(RegExp(r'[^\d]'), '');
-      items = items.where((n) {
-        // digits 为空时 contains('') 恒真，会把整库都放出来 —— 必须逐个守卫。
-        if (digits.isNotEmpty) {
-          if (n.number.contains(digits)) return true;
-          if (n.areaCode.isNotEmpty && n.areaCode.contains(digits)) {
-            return true;
-          }
-        }
-        return n.state.toLowerCase().contains(q);
-      });
-    }
-
-    if (tab == NumberTab.fresh) {
-      items = items.where((n) => n.isFresh);
-    }
-
-    final list = items.toList();
-    switch (sort) {
-      case NumberSort.recent:
-        list.sort((a, b) {
-          final af = a.isFresh ? 0 : 1;
-          final bf = b.isFresh ? 0 : 1;
-          if (af != bf) return af - bf;
-          final at = a.lastTextAt ?? '';
-          final bt = b.lastTextAt ?? '';
-          return bt.compareTo(at);
-        });
-      case NumberSort.firstSeen:
-        // 新收录的在前。
-        //
-        // 从没收录过的（表里没记录）一律沉到最后，**不能当成 1970 年**：
-        // 那样它们会永远卡在列表底部，而且 `?? 零点` 这类写法在
-        // 升/降序切换时很容易反过来把空值顶到最前。
-        //
-        // 并列时按号码排一下，让结果稳定 —— List.sort 不保证稳定，
-        // 只回 0 的话同一批并列项每次刷新顺序都可能变。
-        list.sort((a, b) {
-          final at = firstSeen[a.number];
-          final bt = firstSeen[b.number];
-          if (at == null && bt == null) return a.number.compareTo(b.number);
-          if (at == null) return 1;
-          if (bt == null) return -1;
-          final byTime = bt.compareTo(at);
-          return byTime != 0 ? byTime : a.number.compareTo(b.number);
-        });
-      case NumberSort.messages:
-        list.sort((a, b) => b.messageCount.compareTo(a.messageCount));
-      case NumberSort.number:
-        list.sort((a, b) => a.number.compareTo(b.number));
-    }
-    return list;
-  }
-
-  /// 每个页签下有多少条，用于给页签加数字。
-  int countFor(NumberTab tab) {
-    switch (tab) {
-      case NumberTab.all:
-        return all.length;
-      case NumberTab.fresh:
-        return all.where((n) => n.isFresh).length;
-      case NumberTab.byState:
-        // 和其他 chip 一样显示「号码数」，不是「州数」。
-        // 之前显示州数（20 个州），紧跟「全部 105」看着像对不上账。
-        return all.length;
-    }
-  }
-
-  NumberDirectoryState copyWith({
-    List<AvailableNumber>? all,
-    bool? loading,
-    String? error,
-    NumberTab? tab,
-    NumberSort? sort,
-    String? query,
-    String? progress,
-    String? status,
-    DateTime? lastLoadedAt,
-    bool clearError = false,
-  }) {
-    return NumberDirectoryState(
-      all: all ?? this.all,
-      loading: loading ?? this.loading,
-      error: clearError ? null : (error ?? this.error),
-      tab: tab ?? this.tab,
-      sort: sort ?? this.sort,
-      query: query ?? this.query,
-      progress: progress ?? this.progress,
-      status: status ?? this.status,
-      lastLoadedAt: lastLoadedAt ?? this.lastLoadedAt,
-    );
-  }
-}
-
+/// 目录页的 notifier：状态迁移 + 两条入口（缓存恢复、网络加载）。
 class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
   @override
   NumberDirectoryState build() => const NumberDirectoryState();
@@ -203,6 +64,44 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
       all: cached.numbers,
       status: '显示缓存（${_ageLabel(cached.savedAt)}），正在取最新…',
     );
+  }
+
+  /// 备好目录要用的出口。**只在用户选了「目录走代理」时才需要。**
+  ///
+  /// 返回 `null` = 出口就绪；返回一句话 = 为什么没有。
+  ///
+  /// ## 只搭车，不换车
+  ///
+  /// 出口就是收件页那条 —— 同一条 `ProxyEngine`、同一个节点。所以
+  /// **引擎已经有活动出口时这里直接返回，一个字都不改**。
+  ///
+  /// 这条早返回不是优化，是正确性：如果引擎此刻正给收件页用着节点 B，
+  /// 而这里按「当前节点」重设一遍，就会把收件页的桥当场拆掉。
+  /// 目录只是搭个顺风车，没有资格换车。
+  ///
+  /// 只有一种情况需要动手：用户一直待在号码页、从没开过号，引擎还没有
+  /// 活动出口（`nativeEgressDirective` 返回 null，每条目录请求都会抛
+  /// 「出口没起来」）。这时才用当前节点把它拉起来 —— 而收件页开号时
+  /// 本来就会自己 `apply` 一次计划里的节点，所以不影响它。
+  Future<String?> _ensureEgress() async {
+    if (!ref.read(prefsProvider).directoryViaProxy) return null;
+
+    final engine = ref.read(proxyEngineProvider);
+    if (engine.active != null) return null;
+
+    final proxyState = ref.read(proxyProvider);
+    // 清单还没从磁盘读完时 pool 是空的 —— 那不是「没配代理」，
+    // 是「还不知道有没有」。跟收件页那个坑是同一个。
+    if (!proxyState.loaded) return '代理清单还没读完';
+
+    final proxy = proxyState.current;
+    if (proxy == null) {
+      return '一条代理都没配（去设置里加一条，或关掉「号码目录走代理」）';
+    }
+
+    final result = await engine.apply(proxy);
+    if (result.ok || proxy.isDirectProxy) return null;
+    return result.detail;
   }
 
   /// 拉取号码目录。
@@ -225,6 +124,21 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
     );
 
     try {
+      // 只有选了「目录走代理」才需要先备好出口 —— 直连不需要准备。
+      // 不能在 fetchAll 里做这件事：那里已经开始分页并发了。
+      if (ref.read(prefsProvider).directoryViaProxy) {
+        final why = await _ensureEgress();
+        if (why != null) {
+          state = state.copyWith(
+            loading: false,
+            error: state.all.isEmpty ? '目录代理不可用：$why' : null,
+            progress: '',
+            status: state.all.isEmpty ? '' : '代理不可用，先看缓存',
+          );
+          return;
+        }
+      }
+
       final repo = ref.read(numbersRepositoryProvider);
       final list = await repo.fetchAll(
         onProgress: (loaded, page) {
@@ -257,9 +171,9 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
         lastLoadedAt: DateTime.now(),
         clearError: true,
       );
-      // 2) 写回缓存：下次启动就能秒开。
+      // 写回缓存：下次启动就能秒开。失败只是下次慢一点，不拦流程。
       unawaited(saveDirectoryCache(list));
-      debugPrint('目录加载完成：${list.length} 个号，${state.states.length} 个州');
+      logLine('目录加载完成：${list.length} 个号，${state.states.length} 个州');
     } catch (e) {
       // 有缓存时不要把错误糊到界面上——用户看着列表能用，
       // 弹个「目录拉取失败」只会让人以为坏了。

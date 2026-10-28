@@ -6,6 +6,7 @@
 /// 顺便带上中文简称：`Georgia` 单独看像人名，`佐治亚` 才像个地名。
 library;
 
+/// 全量州名表。按字母序排，好对账。
 const _states = <String, String>{
   'Alabama': '阿拉巴马',
   'Alaska': '阿拉斯加',
@@ -61,13 +62,13 @@ const _states = <String, String>{
 
 /// 州名转中文。未知州名原样返回。
 ///
-/// 站点偶尔给出小写或带空白的值，先归一化再查表。
+/// 站点偶尔给出小写或带空白的值，先归一化再查表；精确未中时再兜一次
+/// 大小写（O(N) 只在 miss 时发生，O(1) 是主路径）。
 String stateZh(String state) {
   final k = state.trim();
   if (k.isEmpty) return '';
   final hit = _states[k];
   if (hit != null) return hit;
-  // 大小写不一致时兜一次。
   for (final e in _states.entries) {
     if (e.key.toLowerCase() == k.toLowerCase()) return e.value;
   }

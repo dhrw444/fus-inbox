@@ -1,7 +1,7 @@
-/// 端到端：本机 HTTP 桥 → SOCKS5 → 目标服务器。
-///
-/// 三段都是真的：真 ServerSocket、真 HTTP 解析、真 SOCKS5 握手。
-/// 唯一假的是「远端代理」—— 本地起一个按 RFC 说话的假服务端。
+// 端到端：本机 HTTP 桥 → SOCKS5 → 目标服务器。
+//
+// 三段都是真的：真 ServerSocket、真 HTTP 解析、真 SOCKS5 握手。
+// 唯一假的是「远端代理」—— 本地起一个按 RFC 说话的假服务端。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -206,7 +206,7 @@ Future<void> main() async {
     }
   });
 
-  final bridge = await LocalProxyBridge.start(proxy);
+  final bridge = await LocalProxyBridge.start(upstream: proxy);
   print('bridge port ${bridge.port}');
 
   // ---------- 1. CONNECT 隧道（HTTPS 主路径）----------
@@ -294,7 +294,7 @@ Future<void> main() async {
   // ---------- 4. 上游代理死了 → 502 ----------
   {
     final deadProxy = parseProxyLine('socks5://127.0.0.1:1')!;
-    final deadBridge = await LocalProxyBridge.start(deadProxy);
+    final deadBridge = await LocalProxyBridge.start(upstream: deadProxy);
     final c = await Socket.connect('127.0.0.1', deadBridge.port);
     c.write('CONNECT example.com:443 HTTP/1.1\r\n\r\n');
     await c.flush();

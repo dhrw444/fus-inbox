@@ -7,9 +7,9 @@ library;
 
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/core/prefs/prefs_provider.dart';
 import 'package:fus_inbox/core/translate/translator.dart';
 
@@ -130,11 +130,11 @@ class TranslationStore() extends Notifier<Map<String, TranslationEntry>> {
     } on TranslationException catch (e) {
       // 限流或网络挂了都不重试：界面上反复重试只会把限流拖得更久。
       // 用户下次进来是新的一次会话，那时自然会重新请求。
-      debugPrint('翻译失败（${e.reason}）：${e.detail}');
+      logLine('翻译失败（${e.reason}）：${e.detail}');
       if (gen != _gen) return;
       _put(key, const TranslationEntry(text: '', loading: false, failed: true));
     } on Object catch (e) {
-      debugPrint('翻译异常：$e');
+      logLine('翻译异常：$e');
       if (gen != _gen) return;
       _put(key, const TranslationEntry(text: '', loading: false, failed: true));
     }

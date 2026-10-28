@@ -1,4 +1,11 @@
 #!/usr/bin/env bash
+# 出 Android release 包。
+#
+# 用法：tool/build_release_apks.sh [VERSION [BUILD_NUMBER]]
+#
+# 版本号可以先在这里改（会写进 pubspec.yaml），也可以事先改好只传构建号。
+# 真正的签名信息从 key.properties 读，那份文件不进仓库 —— 没有它就只能
+# 出 unsigned 包，脚本会明确说是在出 unsigned 而不是静默出一个装不上的包。
 set -euo pipefail
 
 if [[ "$#" -gt 2 ]]; then

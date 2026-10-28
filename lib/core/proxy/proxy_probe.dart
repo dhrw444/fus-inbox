@@ -1,3 +1,12 @@
+/// 代理连通性检测。
+///
+/// **真的走一遍 SOCKS5 握手 + 到达站点 + 读回出口 IP**，不是只看端口开没开。
+/// 内置清单里实测 616 条端口开着、只有 589 条真能用 —— 光探端口会把那
+/// 27 条当成好的。
+///
+/// 出口 IP 是配额的真单位：两条代理出口同一个 IP，对站点来说就是一条。
+library;
+
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -110,7 +119,10 @@ class ProxyProbe({this.timeout = const Duration(seconds: 10)}) {
     } finally {
       try {
         tunnel?.close();
-      } on Object catch (_) {}
+      } on Object catch (_) {
+        // 关隧道失败没有补救价值 —— 连接已经废了，最坏是留一个
+        // 半开的 fd，进程退出时内核回收。
+      }
     }
   }
 

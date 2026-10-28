@@ -1,11 +1,16 @@
-import 'package:material_3_expressive/material_3_expressive.dart';
+/// 应用根：主题、路由、以及「跟着系统深浅色走」的接线。
+///
+/// 放在这里而不是 `main.dart`：那边只管启动顺序（探测身份 → 起桥 →
+/// 建 WebView 环境），启动完之后的一切都归这里。
+library;
 
-import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:fus_inbox/core/constants/app_constants.dart';
 import 'package:fus_inbox/core/theme/expressive_theme.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
 import 'package:fus_inbox/features/main/presentation/main_screen.dart';
+import 'package:material_3_expressive/material_3_expressive.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// 应用外壳：只负责主题与首页。
 ///

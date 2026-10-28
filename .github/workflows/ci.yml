@@ -23,7 +23,9 @@ jobs:
           persist-credentials: false
 
       - name: Check injected page script syntax
-        run: node --check assets/js/fus_inbox.js
+        run: |
+          node --check assets/js/fus_inbox.js
+          node --check assets/js/browser_shim.js
 
       - name: Set up Flutter
         uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
@@ -49,12 +51,19 @@ jobs:
       - name: Test
         run: flutter test
 
-      - name: Test tool scripts
+      # 纯逻辑那部分收在一个入口里：账本 / 代理配置 / 身份 / 状态机 /
+      # 排序 / 收录时间解析 / findProxy 兜底 / ready 语义 / 代理失败必须停，
+      # 共 12 段。一条命令，失败就非零退出。
+      - name: Gate (pure logic)
+        run: dart run tool/gate.dart
+
+      # 下面这几个要真开 socket（自己起假服务器），单独跑。
+      # 它们各自在失败时 exit(1)，成功时正常返回。
+      - name: Gate (network)
         run: |
           set -e
-          for t in ledger_test proxy_logic_test mint_identity_test \
-                   identity_drift_test verify_round_test bridge_test \
-                   loaded_probe ready_test; do
+          for t in bridge_test bridge_upstream_test socks5_test \
+                   numbers_egress_test translate_live_test; do
             echo "::group::$t"
             dart run tool/$t.dart
             echo "::endgroup::"
@@ -62,3 +71,46 @@ jobs:
 
       - name: Build debug APK
         run: flutter build apk --debug
+
+  # Windows 目标单独一个 job 不是洁癖，是必须的：
+  #
+  # 1. **Flutter 的 Windows 目标只能在 Windows 上构建** —— 宿主是
+  #    ubuntu 的 job 编不出来，交叉编译不支持（要 MSVC + Windows SDK）。
+  # 2. 上面那个 job 从头到尾都是 Android 的活（gradle、APK、设备侧测试），
+  #    和 Windows 侧没有可复用的东西；而 Windows 侧要连着把
+  #    flutter_inappwebview_windows 的 WebView2 组件一起编出来。
+  #
+  # 所以这个 job 只验「Windows 上 analyze 过、编得过」，不做测试。
+  # 真正跑起来还需要目标机器装有 Microsoft Edge WebView2 运行时 ——
+  # 那是终端用户侧的事，缺了会在启动时给出明确提示
+  # （见 lib/platform/web_engine_factory.dart）。
+  verify-windows:
+    name: Verify (Windows)
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check injected page script syntax
+        run: |
+          node --check assets/js/fus_inbox.js
+          node --check assets/js/browser_shim.js
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: "stable"
+          flutter-version: "3.47.5"
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get --enforce-lockfile
+
+      - name: Analyze
+        run: flutter analyze --fatal-infos
+
+      - name: Build Windows (debug)
+        run: flutter build windows --debug

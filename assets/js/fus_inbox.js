@@ -1,35 +1,44 @@
-/* fus_inbox.js — freeussms 抓取层（精确字段版）
- *
- * 为什么必须在页面里跑：
- *   freeussms 的 `/sms-api/v1/*` 受 Cloudflare Turnstile 会话 + 每请求
- *   WebCrypto 签名（X-FUS-Proof）保护，请求签名用的私钥只存在于页面上下文
- *   （IndexedDB `fus-reader-v1`）。外部 HTTP 客户端拿不到，必须借页面自己的
- *   请求能力。所以这里挂钩页面的 fetch / XMLHttpRequest，把响应抄一份回来。
- *
- * 字段名不是猜的——来自站点自己的 `assets/live.js`：
- *   messageCard(m) 读 m.event_id / m.sender / m.content / m.received_at /
- *                  m.copy_code / m.protected / m.receiver / m.number_id
- *   update()       读 /sms-api/v1/numbers 的 d.numbers[] → {id, number, message_count}
- *   DOM 卡片是 `article.sms-message[data-event-id]`，广告节点带 `data-fus-promotion`
- *
- * 宿主：Flutter WebView（webview_flutter）
- * 通道：FusInbox.postMessage(JSON 字符串)
- *
- * 上行消息：
- *   {type:'messages', items:[{id,sender,text,code,time,phone,protected}], hits, src, phase}
- *   {type:'catalog',  items:[{id,number,count}], hits}
- *   {type:'status',   text}
- *   {type:'holdup',   kind, scope, message, retry, title}
- *
- * holdup = 站点拒绝给消息。不是错误，是它主动说「现在不给」。
- * 三种 kind（来自站点 live.js 的 holdMessages）：
- *   pause      —— 429 + X-Fair-Use: pause。配额，最快 retry 秒后自愈
- *   challenge  —— 403 + X-Fair-Use: challenge。要过人机验证
- *   unavailable—— 503 + X-Fair-Use: unavailable。服务端临时繁忙
- *
- * 必须单独上报：以前这些全被当成「没有消息」，界面一直转圈，
- * 用户看到的就是「卡住了」，而真正原因是一条都看不到。
- */
+// fus_inbox.js — freeussms 抓取层（精确字段版）
+//
+// ## 为什么必须在页面里跑
+//
+// freeussms 的 `/sms-api/v1/*` 受 Cloudflare Turnstile 会话 + 每请求
+// WebCrypto 签名（X-FUS-Proof）保护，请求签名用的私钥只存在于页面上下文
+// （IndexedDB `fus-reader-v1`）。外部 HTTP 客户端拿不到，必须借页面自己的
+// 请求能力。所以这里挂钩页面的 fetch / XMLHttpRequest，把响应抄一份回来。
+//
+// ## 字段名不是猜的
+//
+// 来自站点自己的 `assets/live.js`：
+//
+//   messageCard(m) 读 m.event_id / m.sender / m.content / m.received_at /
+//                  m.copy_code / m.protected / m.receiver / m.number_id
+//   update()      读 /sms-api/v1/numbers 的 d.numbers[] → {id, number, message_count}
+//
+// DOM 卡片是 `article.sms-message[data-event-id]`，广告节点带
+// `data-fus-promotion`。
+//
+// ## 宿主与通道
+//
+// 宿主：Flutter WebView（`flutter_inappwebview`，跨平台同一份脚本）
+// 通道：`window.flutter_inappwebview.callHandler('FusInbox', <json 字符串>)`
+//
+// 上行消息：
+//
+//   {type:'messages', items:[{id,sender,text,code,time,phone,protected}], hits, src, phase}
+//   {type:'catalog',  items:[{id,number,count}], hits}
+//   {type:'status',   text}
+//   {type:'holdup',   kind, scope, message, retry, title}
+//
+// `holdup` = 站点拒绝给消息。不是错误，是它主动说「现在不给」。
+// 三种 kind（来自站点 live.js 的 holdMessages）：
+//
+//   pause       —— 429 + X-Fair-Use: pause。配额，最快 retry 秒后自愈
+//   challenge   —— 403 + X-Fair-Use: challenge。要过人机验证
+//   unavailable —— 503 + X-Fair-Use: unavailable。服务端临时繁忙
+//
+// 必须单独上报：以前这些全被当成「没有消息」，界面一直转圈，用户看到的
+// 就是「卡住了」，而真正原因一条都看不到。
 (function () {
   'use strict';
 
@@ -52,8 +61,19 @@
 
   function post(obj) {
     try {
-      if (window.FusInbox && window.FusInbox.postMessage) {
-        window.FusInbox.postMessage(JSON.stringify(obj));
+      var envelope = JSON.stringify(obj);
+      // 通道只有一条：`flutter_inappwebview` 的 callHandler。
+      //
+      // 曾经这里还有一条 `window.FusInbox.postMessage` 的老分支 ——
+      // 那是当年用 `addJavascriptInterface` 从 Kotlin 注册的，那条路
+      // 随 `BrowserShim.kt` 一起删了。留着它不会出错，但会让人以为
+      // 「有两条通道、哪条都能走」，改通道名时只改一条就静默失效。
+      //
+      // Dart 侧的注册点在 `platform/inapp_view_builder.dart` 的
+      // `addJavaScriptHandler`，通道名常量是
+      // `inbox_screen.dart` 的 `_kChannel` —— 改这里必须同步改那两处。
+      if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+        window.flutter_inappwebview.callHandler('FusInbox', envelope);
       }
     } catch (e) { lastErr = 'post:' + e.message; }
   }
@@ -80,7 +100,7 @@
     post(p);
   }
 
-  /* ---------------- 归一化 ---------------- */
+  // ---- 归一化 ----
 
   function str(v) { return typeof v === 'string' ? v : (v === null || v === undefined ? '' : String(v)); }
 
@@ -207,7 +227,7 @@
     messages = out;
   }
 
-  /* ---------------- 抄页面自己的接口响应 ---------------- */
+  // ---- 抄页面自己的接口响应 ----
 
   function digest(json) {
     if (!json || typeof json !== 'object') return false;
@@ -482,7 +502,7 @@
     return found.length;
   }
 
-  /* ---------------- 按需翻页 ---------------- */
+  // ---- 按需翻页 ----
   //
   // 站点接口是游标分页：GET /sms-api/v1/inbox?id=<32hex>&before=<游标>。
   // 首屏由站点自己请求，我们只抄；更早的消息必须由这里主动拉——
@@ -509,7 +529,7 @@
     return min;
   }
 
-  /* ---------------- 号码 id 捕获 ---------------- */
+  // ---- 号码 id 捕获 ----
   //
   // inbox 接口要的是 32 位 hex 的号码 id，而页面 URL 里只有 10 位电话号码，
   // 两者对不上。所以从站点自己的 /sms-api/ 请求里把它抄下来——
@@ -639,7 +659,7 @@
     setNumberId: function (id) { window.__fusNumberId = str(id); },
   };
 
-  /* ---------------- 启动 ---------------- */
+  // ---- 启动 ----
   function boot() {
     status('抓取层已就绪');
 

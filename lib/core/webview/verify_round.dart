@@ -6,6 +6,8 @@
 /// 真错（ready 后轮询自杀、起算点被反复重置），都是读代码读不出来的。
 ///
 /// 抽出来之后 [VerifyRound] 可以直接 import 进 tool/ 下的测试跑。
+library;
+
 class VerifyRound {
   // 带初始化列表 + 非 this 参数（`clock` 要 ?? DateTime.now），
   // 主构造器表达不了 —— 同 ProxyState / IdentityLedger 的处理。

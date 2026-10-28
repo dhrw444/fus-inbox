@@ -1,86 +1,50 @@
-// 浏览器能力垫片。
+// 浏览器能力垫片（跨平台版）。
 //
 // ## 为什么需要它
 //
-// Android System WebView 在内核层面**不提供**三样真 Chrome 一定有
-// 的东西：
+// 各家的 WebView 内核**都不提供**三样真 Chrome 一定有、而 Cloudflare
+// Turnstile 一定会查的东西：
 //
-//   navigator.userAgentData     → undefined（client hints 的 JS 入口）
-//   window.chrome               → undefined（Chrome 的命名空间）
-//   navigator.plugins           → 长度 0（Chrome 内置 5 个 PDF 插件）
+//   navigator.userAgentData  → undefined（client hints 的 JS 入口）
+//   window.chrome            → undefined（Chrome 的命名空间）
+//   navigator.plugins        → 长度 0（Chrome 内置 5 个 PDF 插件）
 //
-// Cloudflare 的 Turnstile 会先查这三项。只要缺一个，无论 UA 写得多
-// 像 Chrome 都会被判成伪装的浏览器 —— 这就是「只换 UA 反而更容易被
-// 风控」的根源：UA 说自己是 Chrome 134，JS 却探测不到 Chrome 该有的
-// 能力，两边矛盾。
+// 缺任何一个，UA 写得多像都会被判成伪装的浏览器 —— 这正是「只换 UA
+// 反而更容易被风控」的根源。
 //
-// ## 它怎么工作
+// ## 从 Kotlin 搬到这个文件的原因
 //
-// 这段脚本由原生的 WebViewCompat.addDocumentStartJavaScript 注入，
-// 时机是**文档创建后、页面任何脚本执行前**。所以站点自己的
-// reader.js、live.js、Turnstile 拿到的已经是补齐后的 navigator。
+// 原来这段脚本烧在 `BrowserShim.kt` 里，只有 Android 有。加了 Windows
+// 之后不能再这么干：同一份伪装必须两端一致，否则「Android 上是 Chrome、
+// Windows 上是 WebView2」本身就是个能被串联的特征。
+//
+// ## 时序
+//
+// 由宿主通过 `injectOnDocumentStart` 注入，时机是**文档创建后、页面任何
+// 脚本执行前**。站点自己的 reader.js / live.js / Turnstile 拿到的已经是
+// 补齐后的 navigator。
 //
 // ## 一条铁律
 //
-// 这里所有值都必须和 Host 传进来的身份**同源**：
-// UA 里的版本号 = userAgentData.brands 的版本号 = 这行 JS 里的版本号。
-// 只要有一处对不上，垫片自己就变成新的矛盾点。
+// 这里所有值都必须和宿主传进来的身份**同源**：UA 里的版本号 =
+// userAgentData.brands 的版本号 = 原生请求头里的 Sec-CH-UA 版本号。
+// 只要一处对不上，垫片自己就变成新的矛盾点。
 //
-// 实现放在 android/.../BrowserShim.kt，Dart 侧通过 MethodChannel
-// 传身份进来。
-package com.yg.fusinbox
-
-/**
- * 生成注入脚本。
- *
- * **一条硬性要求**：下面这些身份值必须全部由 Host 传进来，一个都不许在
- * 本地写死 —— 写死的那一项迟早会在某台设备上和 UA 对不上，而本文件开头
- * 那条铁律说的就是「对不上比不伪装更明显」。
- *
- * @param chromeMajor    UA 里的 Chrome 主版本，如 "134"
- * @param appVersion     Chrome **完整四段**版本，如 "134.0.6998.135"。
- *                       必须与 UA 里 Chrome/ 后面那截逐字相同：真 Chrome 的
- *                       userAgentData.uaFullVersion 和 UA 版本完全一致，
- *                       fullVersionList 里真实品牌的 version 也是四段。
- *                       之前这里收的是「前三段」，那是错的。
- * @param platformVersion 系统主版本，如 "16"。输出成三段 "16.0.0"，
- *                        与原生头 http_headers.dart 发出的形态一致。
- * @param platform       Sec-CH-UA-Platform 的值，Android 固定 "Android"
- * @param model          机型串，如 "Pixel 8"
- * @param isMobile       是否移动端
- */
-fun buildBrowserShim(
-    chromeMajor: String,
-    appVersion: String,
-    platformVersion: String,
-    platform: String,
-    model: String,
-    isMobile: Boolean,
-): String {
-    // 转义：这些值会嵌进 JS 字符串字面量。
-    fun esc(v: String): String =
-        v.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "")
-
-    val major = esc(chromeMajor)
-    val full = esc(appVersion)
-    // 三段形态：入参是 "16" 就输出 "16.0.0"，已经是三段则原样用。
-    // 空串保持空串（这只是兜底值，输出 ".0.0" 反而更糟）。
-    val pv = esc(platformVersion).let {
-        when {
-            it.isEmpty() -> ""
-            it.contains('.') -> it
-            else -> "$it.0.0"
-        }
-    }
-    val plat = esc(platform)
-    val mdl = esc(model)
-    val mobile = if (isMobile) "true" else "false"
-
-    return """
+// ## 兜底值
+//
+// 下面的 `SEED` 由宿主注入（`window.__fusSeed`）。它只在**整个 UA 解不出
+// 身份**时才用得上 —— 正常情况下所有值都从当下那串 UA 现推。
+// 为什么坚持现推：注入是**只能加、不能删**的（脚本开头有
+// `__fusShimmed` 守卫，先装的那份永远赢），烧死版本号会停在上一次的身份
+// 上，而且每换一次身份就多累积一层矛盾。
 (function () {
   'use strict';
   if (window.__fusShimmed) return;
   window.__fusShimmed = true;
+
+  // 宿主注入的兜底值（见文件头的「兜底值」一节）。
+  // 正常情况下用不到 —— 所有值都从下面那串 UA 现推。
+  var SEED = window.__fusSeed || {};
 
   // ---- 身份值：从当下的 UA 现推，不烧进脚本 ----
   //
@@ -98,13 +62,13 @@ fun buildBrowserShim(
   var UA = navigator.userAgent || '';
   var uaChrome = /Chrome\/([\d.]+)/.exec(UA);
   var uaParen = /\(([^)]*)\)/.exec(UA);
-  var FULL = uaChrome ? uaChrome[1] : '$full';
-  var MAJOR = FULL.split('.')[0] || '$major';
-  var PLATFORM = /Android/i.test(UA) ? 'Android' : '$plat';
+  var FULL = uaChrome ? uaChrome[1] : (SEED.full || '');
+  var MAJOR = FULL.split('.')[0] || (SEED.major || '');
+  var PLATFORM = /Android/i.test(UA) ? 'Android' : (SEED.plat || 'Android');
   // UA 里连 Chrome 标记都没有 = 整串解不出来，这时才用装机时的值。
-  var MOBILE = /Chrome\//.test(UA) ? /Mobile/i.test(UA) : $mobile;
-  var PLATFORM_VERSION = '$pv';
-  var MODEL = '$mdl';
+  var MOBILE = /Chrome\//.test(UA) ? /Mobile/i.test(UA) : SEED.mobile;
+  var PLATFORM_VERSION = (SEED.pv || '');
+  var MODEL = (SEED.mdl || '');
   if (uaParen) {
     var segs = uaParen[1].split(';');
     // "(Linux; Android 14)" —— 只有两段就是 UA 本身没有机型。
@@ -315,5 +279,3 @@ fun buildBrowserShim(
     } catch (e) {}
   }
 })();
-""".trimIndent()
-}

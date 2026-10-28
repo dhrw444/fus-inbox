@@ -1,134 +1,72 @@
-/// 号码目录抓取：原生 HTTP + 模板解析，完全不依赖 WebView。
+/// 号码目录抓取：原生 HTTP，完全不依赖 WebView。
 ///
-/// 为什么能这么干：`/numbers/` 是 WordPress 服务端直出的页面，号码卡片是
+/// 一页 HTML 怎么解析见 `directory_page.dart`；失败后怎么退避重试见
+/// `fetch_backoff.dart`（都在这里转出去，引用方不用多写 import）。
+///
+/// 这个文件只管三件事：**走哪条出口**（[NumbersRepository.egress] + `_findProxy`）、
+/// **连接怎么复用**（`HttpClient` 的池参数）、**几页怎么并发**（`fetchAll`
+/// 的先探后并）。剩下一律不碰。
+///
+/// 为什么能不走 WebView：`/numbers/` 是 WordPress 服务端直出的页面，号码卡片是
 /// 静态 HTML（`article.number-card`），不需要站点的会话签名。站点把签名锁
 /// 只放在 `/sms-api/v1/*`（短信正文）上，目录页自己留了活口——它自己的
 /// live.js 里写着 "This gate controls SMS bodies only."
-///
-/// 为什么不用 html 包：这段模板固定、字段固定，正则足够，且已在真实页面上
-/// 验证 24/24 命中。站点改模板时这里会返回空列表 —— 上层会显示错误，
-/// 不会静默给错数据。
 library;
 
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
-
+import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/core/webview/http_headers.dart';
+import 'package:fus_inbox/features/numbers/data/directory_page.dart';
+import 'package:fus_inbox/features/numbers/data/fetch_backoff.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
-/// 一页目录抓下来的结果。
-class const NumberPage({required this.numbers, this.total}) {
-  final List<AvailableNumber> numbers;
-
-  /// 页面自报的号码总数（`N available numbers`），拿不到就是 null。
-  final int? total;
-}
-
-/// 单张卡片的字段正则。
-///
-/// 全部按站点现有模板写死；任何一条不中，对应字段退回默认值而不是整卡丢弃。
-final _cardRe = RegExp(
-  r'<article\b[^>]*\bclass="[^"]*\bnumber-card\b[^"]*"[^>]*>.*?</article>',
-  dotAll: true,
-);
-final _idRe = RegExp(r'data-live-card="([0-9a-fA-F]{8,})"');
-final _numberRe = RegExp(r'/numbers/(\d{10,15})/');
-final _areaRe = RegExp(r'class="number-area"[^>]*>(.*?)<', dotAll: true);
-final _countRe = RegExp(r'data-count="(\d+)"');
-final _timeRe = RegExp(r'<time\b[^>]*\bdata-rel-time="([^"]+)"');
-final _freshRe = RegExp(r'\bis-fresh\b');
-final _totalRe = RegExp(r'(\d+)\s+available numbers');
-
-/// 只解模板里会出现的几个实体，不做通用解码。
-String _unescape(String s) => s
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#039;', "'")
-    .replaceAll('&#39;', "'")
-    .replaceAll('&middot;', '·')
-    .replaceAll('&nbsp;', ' ');
-
-/// 把 `Ohio · 419` 拆成州名与区号。
-({String state, String area}) _splitArea(String raw) {
-  final text = _unescape(raw).replaceAll(RegExp(r'\s+'), ' ').trim();
-  var state = text;
-  var area = '';
-  final seps = ['·', '•', '|', '–', '-'];
-  for (final sep in seps) {
-    final i = text.indexOf(sep);
-    if (i > 0) {
-      state = text.substring(0, i).trim();
-      area = text.substring(i + sep.length).trim();
-      break;
-    }
-  }
-  // 区号只留数字，形如 “419”。
-  area = area.replaceAll(RegExp(r'[^\d]'), '');
-  return (state: state, area: area);
-}
-
-/// 解析一页目录 HTML。
-@visibleForTesting
-NumberPage parseDirectory(String html) {
-  final out = <AvailableNumber>[];
-  final seen = <String>{};
-
-  for (final m in _cardRe.allMatches(html)) {
-    final card = m.group(0)!;
-    final numMatch = _numberRe.firstMatch(card);
-    if (numMatch == null) continue;
-    final number = numMatch.group(1)!;
-
-    final idMatch = _idRe.firstMatch(card);
-    final id = idMatch?.group(1) ?? number;
-
-    final areaMatch = _areaRe.firstMatch(card);
-    final region = areaMatch == null
-        ? (state: '', area: '')
-        : _splitArea(areaMatch.group(1)!);
-
-    final countMatch = _countRe.firstMatch(card);
-    final count = int.tryParse(countMatch?.group(1) ?? '') ?? 0;
-
-    if (!seen.add(number)) continue;
-    out.add(
-      AvailableNumber(
-        id: id,
-        number: number,
-        state: region.state,
-        areaCode: region.area,
-        messageCount: count,
-        lastTextAt: _timeRe.firstMatch(card)?.group(1),
-        isFresh: _freshRe.hasMatch(card),
-      ),
-    );
-  }
-
-  final totalMatch = _totalRe.firstMatch(html);
-  final total = int.tryParse(totalMatch?.group(1) ?? '');
-  // 页面自报有号、却一张卡都没解析出来 = 站点模板变了。显式抛错，
-  // 别让上层把「解析失败」显示成「这里没有号码」。
-  if (out.isEmpty && total != null && total > 0) {
-    throw NumberFetchException('目录解析失败：页面自报 $total 个号，但一张卡片都没匹配上，站点模板可能变了');
-  }
-  return NumberPage(numbers: out, total: total);
-}
+export 'package:fus_inbox/features/numbers/data/directory_page.dart';
+export 'package:fus_inbox/features/numbers/data/fetch_backoff.dart';
 
 /// 目录数据源。
 ///
 /// 不能是 `const` 主构造：[client] 是 `late final`，需要非 const 初始化。
-class NumbersRepository({this.client}) {
+class NumbersRepository({
+  this.client,
+  this.egress,
+  this.base = 'https://freeussms.com',
+}) {
   /// 可注入的 HTTP 客户端；为空时自建一个，由本实例负责关闭。
   final HttpClient? client;
 
-  static const _base = 'https://freeussms.com';
+  /// 出口指令，即 [`HttpClient.findProxy`] 的返回值。由上层注入。
+  ///
+  /// ## 和收件页共用同一个节点
+  ///
+  /// 这里不自己挑节点、也不自己起桥 —— 出口就是收件页正在用的那一条
+  /// （`ProxyEngine` 的当前出口）。一个 App 只有一个出口，所以注入的
+  /// 回调直接读引擎的实时状态，而不是在构造时抓一个端口快照
+  /// （代理会轮换、桥会重建，端口每次都不一样）。
+  ///
+  /// ## 为什么这件事必须是显式的
+  ///
+  /// `dart:io` 的 `HttpClient` 由 Dart VM 直接发 socket，**不经过
+  /// WebView 的 `ProxyController`**。实测确认：
+  /// 不挂 `findProxy` 时请求照样成功、SOCKS5 侧连接数为 0 —— 那意味着
+  /// 「以为在走代理」和「真的在走代理」从外面看不出任何区别。
+  ///
+  /// 三种取值，对应三种明确状态：
+  /// - `'DIRECT'` —— 有意直连（用户没开「号码目录走代理」）
+  /// - `'PROXY host:port'` —— 走当前那条出口
+  /// - `null` —— 「要代理但引擎还没起来」，[_findProxy] 会抛异常让请求
+  ///   **失败**，而不是悄悄退回直连
+  final String? Function()? egress;
+
+  /// 站点根。可注入，唯一目的是让「目录抓取」这条链路能在本地服务器上
+  /// 离线测 —— 直连 / 走代理 / 拒绝直连三条路都值得真跑一遍，而它们都
+  /// 发生在发请求这一层，跟站点返回什么无关。
+  final String base;
 
   late final HttpClient _http = client ?? HttpClient()
+    ..findProxy = _findProxy
     // 连接复用是这里唯一真正有效的提速手段。
     //
     // 实测单页耗时构成：DNS 0.27s + TCP 0.28s + **TLS 握手 1.5~1.8s**
@@ -147,7 +85,33 @@ class NumbersRepository({this.client}) {
     ..autoUncompress = true;
 
   String _pageUrl(int page) =>
-      page <= 1 ? '$_base/numbers/' : '$_base/numbers/page/$page/';
+      page <= 1 ? '$base/numbers/' : '$base/numbers/page/$page/';
+
+  /// [`HttpClient.findProxy`] 的实现。两种模式，由 [egress] 决定。
+  ///
+  /// **没注入 [egress] → 直连。** 这是测试和纯解析场景的路径。
+  ///
+  /// **注入了 → 失败即拒绝。** 回调返回 `null` 就抛异常，绝不退化成直连。
+  ///
+  /// 为什么用异常而不是返回 `'DIRECT'`：实测
+  /// （tool/findproxy_failclosed_test.dart）`findProxy` 里抛出的异常会
+  /// 直接让这一次 `getUrl` 失败，错误信息能一路传到界面上的
+  /// 「目录拉取失败：…」，用户看得见。
+  ///
+  /// 返回 `'DIRECT'` 的后果完全不同：请求成功、页面正常显示、一条报错
+  /// 都没有，唯一的变化是真实 IP 被交出去了一次。那种失败没人能发现。
+  ///
+  /// 顺带实测过：返回一个连不上的 `PROXY 127.0.0.1:1` 也会失败，但错误
+  /// 是 `SocketException: Connection refused`，不如这里说得清楚。
+  String _findProxy(Uri uri) {
+    final hook = egress;
+    if (hook == null) return 'DIRECT';
+    final directive = hook();
+    if (directive == null || directive.isEmpty) {
+      throw StateError('出口没起来，已拒绝直连');
+    }
+    return directive;
+  }
 
   /// 抓一页。失败抛 [NumberFetchException]。
   ///
@@ -159,7 +123,7 @@ class NumbersRepository({this.client}) {
     late final HttpClientResponse res;
     try {
       final req = await _http.getUrl(uri).timeout(const Duration(seconds: 20));
-      applyBrowserHeaders(req.headers, base: _base, referer: _pageUrl(page));
+      applyBrowserHeaders(req.headers, base: base, referer: _pageUrl(page));
       res = await req.close().timeout(const Duration(seconds: 20));
     } on Exception catch (e) {
       throw NumberFetchException('网络请求失败：$e');
@@ -179,11 +143,6 @@ class NumbersRepository({this.client}) {
   /// 纯保险丝：号码池异常膨胀时别把请求数堆成无穷。
   static const _pageCap = 40;
 
-  /// 单页重试次数。风控多半是临时的，退避后重试比直接放弃好；
-  /// 但重试本身也是请求，所以最多两次。
-  static const _maxRetry = 2;
-
-  /// 带抖动的页间隔。固定间隔在服务端看来同样可疑。
   /// 抓完整个目录。
   ///
   /// 策略是「先探后并」：
@@ -283,44 +242,23 @@ class NumbersRepository({this.client}) {
     if (out.isEmpty) {
       throw NumberFetchException('目录抓取失败（$failed 页出错）');
     }
-    // 全部页都失败时 out 只有首页那批，这里补一条日志便于排查。
+    // 部分页失败时补一条日志便于排查（全部失败的情况上面已经抛了）。
     if (failed > 0) {
-      debugPrint('目录：$failed 页抓取失败，已拿到 ${out.length} 个号');
+      logLine('目录：$failed 页抓取失败，已拿到 ${out.length} 个号');
     }
     return out;
   }
 
   /// 抓单页并带退避重试。失败返回 null。
-  Future<NumberPage?> _fetchWithRetry(int page) async {
-    Object? lastError;
-    for (var attempt = 0; attempt <= _maxRetry; attempt++) {
-      try {
-        return await fetchPage(page);
-      } on Object catch (e) {
-        // 只 catch 自定义异常不够：连接重置、超时、TLS 握手失败都是
-        // SocketException / HandshakeException，会穿透整个 fetchAll。
-        lastError = e;
-        if (attempt < _maxRetry) {
-          // 退避 600ms / 1.5s。真正的风控拒绝会持续 403/429，
-          // 多等几秒也救不回来；偶发网络抖动则是重试越早越好。
-          await Future<void>.delayed(
-            Duration(milliseconds: attempt == 0 ? 600 : 1500),
-          );
-        }
-      }
-    }
-    debugPrint('目录第 $page 页失败：$lastError');
-    return null;
-  }
+  ///
+  /// 退避窗口、重试次数、以及「为什么必须 catch 所有 Object」全在
+  /// `fetch_backoff.dart`；这里只补上「第几页」这个上下文。
+  Future<NumberPage?> _fetchWithRetry(int page) => withBackoff(
+    () => fetchPage(page),
+    onGiveUp: (e) => logLine('目录第 $page 页失败：$e'),
+  );
 
   /// 释放 HTTP 客户端。provider 销毁时调用。
-  /// 关掉连接池。`force: true` 顺手掐掉还在飞的请求，页面销毁时不必等。
+  /// `force: true` 顺手掐掉还在飞的请求，页面销毁时不必等。
   void dispose() => _http.close(force: true);
-}
-
-class const NumberFetchException(this.message) implements Exception {
-  final String message;
-
-  @override
-  String toString() => message;
 }

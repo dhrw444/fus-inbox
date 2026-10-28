@@ -1,3 +1,10 @@
+/// 内置代理清单的读取。
+///
+/// 清单在 `assets/proxies/builtin.txt`（589 条，全部是带账号密码的
+/// SOCKS5）。用户删掉的记在排除表里，所以「恢复内置代理」是清空那张表，
+/// 而不是把资源重新拷一遍。
+library;
+
 import 'package:flutter/services.dart' show rootBundle;
 
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
@@ -15,7 +22,6 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 /// 恢复；手动添加的删了就没了。
 class const BuiltinProxies() {
   static const _assetPath = 'assets/proxies/builtin.txt';
-  static const _excludedKey = 'proxy.builtin.excluded.v1';
 
   /// 读资源并解析成配置列表。
   ///
@@ -39,7 +45,4 @@ class const BuiltinProxies() {
     }
     return out;
   }
-
-  /// 排除表的持久化键名，交给 ProxyPoolState 存 SharedPreferences。
-  static String get excludedPrefsKey => _excludedKey;
 }

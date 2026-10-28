@@ -7,17 +7,18 @@ library;
 
 import 'dart:async';
 
-import 'package:material_ui/material_ui.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
-
 import 'package:fus_inbox/features/inbox/presentation/inbox_screen.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
-import 'package:fus_inbox/features/numbers/domain/first_seen.dart';
-import 'package:fus_inbox/features/numbers/domain/state_names.dart';
-import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart';
+import 'package:fus_inbox/features/numbers/application/first_seen_store.dart';
+import 'package:fus_inbox/features/numbers/presentation/widgets/directory_states.dart';
+import 'package:fus_inbox/features/numbers/presentation/widgets/filter_bar.dart';
+import 'package:fus_inbox/features/numbers/presentation/widgets/number_lists.dart';
+import 'package:fus_inbox/features/numbers/presentation/widgets/numbers_app_bar.dart';
 import 'package:fus_inbox/features/saved/application/saved_provider.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:material_ui/material_ui.dart';
 
 class const NumbersScreen({super.key}) extends ConsumerStatefulWidget {
   @override
@@ -99,11 +100,9 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
 
   /// 复制号码到剪贴板，带 + 前缀（+14783902317）。
   ///
-  /// 站点和模型里存的是纯数字，但用户拿去注册时要的是 E.164 形式。
+  /// 模型里存的是纯数字，但用户拿去注册时要的是 E.164 形式；
   /// 不带 + 粘进输入框会被某些站点当成国内号码。
   Future<void> _copyNumber(AvailableNumber n) async {
-    // 带 + 号：号码在模型里是纯数字（14783902317），
-    // 但用户拿去注册时要的是 E.164 形式 +14783902317。
     await Clipboard.setData(ClipboardData(text: '+${n.number}'));
     if (!mounted) return;
     ScaffoldMessenger.of(context)
@@ -129,58 +128,24 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     final query = dir.query.trim();
 
     return Scaffold(
-      appBar: AppBar(
-        title: _searching
-            ? TextField(
-                controller: _searchController,
-                autofocus: true,
-                textInputAction: TextInputAction.search,
-                keyboardType: TextInputType.text,
-                decoration: const InputDecoration(
-                  hintText: '号码 / 区号 / 州，例如 419、Ohio',
-                  border: InputBorder.none,
-                ),
-                onChanged: notifier.setQuery,
-              )
-            : const Text('接码号码'),
-        actions: [
-          if (_searching)
-            IconButton(
-              tooltip: '关闭搜索',
-              onPressed: () {
-                _searchController.clear();
-                notifier.clearQuery();
-                setState(() => _searching = false);
-              },
-              icon: const Icon(Icons.close),
-            )
-          else ...[
-            IconButton(
-              tooltip: '搜索',
-              onPressed: () => setState(() => _searching = true),
-              icon: const Icon(Icons.search),
-            ),
-            PopupMenuButton<NumberSort>(
-              tooltip: '排序',
-              initialValue: dir.sort,
-              onSelected: notifier.setSort,
-              itemBuilder: (context) => [
-                for (final s in NumberSort.values)
-                  PopupMenuItem<NumberSort>(value: s, child: Text(s.label)),
-              ],
-              icon: const Icon(Icons.sort),
-            ),
-            IconButton(
-              tooltip: '刷新目录',
-              onPressed: dir.loading ? null : _refresh,
-              icon: const Icon(Icons.refresh),
-            ),
-          ],
-        ],
+      appBar: NumbersAppBar(
+        searching: _searching,
+        controller: _searchController,
+        sort: dir.sort,
+        loading: dir.loading,
+        onQuery: notifier.setQuery,
+        onOpenSearch: () => setState(() => _searching = true),
+        onCloseSearch: () {
+          _searchController.clear();
+          notifier.clearQuery();
+          setState(() => _searching = false);
+        },
+        onSort: notifier.setSort,
+        onRefresh: _refresh,
       ),
       body: Column(
         children: [
-          _FilterBar(
+          NumberFilterBar(
             dir: dir,
             onTab: notifier.setTab,
             onClearQuery: () {
@@ -221,6 +186,10 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     );
   }
 
+  /// 列表区：先判三种「没列表可看」的状态，再选布局。
+  ///
+  /// 判空和「加载中」的顺序不能换 —— 目录还在加载时 `all` 就是空的，
+  /// 先判空会让用户看到「这个筛选下没有号码」，而事实上只是网络没回来。
   Widget _body(
     NumberDirectoryState dir,
     List<AvailableNumber> items,
@@ -230,189 +199,44 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     ThemeData theme,
   ) {
     if (dir.error != null && dir.all.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.cloud_off,
-                size: 40,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              const SizedBox(height: 14),
-              Text(dir.error!, textAlign: TextAlign.center),
-              const SizedBox(height: 16),
-              FilledButton.tonal(onPressed: _refresh, child: const Text('重试')),
-            ],
-          ),
-        ),
+      return DirectoryError(
+        message: dir.error!,
+        theme: theme,
+        onRetry: _refresh,
       );
     }
-
     if (dir.all.isEmpty && dir.loading) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            Text(
-              dir.progress.isEmpty ? '正在拉取号码目录…' : dir.progress,
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
-        ),
-      );
+      return DirectoryLoading(progress: dir.progress, theme: theme);
     }
-
     if (items.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(28),
-          child: Text(
-            query.isEmpty ? '这个筛选下没有号码。' : '没有匹配「$query」的号码。',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
+      return DirectoryEmpty(query: query, theme: theme);
+    }
+
+    // 按州页用分组布局，其余用平铺。
+    if (dir.tab == NumberTab.byState) {
+      return StateGroupedNumberList(
+        items: items,
+        saved: saved,
+        firstSeen: firstSeen,
+        onRefresh: _refresh,
+        onTap: _openInbox,
+        onCopy: _copyNumber,
+        onToggleSave: _toggleSave,
       );
     }
 
-    if (dir.tab == NumberTab.byState) {
-      return _stateGrouped(items, saved, firstSeen, theme);
-    }
-
-    return RefreshIndicator(
+    return NumberList(
+      items: items,
+      saved: saved,
+      firstSeen: firstSeen,
       onRefresh: _refresh,
-      // 卡片自带 8dp 外边距，列表不再画分隔线——两者一起用会出现
-      // 「卡片 + 细线」的双重边界，看着很脏。
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
-        itemCount: items.length,
-        itemBuilder: (context, i) => NumberCard(
-          number: items[i],
-          saved: saved.contains(items[i].id),
-          firstSeen: firstSeen[items[i].number],
-          onTap: () => _openInbox(items[i]),
-          onCopy: () => _copyNumber(items[i]),
-          onToggleSave: () =>
-              ref.read(savedNumbersProvider.notifier).toggle(items[i].id),
-        ),
-      ),
+      onTap: _openInbox,
+      onCopy: _copyNumber,
+      onToggleSave: _toggleSave,
     );
   }
 
-  /// 按州分组：州名做小标题，方便按地区挑号。
-  Widget _stateGrouped(
-    List<AvailableNumber> items,
-    Set<String> saved,
-    Map<String, DateTime> firstSeen,
-    ThemeData theme,
-  ) {
-    final groups = <String, List<AvailableNumber>>{};
-    for (final n in items) {
-      // 分组标题直接用中文州名，否则「按州」页里全是 Georgia / Florida。
-      final zh = stateZh(n.state);
-      final key = zh.isEmpty ? '其他' : zh;
-      groups.putIfAbsent(key, () => []).add(n);
-    }
-    final keys = groups.keys.toList()..sort();
-
-    return RefreshIndicator(
-      onRefresh: _refresh,
-      child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
-        itemCount: keys.length,
-        itemBuilder: (context, i) {
-          final key = keys[i];
-          final list = groups[key]!;
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // 州名标题：和设置页的分组标题同一套样式（主色 + 加粗，
-              // 左边留一点缩进对齐卡片内文字），右边跟一个号码数。
-              Padding(
-                padding: const EdgeInsets.fromLTRB(4, 16, 4, 8),
-                child: Row(
-                  children: [
-                    Text(
-                      key,
-                      style: theme.textTheme.labelLarge?.copyWith(
-                        color: theme.colorScheme.primary,
-                        fontWeight: FontWeight.w700,
-                        letterSpacing: 0.3,
-                      ),
-                    ),
-                    const SizedBox(width: 6),
-                    Text(
-                      '${list.length} 个',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              for (final n in list)
-                NumberCard(
-                  number: n,
-                  saved: saved.contains(n.id),
-                  firstSeen: firstSeen[n.number],
-                  onTap: () => _openInbox(n),
-                  onCopy: () => _copyNumber(n),
-                  onToggleSave: () =>
-                      ref.read(savedNumbersProvider.notifier).toggle(n.id),
-                ),
-              const SizedBox(height: 8),
-            ],
-          );
-        },
-      ),
-    );
-  }
-}
-
-/// 筛选芯片行。
-class const _FilterBar({
-  required this.dir,
-  required this.onTab,
-  required this.onClearQuery,
-}) extends StatelessWidget {
-  final NumberDirectoryState dir;
-  final void Function(NumberTab) onTab;
-  final VoidCallback onClearQuery;
-
-  @override
-  Widget build(BuildContext context) {
-    // 用 Wrap 而不是横向 ListView：固定高度 + 横向滚动在窄屏或大字号下
-    // 会把最后一个 chip 切掉一半，而且没有任何「还能滑」的提示。
-    // Wrap 会在放不下时自动换行，永远不会切。
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 6, 12, 6),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 2,
-        crossAxisAlignment: WrapCrossAlignment.center,
-        children: [
-          for (final t in NumberTab.values)
-            FilterChip(
-              selected: dir.tab == t,
-              onSelected: (_) => onTab(t),
-              showCheckmark: false,
-              label: Text('${t.label} ${dir.countFor(t)}'),
-            ),
-          if (dir.query.trim().isNotEmpty)
-            ActionChip(
-              avatar: const Icon(Icons.close, size: 16),
-              label: Text('清除「${dir.query.trim()}」'),
-              onPressed: onClearQuery,
-            ),
-        ],
-      ),
-    );
-  }
+  /// 收藏开关。列表那边只给 id，provider 怎么存不关它的事。
+  void _toggleSave(String id) =>
+      ref.read(savedNumbersProvider.notifier).toggle(id);
 }

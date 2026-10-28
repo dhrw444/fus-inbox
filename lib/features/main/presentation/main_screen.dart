@@ -3,11 +3,10 @@
 /// 用 IndexedStack 保活，切页签不丢滚动位置和已加载的目录。
 library;
 
-import 'package:material_ui/material_ui.dart';
-
 import 'package:fus_inbox/features/numbers/presentation/numbers_screen.dart';
 import 'package:fus_inbox/features/saved/presentation/saved_screen.dart';
 import 'package:fus_inbox/features/settings/presentation/settings_screen.dart';
+import 'package:material_ui/material_ui.dart';
 
 class const MainScreen({super.key}) extends StatefulWidget {
   @override

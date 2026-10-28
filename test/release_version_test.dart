@@ -1,3 +1,9 @@
+/// 发版脚本的版本号校验。
+///
+/// 这个脚本会**直接改 pubspec.yaml**，所以它必须拒绝畸形输入 ——
+/// 写坏了整个项目的版本号就乱了，而且改坏了才发现等于已经晚了。
+library;
+
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';

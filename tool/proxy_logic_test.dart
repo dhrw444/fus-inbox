@@ -1,3 +1,9 @@
+// 代理配置的解析与取值语义。
+//
+// 关键几条：缺 scheme 时按 socks5、端口越界要拒、JSON 坏掉要返回 null
+// 而不是抛异常 —— 存档被手改坏过一次，那时崩的是整个设置页。
+//
+// 纯值类，不碰网络。
 import 'dart:io';
 
 import 'package:fus_inbox/core/proxy/proxy_config.dart';

@@ -1,5 +1,11 @@
 /// 浏览器身份。
 ///
+/// 值类型见 `identity_profile.dart`；UA 解析见 `identity_parse.dart`
+/// （都在这里转出去，引用方不用多写一行 import）。
+///
+/// 这个文件只做一件事：**持有当前身份，并在需要时换一个**。
+/// 谁都不能绕过它直接拼 UA / client hints —— 唯一的 `_current` 在这里。
+///
 /// ## 为什么不再随机编 UA
 ///
 /// 之前这里有一批手写的「真实 Chrome UA」，用户点「换身份」就换一个。
@@ -32,125 +38,11 @@ library;
 
 import 'dart:math';
 
-/// 设备的真实浏览器身份。
-///
-/// 全部字段来自原生 `getDeviceProfile`，没有编造值。
-class BrowserIdentity {
-  // 这个类有 5 个字段和一堆派生 getter（secChUa / secChUaModel / ...）。
-  // 主构造器写法要额外拆一组字段声明出去，读起来比现在绕，不划算。
-  // ignore: use_primary_constructors
-  const BrowserIdentity({
-    required this.userAgent,
-    required this.chromeMajor,
-    required this.model,
-    required this.platformVersion,
-    required this.isMobile,
-  });
+import 'package:fus_inbox/core/webview/identity_parse.dart';
+import 'package:fus_inbox/core/webview/identity_profile.dart';
 
-  /// 完整的 UA 串，已剥掉 WebView 特征。
-  final String userAgent;
-
-  /// 主版本号，如 `141`。client hints 用它。
-  final String chromeMajor;
-
-  /// 机型串，如 `SM-S918B`。
-  final String model;
-
-  /// 平台版本，如 `"14"`。`Sec-CH-UA-Platform-Version` 用它。
-  final String platformVersion;
-
-  final bool isMobile;
-
-  /// `Sec-CH-UA` 的值。
-  ///
-  /// 必须和 UA 里的版本**完全一致**。真 Chrome 的格式是：
-  /// `"Chromium";v="141", "Google Chrome";v="141", "Not?A_Brand";v="99"`
-  /// 那个 `Not?A_Brand` 是 Chrome 的 GREASE 值，每个大版本会换，
-  /// 但 `99` 在 110+ 一直是合法的。
-  String get secChUa =>
-      '"Chromium";v="$chromeMajor", "Google Chrome";v="$chromeMajor", '
-      '"Not?A_Brand";v="99"';
-
-  /// `Sec-CH-UA-Platform` 的值。
-  String get secChUaPlatform => '"Android"';
-
-  /// `Sec-CH-UA-Model` 的值。
-  String get secChUaModel => '"$model"';
-
-  /// 原生探测失败时的兜底。
-  ///
-  /// 不编版本号：用 Chrome 141 这个真实存在的大版本，
-  /// 但机型串留空 —— 宁可少一个头，也不给出一组自相矛盾的假身份。
-  static const fallback = BrowserIdentity(
-    userAgent:
-        'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 '
-        '(KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36',
-    chromeMajor: '141',
-    model: '',
-    platformVersion: '14',
-    isMobile: true,
-  );
-}
-
-/// 从 WebView 的默认 UA 里提取真实身份。
-///
-/// 输入形如：
-/// ```
-/// Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv)
-/// AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0
-/// Chrome/141.0.7390.122 Mobile Safari/537.36
-/// ```
-///
-/// 输出要剥掉两处 WebView 招牌：
-///   1. `; wv` —— WebView 专属标记
-///   2. `Version/4.0 ` —— 只有 WebView 带这一段
-///
-/// 机型串里的 `Build/...` 也要去掉：真 Chrome 的 UA 里没有它。
-BrowserIdentity parseWebViewUserAgent(
-  String raw, {
-  String? model,
-  String? platformVersion,
-}) {
-  final chrome = RegExp(r'Chrome/([\d.]+)').firstMatch(raw)?.group(1);
-  if (chrome == null) return BrowserIdentity.fallback;
-
-  final major = chrome.split('.').first;
-
-  // 机型串：优先用原生给的 Build.MODEL。
-  //
-  // 这一点很关键：Chrome 的 UA 缩减会把机型串抹成 "K"（见第三个测试用例）。
-  // 从 UA 里抠出来就是 "K"，那是个明显的缩减版特征。
-  // Build.MODEL 才是这台设备真实的机型名。
-  var deviceModel = model ?? '';
-  if (deviceModel.isEmpty) {
-    // 从 "(Linux; Android 14; SM-S918B Build/..." 里抠。
-    final m = RegExp(r'Android [\d.]+;\s*([^;)]+?)(?:\s+Build/|;|\))')
-        .firstMatch(raw);
-    deviceModel = m?.group(1)?.trim() ?? '';
-  }
-
-  final platform = platformVersion ?? _androidFrom(raw);
-
-  // 重建 UA：保留 Android 版本和机型，去掉 wv / Build / Version/4.0。
-  final cleaned =
-      'Mozilla/5.0 (Linux; Android $platform'
-      '${deviceModel.isEmpty ? '' : '; $deviceModel'}) '
-      'AppleWebKit/537.36 (KHTML, like Gecko) '
-      'Chrome/$chrome Mobile Safari/537.36';
-
-  return BrowserIdentity(
-    userAgent: cleaned,
-    chromeMajor: major,
-    model: deviceModel,
-    platformVersion: platform,
-    isMobile: true,
-  );
-}
-
-String _androidFrom(String raw) {
-  final m = RegExp(r'Android ([\d.]+)').firstMatch(raw);
-  return m?.group(1) ?? '14';
-}
+export 'package:fus_inbox/core/webview/identity_parse.dart';
+export 'package:fus_inbox/core/webview/identity_profile.dart';
 
 /// 当前身份。
 ///
@@ -206,35 +98,6 @@ void restoreIdentity(BrowserIdentity identity) {
   _current = identity;
 }
 
-/// 序列化成能落盘的形状。
-Map<String, Object?> identityToJson(BrowserIdentity identity) => {
-  'ua': identity.userAgent,
-  'major': identity.chromeMajor,
-  'model': identity.model,
-  'platform': identity.platformVersion,
-  'mobile': identity.isMobile,
-};
-
-/// 从落盘数据恢复。字段不全或类型不对就返回 null，由调用方回落到真实值。
-BrowserIdentity? identityFromJson(Object? raw) {
-  if (raw is! Map) return null;
-  final ua = raw['ua'];
-  final major = raw['major'];
-  final model = raw['model'];
-  final platform = raw['platform'];
-  if (ua is! String || major is! String || model is! String) return null;
-  if (ua.isEmpty || major.isEmpty || model.isEmpty) return null;
-  return BrowserIdentity(
-    userAgent: ua,
-    chromeMajor: major,
-    model: model,
-    platformVersion: platform is String && platform.isNotEmpty
-        ? platform
-        : '14',
-    isMobile: raw['mobile'] is bool ? raw['mobile']! as bool : true,
-  );
-}
-
 /// UA 字符串。收件箱 WebView 和所有原生 HTTP 都用这一个。
 String get currentUserAgent => _current.userAgent;
 
@@ -244,33 +107,13 @@ String get currentUserAgent => _current.userAgent;
 /// 那正是撕裂的来源。现在 UA 和 hints 一起换，始终自洽。
 ///
 /// 机型串从 [knownModels] 里挑，Chrome 版本在真实版本附近浮动
-/// （±3 个大版本，都在真实存在的范围内）。
+/// （±2 个大版本，都在真实存在的范围内）。
 BrowserIdentity rotateIdentity([Random? rnd]) {
   final r = rnd ?? Random();
   final base = _current;
 
-  // 注释原来就说「真实内核版本是基准」—— 意图是对的，实现是错的：
-  // 基准取的是 base.chromeMajor，那是**自己上一次的输出**，等于让结果
-  // 喂给自己。基准一律用 [_kernelMajor]（原生探测到的内核真值）。
-  // 探测不到才退回当前值 —— 有漂移风险，但总比没有基准强。
-  final baseMajor = _kernelMajor ?? int.tryParse(base.chromeMajor) ?? 141;
-  // 对称窗口 {−2..+2}：期望 0，不会系统性漂移。
-  // 原来是 `r.nextInt(4) - 2` = {−2,−1,0,+1}，均值 −0.5。
-  final major = baseMajor + r.nextInt(5) - 2;
-  final version = '$major.0.${6000 + r.nextInt(4000)}.${r.nextInt(200)}';
-
-  final model = _knownModels[r.nextInt(_knownModels.length)];
-
-  _current = BrowserIdentity(
-    userAgent:
-        'Mozilla/5.0 (Linux; Android ${base.platformVersion}; $model) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/$version Mobile Safari/537.36',
-    chromeMajor: '$major',
-    model: model,
-    platformVersion: base.platformVersion,
-    isMobile: true,
-  );
+  // 基准见 [_mintFrom]：一律用内核真值，不用上一次的输出。
+  _current = _mintFrom(base, r);
   return _current;
 }
 
@@ -287,13 +130,21 @@ BrowserIdentity mintIdentity([Random? rnd]) {
   final r = rnd ?? Random();
   final base = _current;
 
-  // 注释原来就说「真实内核版本是基准」—— 意图是对的，实现是错的：
-  // 基准取的是 base.chromeMajor，那是**自己上一次的输出**，等于让结果
-  // 喂给自己。基准一律用 [_kernelMajor]（原生探测到的内核真值）。
-  // 探测不到才退回当前值 —— 有漂移风险，但总比没有基准强。
+  return _mintFrom(base, r);
+}
+
+/// 按 [base] 平台版本 + 内核基准造一个自洽的新身份。
+///
+/// [rotateIdentity] 和 [mintIdentity] 的唯一差别是「写不写 `_current`」，
+/// 造身份这一步是同一个 —— 以前两处各写一份，改一处忘另一处就会造出
+/// 两种不同规则的「新身份」。
+///
+/// 基准一律取 [_kernelMajor]（原生探测到的内核真值）。取 `base.chromeMajor`
+/// 等于拿自己上一次的输出当输入，会单向漂移。
+BrowserIdentity _mintFrom(BrowserIdentity base, Random r) {
   final baseMajor = _kernelMajor ?? int.tryParse(base.chromeMajor) ?? 141;
-  // 对称窗口 {−2..+2}：期望 0，不会系统性漂移。
-  // 原来是 `r.nextInt(4) - 2` = {−2,−1,0,+1}，均值 −0.5。
+  // 对称窗口 {−2..+2}，期望 0。原来是 `r.nextInt(4) - 2` = {−2,−1,0,+1}，
+  // 均值 −0.5，每换一次身份就往下漂半个大版本。
   final major = baseMajor + r.nextInt(5) - 2;
   final version = '$major.0.${6000 + r.nextInt(4000)}.${r.nextInt(200)}';
   final model = _knownModels[r.nextInt(_knownModels.length)];
@@ -334,25 +185,14 @@ void applyBoundIdentity({
   final m = model.isNotEmpty ? model : modelFromUserAgent(userAgent);
   final major = chromeMajor.isNotEmpty
       ? chromeMajor
-      : _chromeMajorFrom(userAgent);
+      : chromeMajorFromUserAgent(userAgent);
   _current = BrowserIdentity(
     userAgent: userAgent,
     chromeMajor: major,
     model: m,
-    platformVersion: _androidFrom(userAgent),
+    platformVersion: platformVersionFromUserAgent(userAgent),
     isMobile: true,
   );
-}
-
-/// 从 UA 里取机型串。取不到返回空串，由调用方决定怎么兜。
-String modelFromUserAgent(String ua) {
-  final m = RegExp(r'Android [\d.]+; ([^;)]+)\)').firstMatch(ua);
-  return m?.group(1)?.trim() ?? '';
-}
-
-String _chromeMajorFrom(String ua) {
-  final m = RegExp(r'Chrome/(\d+)').firstMatch(ua);
-  return m?.group(1) ?? '141';
 }
 
 /// 真实存在的 Android 机型串。

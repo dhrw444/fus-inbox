@@ -1,8 +1,14 @@
+/// Expressive 主题包装不能改掉任何颜色。
+///
+/// 那一层只该加过渡动画。它要是顺手改了一个语义色，整个 App 的配色就
+/// 跟着歪，而这种偏差在界面上很难一眼看出来 —— 所以逐色比对。
+library;
+
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_3_expressive/material_3_expressive.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:fus_inbox/core/theme/app_theme.dart';
 import 'package:fus_inbox/core/theme/expressive_theme.dart';
+import 'package:material_3_expressive/material_3_expressive.dart';
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   for (final brightness in Brightness.values) {

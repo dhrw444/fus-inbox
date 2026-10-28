@@ -4,14 +4,13 @@
 library;
 
 import 'package:flutter/services.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-
 import 'package:fus_inbox/features/inbox/presentation/inbox_screen.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
-import 'package:fus_inbox/features/numbers/domain/first_seen.dart';
+import 'package:fus_inbox/features/numbers/application/first_seen_store.dart';
 import 'package:fus_inbox/features/numbers/presentation/widgets/number_card.dart';
 import 'package:fus_inbox/features/saved/application/saved_provider.dart';
+import 'package:material_ui/material_ui.dart';
 
 class const SavedScreen({super.key}) extends ConsumerWidget {
   @override
