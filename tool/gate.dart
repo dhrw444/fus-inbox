@@ -30,8 +30,10 @@ import 'dart:io';
 
 import 'can_rotate_test.dart' as canRotate;
 import 'findproxy_failclosed_test.dart' as findproxy;
+import 'inbox_search_test.dart' as inboxSearch;
 import 'first_seen_test.dart' as firstSeen;
 import 'identity_drift_test.dart' as drift;
+import 'identity_platform_test.dart' as idPlatform;
 import 'leak_probe.dart' as leak;
 import 'ledger_test.dart' as ledger;
 import 'loaded_probe.dart' as loaded;
@@ -54,10 +56,12 @@ void main() {
     '换出口的可行性（canRotate）': canRotate.main,
     '造身份自洽性': mint.main,
     '一个代理一个身份': drift.main,
+    '身份的跨平台一致性': idPlatform.main,
     '验证轮状态机': verify.main,
     'loaded 语义': loaded.main,
     '目录排序稳定性': sort.main,
     '收录时间解析': firstSeen.main,
+    '收件箱搜索': inboxSearch.main,
     'findProxy 兜底': findproxy.main,
     'ready 超时语义': ready.main,
     '代理失败必须停': leak.main,

@@ -91,7 +91,11 @@ void applyBrowserHeaders(
     headers.set('sec-ch-ua-model', id.secChUaModel);
   }
   if (id.platformVersion.isNotEmpty) {
-    headers.set('sec-ch-ua-platform-version', '"${id.platformVersion}.0.0"');
+    // 用派生 getter，不要在这里拼 —— 两个平台的形状不一样：
+    // 安卓存的是 `14`（真 Chrome 发 `"14.0.0"`），Windows 存的是
+    // `10.0.0`（本身就是完整四段式）。无条件补 `.0.0` 会在 Windows 上
+    // 拼出 `"10.0.0.0.0"`，一个不存在的版本号。
+    headers.set('sec-ch-ua-platform-version', id.secChUaPlatformVersion);
   }
   if (referer != null) {
     headers.set(HttpHeaders.refererHeader, referer);

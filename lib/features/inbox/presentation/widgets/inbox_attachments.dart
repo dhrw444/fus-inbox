@@ -1,4 +1,4 @@
-/// 收件页的两个附件：用户手动过验证时的底栏、列表底部的加载态。
+/// 收件页的三个附件：手动过验证时的底栏、列表底部的加载态、搜索小结。
 ///
 /// 都是**纯展示 + 回调**，不碰内部状态。拆出来的理由和
 /// `inbox_empty_state.dart` 一样：让 `inbox_screen` 只剩编排。
@@ -133,6 +133,62 @@ class const ListFooter({
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Center(
         child: TextButton(onPressed: onLoadMore, child: const Text('加载更早的消息')),
+      ),
+    );
+  }
+}
+
+/// 搜索态下贴在列表顶部的一条小结。
+///
+/// 只做一件事：告诉用户**搜到了多少条、其中多少条是真的带验证码**。
+///
+/// 为什么值得单独一行：用户搜「1234」时，命中的可能是验证码本身，也可能
+/// 只是正文里恰好有这串数字（订单号、快递单号、金额）。光看到一个列表
+/// 分不清，而验证码恰恰是他要的那个 —— 所以带码条数单独报出来。
+class const InboxSearchSummary({
+  required this.theme,
+  required this.matchCount,
+  required this.codeCount,
+  required this.codeOnly,
+  required this.query,
+}) extends StatelessWidget {
+  final ThemeData theme;
+  final int matchCount;
+
+  /// 命中里带验证码的条数。
+  final int codeCount;
+
+  final bool codeOnly;
+  final String query;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = theme.colorScheme;
+    final q = query.trim();
+
+    // 开着「只看验证码」时，numbers 就是全部命中 —— 不用重复报「其中 N 条」。
+    final text = codeOnly
+        ? '这个号收到过 $matchCount 条带验证码的短信'
+        : (q.isEmpty
+              ? '共 $matchCount 条'
+              : '匹配 $matchCount 条'
+                    '${codeCount > 0 ? ' · 其中 $codeCount 条带验证码' : ''}');
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+      child: Row(
+        children: [
+          Icon(Icons.search, size: 14, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              text,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

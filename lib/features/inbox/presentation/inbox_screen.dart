@@ -71,6 +71,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 「这个出口静默过不去」，到点自己弹出来（见 [_pumpVerification]）。
   bool _showChallenge = false;
 
+  /// 搜索框展开了没有。
+  bool _searching = false;
+
+  /// 搜索关键词（原样，未归一化）。空串 = 没在搜。
+  ///
+  /// 放在**页面**这一层而不是 [InboxStore] 里：store 是「站点推过来什么」
+  /// 的镜像，搜索是「我怎么看这些数据」，两件事。放进 store 还会被
+  /// 下一帧数据覆盖掉。
+  String _query = '';
+
+  /// 只看带验证码的那几条。
+  bool _codeOnly = false;
+
+  /// 搜索输入框的控制器。归本页持有 —— 关闭搜索时要清空它。
+  final _searchController = TextEditingController();
+
   /// 这一轮验证的计时与闸门。
   ///
   /// 逻辑抽到 [VerifyRound] 里是因为这段状态机**没法在 Flutter 之外
@@ -200,6 +216,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _watchdog?.cancel();
     _loadMoreWatchdog?.cancel();
     _verifyPoll?.cancel();
+    _searchController.dispose();
     // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
     _store.detach();
     // 页面走了就让引擎停在空白页，别留着继续加载、继续往已卸载的
@@ -818,6 +835,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         appBar: InboxAppBar(
           number: widget.number,
           messageCount: s.messages.length,
+          searching: _searching,
+          controller: _searchController,
+          codeOnly: _codeOnly,
+          onQuery: (q) => setState(() => _query = q),
+          onOpenSearch: () => setState(() => _searching = true),
+          onCloseSearch: () {
+            // 关闭时把关键词和「只看验证码」一起清掉 —— 下次点开搜索是
+            // 全新的，不会莫名其妙只剩几条。
+            _searchController.clear();
+            setState(() {
+              _searching = false;
+              _query = '';
+              _codeOnly = false;
+            });
+          },
+          onToggleCodeOnly: () => setState(() => _codeOnly = !_codeOnly),
           onChallenge: _openChallenge,
           onRotateIdentity: _rotator.rotateIdentity,
           onRescan: _rescan,
@@ -830,6 +863,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               state: s,
               theme: theme,
               prefs: ref.watch(prefsProvider),
+              query: _query,
+              codeOnly: _codeOnly,
               onRescan: _rescan,
               onChallenge: () => _openChallenge(reload: true),
               onRestart: _rotator.restartWithNewIdentity,

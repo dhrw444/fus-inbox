@@ -34,6 +34,7 @@ class BrowserIdentity {
     required this.model,
     required this.platformVersion,
     required this.isMobile,
+    this.platform = platformAndroid,
   });
 
   /// 完整的 UA 串，已剥掉 WebView 特征。
@@ -50,6 +51,33 @@ class BrowserIdentity {
 
   final bool isMobile;
 
+  /// 操作系统名：`Android` 或 `Windows`。
+  ///
+  /// ## 为什么必须有这个字段
+  ///
+  /// `Sec-CH-UA-Platform` 以前是**写死 `"Android"`** 的，UA 串也写死
+  /// `(Linux; Android …) Mobile Safari/537.36`。那在安卓上没问题，到了
+  /// Windows 上就是**自相矛盾的三件套**：
+  ///
+  ///   - 底下跑的引擎是 WebView2（桌面 Chromium）
+  ///   - UA 说「我是安卓手机」
+  ///   - `Sec-CH-UA-Platform` 说 `"Android"`
+  ///
+  /// 而桌面 WebView2 的默认真实 UA 是 `(Windows NT 10.0; Win64; x64) …
+  /// Chrome/… Safari/537.36 Edg/…` —— 里面那个 `Edg/` 是 Edge 内核的招牌
+  /// （WebView2 基于 Edge），和安卓那套 `; wv` / `Version/4.0` 是同一类
+  /// 东西，都得剥。
+  ///
+  /// 把这个维度显式存下来，三个投影（UA / hints / 落盘）才能由同一份真相
+  /// 推出来，不会各写各的。
+  final String platform;
+
+  static const platformAndroid = 'Android';
+  static const platformWindows = 'Windows';
+
+  /// 桌面平台（Windows）没有机型串，也不该发 `Sec-CH-UA-Model`。
+  bool get isDesktop => platform != platformAndroid;
+
   /// `Sec-CH-UA` 的值。
   ///
   /// 必须和 UA 里的版本**完全一致**。真 Chrome 的格式是：
@@ -61,7 +89,18 @@ class BrowserIdentity {
       '"Not?A_Brand";v="99"';
 
   /// `Sec-CH-UA-Platform` 的值。
-  String get secChUaPlatform => '"Android"';
+  String get secChUaPlatform => '"$platform"';
+
+  /// `Sec-CH-UA-Platform-Version` 的值（**含引号**）。
+  ///
+  /// 两边形状不一样，别硬用同一个模板拼：
+  ///   - 安卓：字段里存的是 `14`，真 Chrome 发的是 `"14.0.0"`；
+  ///   - Windows：真 Chrome 发的是 `"10.0.0"`，本身就是完整四段式。
+  ///
+  /// 以前调用方无条件 `'"${platformVersion}.0.0"'`，在 Windows 上会拼出
+  /// `"10.0.0.0.0"` —— 一个不存在的版本号。
+  String get secChUaPlatformVersion =>
+      '"${isDesktop ? platformVersion : '$platformVersion.0.0'}"';
 
   /// `Sec-CH-UA-Model` 的值。
   String get secChUaModel => '"$model"';
@@ -88,6 +127,9 @@ Map<String, Object?> identityToJson(BrowserIdentity identity) => {
   'model': identity.model,
   'platform': identity.platformVersion,
   'mobile': identity.isMobile,
+  // 键名是 `os` 不是 `platform` —— 上面那个 `platform` 存的是平台**版本**
+  // （`14`），名字已经占了。老记录里没有这个键，一律当安卓（那时候只有安卓）。
+  'os': identity.platform,
 };
 
 /// 从落盘数据恢复。字段不全或类型不对就返回 null，由调用方回落到真实值。
@@ -98,7 +140,12 @@ BrowserIdentity? identityFromJson(Object? raw) {
   final model = raw['model'];
   final platform = raw['platform'];
   if (ua is! String || major is! String || model is! String) return null;
-  if (ua.isEmpty || major.isEmpty || model.isEmpty) return null;
+  // 只要求 UA 和大版本。**不要求 model**：Windows 的身份天生没有机型串，
+  // 以前那条 `model.isEmpty → null` 会把桌面身份整个判成坏数据、
+  // 回落成安卓兜底 —— 正好和这个字段要修的问题是一件事。
+  if (ua.isEmpty || major.isEmpty) return null;
+  final os = raw['os'];
+  final platformName = os is String && os.isNotEmpty ? os : 'Android';
   return BrowserIdentity(
     userAgent: ua,
     chromeMajor: major,
@@ -106,6 +153,9 @@ BrowserIdentity? identityFromJson(Object? raw) {
     platformVersion: platform is String && platform.isNotEmpty
         ? platform
         : '14',
-    isMobile: raw['mobile'] is bool ? raw['mobile']! as bool : true,
+    isMobile: raw['mobile'] is bool
+        ? raw['mobile']! as bool
+        : platformName == BrowserIdentity.platformAndroid,
+    platform: platformName,
   );
 }

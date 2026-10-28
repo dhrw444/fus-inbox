@@ -19,20 +19,37 @@ library;
 
 import 'package:fus_inbox/core/webview/identity_profile.dart';
 
-/// 从 WebView 的默认 UA 里提取真实身份。
+/// 这个 UA 是不是桌面平台（Windows）报的。
 ///
-/// 输入形如：
+/// 判据用 `Windows NT`：安卓 WebView 报的是 `(Linux; Android …)`，
+/// Windows 上的 WebView2 报的是 `(Windows NT 10.0; Win64; x64)`。
+/// 两边前缀就不同，不需要更复杂的嗅探。
+bool isDesktopUserAgent(String raw) => raw.contains('Windows NT');
+
+/// 从 UA 里提取真实身份。**按平台走两套规则。**
+///
+/// 安卓的输入形如：
 /// ```
 /// Mozilla/5.0 (Linux; Android 14; SM-S918B Build/UP1A.231005.007; wv)
 /// AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0
 /// Chrome/141.0.7390.122 Mobile Safari/537.36
 /// ```
+/// 要剥 `; wv`、`Version/4.0`、机型串里的 `Build/...`。
 ///
-/// 输出要剥掉两处 WebView 招牌：
-///   1. `; wv` —— WebView 专属标记
-///   2. `Version/4.0 ` —— 只有 WebView 带这一段
+/// Windows 的输入形如：
+/// ```
+/// Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+/// (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36 Edg/141.0.0.0
+/// ```
+/// 要剥尾巴上的 ` Edg/<版本>`。桌面 UA 里**没有机型**，也不该有
+/// `Mobile` —— 所以 model 留空、`isMobile` 为 false。
 ///
-/// 机型串里的 `Build/...` 也要去掉：真 Chrome 的 UA 里没有它。
+/// ## 为什么以前在 Windows 上是错的
+///
+/// 这个函数以前**无条件**拿安卓模板重建 UA（`(Linux; Android $platform;
+/// $model) … Mobile Safari/537.36`）。于是 Windows 上：真实 UA 是桌面
+/// Edge 内核的，被重建成「安卓手机」—— 底下的引擎是 WebView2、UA 说自己是
+/// 安卓、`Sec-CH-UA-Platform` 也写 `"Android"`，三件套互相矛盾。
 BrowserIdentity parseWebViewUserAgent(
   String raw, {
   String? model,
@@ -48,6 +65,26 @@ BrowserIdentity parseWebViewUserAgent(
   // 这一点很关键：Chrome 的 UA 缩减会把机型串抹成 "K"（见第三个测试用例）。
   // 从 UA 里抠出来就是 "K"，那是个明显的缩减版特征。
   // Build.MODEL 才是这台设备真实的机型名。
+  // ── Windows：桌面 UA，没有机型、不是 mobile ──
+  if (isDesktopUserAgent(raw)) {
+    // 剥掉尾巴上的 ` Edg/<版本>`。`\s*` 兜住「Edg 前面有空格」这个前提，
+    // 但不要写成 `\s+` —— UA 里那段是 `Safari/537.36 Edg/141.0.0.0`，
+    // 用 `\s*` 更稳（少了它就得靠调用方保证格式）。
+    final cleaned = raw.replaceAll(RegExp(r'\s*Edg/[\d.]+'), '').trim();
+    return BrowserIdentity(
+      userAgent: cleaned,
+      chromeMajor: major,
+      // 桌面 Chrome 的 UA 里没有机型位。
+      model: '',
+      // 真 Chrome 在 Windows 上发 `"10.0.0"`（本身就是完整四段式，
+      // 别再补 `.0.0`，见 secChUaPlatformVersion 的注释）。
+      platformVersion: platformVersion ?? '10.0.0',
+      isMobile: false,
+      platform: BrowserIdentity.platformWindows,
+    );
+  }
+
+  // ── 安卓：保持原样 ──
   var deviceModel = model ?? '';
   if (deviceModel.isEmpty) {
     // 从 "(Linux; Android 14; SM-S918B Build/..." 里抠。
@@ -71,12 +108,19 @@ BrowserIdentity parseWebViewUserAgent(
     model: deviceModel,
     platformVersion: platform,
     isMobile: true,
+    platform: BrowserIdentity.platformAndroid,
   );
 }
 
 /// 从 UA 里取 Android 版本。取不到就按 Chrome UA 缩减后的固定值
 /// `14` 兜底 —— 缩减版 UA 里写死的就是这个数（见本文件开头）。
 String platformVersionFromUserAgent(String raw) {
+  // Windows：真 Chrome 在 Windows 上发 `"10.0.0"`。
+  //
+  // 注意**不从 UA 里取** —— UA 里写的是 `Windows NT 10.0`，那是系统版本，
+  // 和 client hints 的 `platform-version` 不是同一个数（后者是「平台版本」，
+  // 微软出于兼容一直报 10.0.0）。照 UA 取会把两个不同语义的东西对上。
+  if (isDesktopUserAgent(raw)) return '10.0.0';
   final m = RegExp(r'Android ([\d.]+)').firstMatch(raw);
   return m?.group(1) ?? '14';
 }

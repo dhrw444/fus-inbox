@@ -147,6 +147,31 @@ BrowserIdentity _mintFrom(BrowserIdentity base, Random r) {
   // 均值 −0.5，每换一次身份就往下漂半个大版本。
   final major = baseMajor + r.nextInt(5) - 2;
   final version = '$major.0.${6000 + r.nextInt(4000)}.${r.nextInt(200)}';
+
+  // ── Windows：桌面 UA。没有机型位，也不是 mobile ──
+  //
+  // 桌面 Chrome 的 UA 长这样（Win64 是 64 位 Windows 的固定段）：
+  //   Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
+  //   (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36
+  //
+  // 这里**只随机大版本**：桌面 UA 里没有机型可换，能变的就是版本号。
+  // 以前不分平台，在 Windows 上也去 `_knownModels`（全是安卓机型）里抽一个
+  // 塞进 UA —— 那正是「安卓机身串 + WebView2 引擎」这种自相矛盾的来源。
+  if (base.platform == BrowserIdentity.platformWindows) {
+    return BrowserIdentity(
+      userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) '
+          'Chrome/$version Safari/537.36',
+      chromeMajor: '$major',
+      model: '',
+      // 真 Chrome 在 Windows 上发 `"10.0.0"`（完整四段式）。
+      platformVersion: base.platformVersion,
+      isMobile: false,
+      platform: BrowserIdentity.platformWindows,
+    );
+  }
+
   final model = _knownModels[r.nextInt(_knownModels.length)];
 
   return BrowserIdentity(
@@ -158,6 +183,7 @@ BrowserIdentity _mintFrom(BrowserIdentity base, Random r) {
     model: model,
     platformVersion: base.platformVersion,
     isMobile: true,
+    platform: BrowserIdentity.platformAndroid,
   );
 }
 
@@ -186,12 +212,19 @@ void applyBoundIdentity({
   final major = chromeMajor.isNotEmpty
       ? chromeMajor
       : chromeMajorFromUserAgent(userAgent);
+  // 平台必须从 UA 现解，不能写死安卓 —— 账本里存的可能就是一条 Windows
+  // 身份（换平台、或者用户在 Windows 上用过这个号）。写死的话，
+  // 「切回原出口原身份」会把一条桌面 UA 配上 `Sec-CH-UA-Platform: "Android"`。
+  final desktop = isDesktopUserAgent(userAgent);
   _current = BrowserIdentity(
     userAgent: userAgent,
     chromeMajor: major,
     model: m,
     platformVersion: platformVersionFromUserAgent(userAgent),
-    isMobile: true,
+    isMobile: !desktop,
+    platform: desktop
+        ? BrowserIdentity.platformWindows
+        : BrowserIdentity.platformAndroid,
   );
 }
 
