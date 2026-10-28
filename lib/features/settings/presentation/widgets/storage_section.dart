@@ -5,6 +5,7 @@
 /// 这个文件里，不散回屏幕。
 library;
 
+import 'package:fus_inbox/features/settings/presentation/widgets/destructive_confirm.dart';
 import 'package:fus_inbox/core/translate/translation_provider.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/features/settings/presentation/widgets/settings_group.dart';
@@ -55,6 +56,16 @@ class const StorageSection({super.key}) extends ConsumerWidget {
 
   Future<void> _clearDirectoryCache(BuildContext context, WidgetRef ref) async {
     final n = ref.read(numberDirectoryProvider).all.length;
+    if (n == 0) return;
+    final yes = await confirmDestructive(
+      context,
+      title: '清空号码目录缓存？',
+      message:
+          '下次进号码页要重新从站点拉一遍目录（$n 个号），'
+          '拉的时候会慢一些。',
+      confirmLabel: '清空',
+    );
+    if (!yes) return;
     await ref.read(numberDirectoryProvider.notifier).clearCache();
     if (!context.mounted) return;
     ScaffoldMessenger.of(context)
@@ -62,8 +73,19 @@ class const StorageSection({super.key}) extends ConsumerWidget {
       ..showSnackBar(SnackBar(content: Text('已清除 $n 个号码的目录缓存')));
   }
 
-  void _clearTranslationCache(BuildContext context, WidgetRef ref) {
+  Future<void> _clearTranslationCache(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
     final n = ref.read(translationStoreProvider).length;
+    if (n == 0) return;
+    final yes = await confirmDestructive(
+      context,
+      title: '清空翻译缓存？',
+      message: '已翻好的 $n 条译文会被丢掉，再打开那些短信时要重新翻译一遍。',
+      confirmLabel: '清空',
+    );
+    if (!yes) return;
     ref.read(translationStoreProvider.notifier).clear();
     ScaffoldMessenger.of(context)
       ..clearSnackBars()

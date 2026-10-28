@@ -8,6 +8,7 @@
 /// `proxy_list`，状态卡在 `proxy/proxy_cards.dart`）。
 library;
 
+import 'package:fus_inbox/features/settings/presentation/widgets/destructive_confirm.dart';
 import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 import 'package:fus_inbox/features/settings/presentation/proxy/proxy_cards.dart';
 import 'package:fus_inbox/features/settings/presentation/widgets/proxy_add_field.dart';
@@ -164,7 +165,19 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
                 if (!mounted) return;
                 setState(() => _message = '已恢复被删的内置代理');
               },
-              onClearLedger: () {
+              onClearLedger: () async {
+                // 这条改的是**配额轮换的判定依据**（每个代理看过几个号），
+                // 后果离按钮很远 —— 事后想联都联不起来。必须事先说清。
+                final yes = await confirmDestructive(
+                  context,
+                  title: '清空使用记录？',
+                  message:
+                      '所有代理的用量会归零，重新按「一个身份看 3 个号」'
+                      '轮换。已经发出去的请求不影响，但之后换出口的时机变了。'
+                      '\n\n这一步不可撤销。',
+                  confirmLabel: '清空',
+                );
+                if (!yes || !mounted) return;
                 notifier.clearLedger();
                 setState(() => _message = '使用记录已清空');
               },
@@ -173,7 +186,26 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
               all: all,
               state: state,
               onUse: notifier.select,
-              onRemove: notifier.remove,
+              onRemove: (id) async {
+                final target = all.firstWhere(
+                  (e) => e.id == id,
+                  orElse: () => all.first,
+                );
+                // 内置与否看它**在不在出厂清单里** —— `ProxyConfig` 本身
+                // 不记这个（同一份结构同时承载内置和手加两种来源）。
+                final isBuiltin = state.builtin.any((b) => b.id == id);
+                final yes = await confirmDestructive(
+                  context,
+                  title: '删掉这条代理？',
+                  message: isBuiltin
+                      ? '「${target.displayName}」是内置的，删掉之后可以从上面的'
+                            '「恢复内置」找回来。'
+                      : '「${target.displayName}」是你自己加的，删掉**找不回来**。',
+                  confirmLabel: '删掉',
+                );
+                if (!yes) return;
+                notifier.remove(id);
+              },
             ),
           ],
         ],
