@@ -65,7 +65,7 @@ class const StorageSection({super.key}) extends ConsumerWidget {
           '拉的时候会慢一些。',
       confirmLabel: '清空',
     );
-    if (!yes) return;
+    if (!yes || !context.mounted) return;
     await ref.read(numberDirectoryProvider.notifier).clearCache();
     if (!context.mounted) return;
     ScaffoldMessenger.of(context)
@@ -85,7 +85,10 @@ class const StorageSection({super.key}) extends ConsumerWidget {
       message: '已翻好的 $n 条译文会被丢掉，再打开那些短信时要重新翻译一遍。',
       confirmLabel: '清空',
     );
-    if (!yes) return;
+    // await 回来之后 context 可能已经失效（用户切走了）。
+    // 不加这个守卫 analyzer 会报 use_build_context_synchronously，
+    // 而且下面 `ScaffoldMessenger.of(context)` 在失效 context 上确实会炸。
+    if (!yes || !context.mounted) return;
     ref.read(translationStoreProvider.notifier).clear();
     ScaffoldMessenger.of(context)
       ..clearSnackBars()
