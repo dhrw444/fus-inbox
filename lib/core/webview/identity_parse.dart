@@ -26,6 +26,20 @@ import 'package:fus_inbox/core/webview/identity_profile.dart';
 /// 两边前缀就不同，不需要更复杂的嗅探。
 bool isDesktopUserAgent(String raw) => raw.contains('Windows NT');
 
+/// 从安卓 UA 里抠机型串。**只有这一处定义。**
+///
+/// 收尾用 `(?:\s+Build/|;|\))` 把 `Build/...` 一并剥掉 —— 真 Chrome 的 UA
+/// 里没有那一段，留着等于自报「我是 WebView」。
+///
+/// 以前这里有两套正则：`parseWebViewUserAgent` 剥 `Build/`，
+/// 而 `modelFromUserAgent` 那道写的是 `([^;)]+)\)`，会把
+/// `SM-S918B Build/UP1A.231005.007` **整段**当机型返回 ——
+/// 于是 `applyBoundIdentity` 会把 `Build/...` 塞进 `sec-ch-ua-model`，
+/// 一个只有 WebView 才有的特征。同一件事只有一个定义处。
+final _androidModelRe = RegExp(
+  r'Android [\d.]+;\s*([^;)]+?)(?:\s+Build/|;|\))',
+);
+
 /// 从 UA 里提取真实身份。**按平台走两套规则。**
 ///
 /// 安卓的输入形如：
@@ -67,9 +81,14 @@ BrowserIdentity parseWebViewUserAgent(
   // Build.MODEL 才是这台设备真实的机型名。
   // ── Windows：桌面 UA，没有机型、不是 mobile ──
   if (isDesktopUserAgent(raw)) {
-    // 剥掉尾巴上的 ` Edg/<版本>`。`\s*` 兜住「Edg 前面有空格」这个前提，
-    // 但不要写成 `\s+` —— UA 里那段是 `Safari/537.36 Edg/141.0.0.0`，
-    // 用 `\s*` 更稳（少了它就得靠调用方保证格式）。
+    // 剥掉尾巴上的 ` Edg/<版本>`。
+    //
+    // 用 `\s*` 而不是 `\s+`：前者允许 `Edg/` 紧贴前文（零空白），
+    // 也就是**不依赖**「Edg 前面一定有空格」这个前提。真 UA 里那一段是
+    // `Safari/537.36 Edg/141.0.0.0`，两种写法都能匹配上；区别在容错。
+    //
+    // （这条注释我第一版写反了，把 `\s*` 说成「兜住有空格的前提」——
+    //  正好是反的。）
     final cleaned = raw.replaceAll(RegExp(r'\s*Edg/[\d.]+'), '').trim();
     return BrowserIdentity(
       userAgent: cleaned,
@@ -87,10 +106,7 @@ BrowserIdentity parseWebViewUserAgent(
   // ── 安卓：保持原样 ──
   var deviceModel = model ?? '';
   if (deviceModel.isEmpty) {
-    // 从 "(Linux; Android 14; SM-S918B Build/..." 里抠。
-    final m = RegExp(r'Android [\d.]+;\s*([^;)]+?)(?:\s+Build/|;|\))')
-        .firstMatch(raw);
-    deviceModel = m?.group(1)?.trim() ?? '';
+    deviceModel = modelFromUserAgent(raw);
   }
 
   final platform = platformVersion ?? platformVersionFromUserAgent(raw);
@@ -126,7 +142,7 @@ String platformVersionFromUserAgent(String raw) {
 
 /// 从 UA 里取机型串。取不到返回空串，由调用方决定怎么兜。
 String modelFromUserAgent(String ua) {
-  final m = RegExp(r'Android [\d.]+; ([^;)]+)\)').firstMatch(ua);
+  final m = _androidModelRe.firstMatch(ua);
   return m?.group(1)?.trim() ?? '';
 }
 

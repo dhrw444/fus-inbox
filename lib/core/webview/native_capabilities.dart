@@ -17,6 +17,7 @@
 library;
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:convert';
 
 import 'package:flutter/services.dart';
@@ -85,13 +86,42 @@ Future<BrowserIdentity> bootstrapBrowserIdentity() async {
       //              拿它当基准等于把漂移固化。
       noteKernelMajor(probed.chromeMajor);
       await _persistKernelMajor();
-      final identity = saved ?? probed;
+      // **平台不一致时，磁盘上那份必须丢掉。**
+      //
+      // `saved ?? probed` 那种无条件优先在这里是错的：用户在安卓上用过这个
+      // 号、之后在 Windows 上打开（或者反过来），磁盘上那份带着**另一个
+      // 平台**的 UA 和 `Sec-CH-UA-Platform`。留着它就回到
+      // 「UA 说安卓、底下引擎是 WebView2」的撕裂 —— 而 client hints 是引擎
+      // 按自己的真值发的，我们从 Dart 侧改不掉，也就是**圆不回来**。
+      //
+      // 同平台才认磁盘：那种情况下保留上次的身份是对的（站点那边 reader
+      // 密钥跟身份绑着，重启换回设备真实值等于拿旧密钥配新机型）。
+      final savedSamePlatform =
+          saved != null && saved.platform == probed.platform;
+      final identity = savedSamePlatform ? saved : probed;
       initBrowserIdentity(identity);
       await _persistIdentity(identity);
       return identity;
     }
   } catch (e) {
     logLine('浏览器身份探测失败：$e');
+  }
+  // 探测失败也要把**跨平台**的磁盘身份丢掉。
+  //
+  // 上面那条 `saved ?? probed` 的分支已经在正常路径上做了同平台校验，
+  // 但这条早退路径绕过了它：安卓上存的身份，在 Windows 上如果探测失败
+  // （没有 WebView2 运行时之类），就会继续拿着那条安卓身份跑 ——
+  // 于是「UA 说安卓、引擎是 WebView2」的撕裂又回来了，而这次连
+  // 探测值都没有，纠正不了。
+  //
+  // 判据用「磁盘身份的平台 == 本机平台」：本机是哪个平台可以从
+  // 已有信息推（`Platform.isWindows`），不依赖探测成功。
+  final hostPlatform = Platform.isWindows
+      ? BrowserIdentity.platformWindows
+      : BrowserIdentity.platformAndroid;
+  if (saved != null && saved.platform != hostPlatform) {
+    logLine('磁盘上的浏览器身份属于另一个平台（${saved.platform} → $hostPlatform），已丢弃。');
+    restoreIdentity(BrowserIdentity.fallback);
   }
   return currentIdentity;
 }

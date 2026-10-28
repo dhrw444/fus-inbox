@@ -76,7 +76,11 @@ class BrowserIdentity {
   static const platformWindows = 'Windows';
 
   /// 桌面平台（Windows）没有机型串，也不该发 `Sec-CH-UA-Model`。
-  bool get isDesktop => platform != platformAndroid;
+  ///
+  /// 判据写成「**等于** Windows」而不是「不等于 Android」：落盘里要是存了
+  /// 个拼错的平台名，前者当安卓处理（走兜底、至少自洽），后者会把它当
+  /// 桌面 —— 于是一条安卓身份被当成桌面，不一致得更隐蔽。
+  bool get isDesktop => platform == platformWindows;
 
   /// `Sec-CH-UA` 的值。
   ///
@@ -99,8 +103,21 @@ class BrowserIdentity {
   ///
   /// 以前调用方无条件 `'"${platformVersion}.0.0"'`，在 Windows 上会拼出
   /// `"10.0.0.0.0"` —— 一个不存在的版本号。
-  String get secChUaPlatformVersion =>
-      '"${isDesktop ? platformVersion : '$platformVersion.0.0'}"';
+  String get secChUaPlatformVersion => '"$platformVersionHint"';
+
+  /// **裸值**（不带引号）。`Sec-CH-UA-Platform-Version` 的两种消费方共用它：
+  /// 原生请求头那边要 `'"$v"'`，页面垫片那边要裸串。
+  ///
+  /// 以前两处各写一遍 `'${platformVersion}.0.0'`，于是我在 `http_headers`
+  /// 里把形状改成按平台分支之后，**垫片那份没跟着改** —— Windows 上产出
+  /// 五段的 `10.0.0.0.0`。同一件事只有一个定义处，才不会再漂。
+  String get platformVersionHint {
+    if (isDesktop) return platformVersion;
+    // 安卓存的是 `14` 这种大版本。空串兜底成 14 —— 否则会拼出
+    // `Android `（UA 里）和 `".0.0"`（头里）两个畸形值。
+    final v = platformVersion.isEmpty ? '14' : platformVersion;
+    return '$v.0.0';
+  }
 
   /// `Sec-CH-UA-Model` 的值。
   String get secChUaModel => '"$model"';
@@ -144,18 +161,27 @@ BrowserIdentity? identityFromJson(Object? raw) {
   // 以前那条 `model.isEmpty → null` 会把桌面身份整个判成坏数据、
   // 回落成安卓兜底 —— 正好和这个字段要修的问题是一件事。
   if (ua.isEmpty || major.isEmpty) return null;
+  // 平台名**过白名单**：只有这两个值合法。落盘里可能是手改的、或者旧版
+  // 写进去的别的字符串，原样透传会拼出 `Sec-CH-UA-Platform: "windows"`。
   final os = raw['os'];
-  final platformName = os is String && os.isNotEmpty ? os : 'Android';
+  final platformName = os == BrowserIdentity.platformWindows
+      ? BrowserIdentity.platformWindows
+      : BrowserIdentity.platformAndroid;
+  final isWindows = platformName == BrowserIdentity.platformWindows;
   return BrowserIdentity(
     userAgent: ua,
     chromeMajor: major,
     model: model,
+    // 版本兜底按平台分支：Windows 的真值是 `10.0.0`，兜成 `14` 会让桌面
+    // 身份报 `platform-version: "14"` —— 一个 Windows 上不存在的版本。
     platformVersion: platform is String && platform.isNotEmpty
         ? platform
-        : '14',
-    isMobile: raw['mobile'] is bool
-        ? raw['mobile']! as bool
-        : platformName == BrowserIdentity.platformAndroid,
+        : (isWindows ? '10.0.0' : '14'),
+    // `mobile` 优先取落盘，但**与平台冲突时以平台为准**：落盘里
+    // `mobile: true` + `os: Windows` 会得到「桌面 UA + ?1」。
+    isMobile: isWindows
+        ? false
+        : (raw['mobile'] is bool ? raw['mobile']! as bool : true),
     platform: platformName,
   );
 }

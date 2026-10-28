@@ -141,6 +141,19 @@ BrowserIdentity mintIdentity([Random? rnd]) {
 ///
 /// 基准一律取 [_kernelMajor]（原生探测到的内核真值）。取 `base.chromeMajor`
 /// 等于拿自己上一次的输出当输入，会单向漂移。
+/// UA 里的安卓版本必须是 `14` / `14.0` 那个形状。
+///
+/// **和 `identity_profile.dart` 的 `platformVersionHint` 不是一回事**：
+/// 那个是 client hints 的 `platform-version`（要 `14.0.0` 四段），
+/// 这个是 UA 里的安卓大版本（只要 `14`）。两个字段形状本来就不同。
+///
+/// 空串会拼出 `Android ;`、四段式会拼出 `Android 10.0.0` —— 两个都是畸形
+/// UA。认不出形状就用内核真值现推。
+String _androidVersion(String raw) {
+  if (RegExp(r'^\d{1,2}(\.\d{1,2})?$').hasMatch(raw)) return raw;
+  return platformVersionFromUserAgent(currentIdentity.userAgent);
+}
+
 BrowserIdentity _mintFrom(BrowserIdentity base, Random r) {
   final baseMajor = _kernelMajor ?? int.tryParse(base.chromeMajor) ?? 141;
   // 对称窗口 {−2..+2}，期望 0。原来是 `r.nextInt(4) - 2` = {−2,−1,0,+1}，
@@ -176,7 +189,8 @@ BrowserIdentity _mintFrom(BrowserIdentity base, Random r) {
 
   return BrowserIdentity(
     userAgent:
-        'Mozilla/5.0 (Linux; Android ${base.platformVersion}; $model) '
+        'Mozilla/5.0 (Linux; Android ${_androidVersion(base.platformVersion)}'
+        '; $model) '
         'AppleWebKit/537.36 (KHTML, like Gecko) '
         'Chrome/$version Mobile Safari/537.36',
     chromeMajor: '$major',

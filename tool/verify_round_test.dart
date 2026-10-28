@@ -97,7 +97,7 @@ void main() {
     check('5.2 满 6 秒就弹', r.shouldAutoPop == true);
     r.markPopped();
     check('5.3 弹过之后不再弹', r.shouldAutoPop == false);
-    check('5.4 suppressedByDismiss 同步', r.suppressedByDismiss == true);
+    check('5.4 收起之后 autoPopped 保持为真', r.autoPopped == true);
   }
 
   // ── 6. timedOut 边界 ──────────────────────────────────────────

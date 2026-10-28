@@ -28,7 +28,7 @@ import 'package:fus_inbox/platform/webview2_bootstrap.dart';
 export 'package:fus_inbox/platform/webview2_bootstrap.dart'
     show ensureWebViewEnvironment;
 export 'package:fus_inbox/platform/webview_info.dart'
-    show defaultWebViewUserAgent, platformName, webViewRuntimeVersion;
+    show defaultWebViewUserAgent;
 
 /// 造一个引擎。
 WebEngine createWebEngine({required String userAgent}) {

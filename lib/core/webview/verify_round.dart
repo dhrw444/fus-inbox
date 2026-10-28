@@ -105,8 +105,4 @@ class VerifyRound {
 
   /// 记下已经弹过。
   void markPopped() => autoPopped = true;
-
-  /// 用户收起之后要不要立刻又弹回来 —— 不要。
-  /// 收起走 `begin(rearm: false)`，闸门保持关着。
-  bool get suppressedByDismiss => autoPopped;
 }

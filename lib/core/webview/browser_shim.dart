@@ -69,13 +69,15 @@ Future<String> buildBrowserShim() async {
   final seed = <String, Object?>{
     'full': appVersion,
     'major': id.chromeMajor,
-    'plat': 'Android',
+    'plat': id.platform,
     'mobile': id.isMobile,
-    // platformVersion 必须跟着身份走：原生请求头那边发的是
-    // `${id.platformVersion}.0.0`（见 http_headers.dart），垫片以前却写死
-    // '14.0.0' —— 除 Android 14 之外的每台设备，页面里读到 14.0.0、
-    // UA 说 Android 16、原生头也说 16.0.0，三处对不上。
-    'pv': id.platformVersion.isEmpty ? '' : '${id.platformVersion}.0.0',
+    // 平台版本走 `platformVersionHint` —— 和原生请求头**同一个收口点**。
+    //
+    // 这里以前自己拼 `'${id.platformVersion}.0.0'`，于是我把 http_headers
+    // 那边改成按平台分支之后，垫片没跟着改：Windows 的 platformVersion
+    // 本身就是 `10.0.0`，再补一次 `.0.0` 就产出五段的 `10.0.0.0.0`。
+    // 而真 Chrome 在 Windows 上只有四段。
+    'pv': id.platformVersionHint,
     'mdl': id.model,
   };
 
@@ -115,7 +117,7 @@ Future<void> applyClientHints() async {
           'chromeMajor': id.chromeMajor,
           'appVersion': appVersion,
           'platformVersion': id.platformVersion,
-          'platform': 'Android',
+          'platform': id.platform,
           'model': id.model,
           'isMobile': id.isMobile,
         })

@@ -77,8 +77,13 @@ class InAppWebEngine({String userAgent = '', this.environment})
   String get userAgent => _userAgent;
 
   /// 视图创建出来的那一刻由回调树回填控制器。
-  void attachController(InAppWebViewController controller) =>
-      _controller = controller;
+  void attachController(InAppWebViewController controller) {
+    // dispose 已经跑过就别接了：那时 `_controller == null`，而 dispose 里
+    // 那句 `_controller?.dispose()` 早已跳过 —— 这个控制器**再也不会被释放**。
+    // 要求 dispose 早于 `onWebViewCreated` 回调，概率低，但守卫成本为零。
+    if (_disposed) return;
+    _controller = controller;
+  }
 
   void emitPageStarted(String url) => _onPageStarted?.call(url);
 
@@ -143,7 +148,7 @@ class InAppWebEngine({String userAgent = '', this.environment})
   }
 
   @override
-  Widget buildView({Key? key}) => buildInAppView(this);
+  Widget buildView({Key? key}) => buildInAppView(this, key: key);
 
   @override
   Future<void> loadUrl(String url) async {
@@ -165,6 +170,8 @@ class InAppWebEngine({String userAgent = '', this.environment})
     if (c == null || _disposed) return null;
     try {
       return await c.evaluateJavascript(source: script);
+      // 页面还没就绪时 `evaluateJavascript` 会抛（时序问题，不是错误）。
+      // 调用方（量验证框位置）本来就容忍拿不到值，返回 null 让它下一轮再试。
     } catch (_) {
       return null;
     }
@@ -248,10 +255,20 @@ class InAppWebEngine({String userAgent = '', this.environment})
   }
 }
 
-/// 忽略一个 Future 的结果。
+/// 忽略一个 Future 的结果，**并且吞掉它的异常**。
 ///
-/// 本地小工具，故意不引入 `dart:async` 的 `unawaited`：那个名字在这里
-/// 反而容易和「真的 await」混起来读。
+/// ## 和 `dart:async` 的 `unawaited` 语义不同，别当等价物
+///
+/// 标准库那个只是把「没 await」这件事标记出来（压 lint），**异常照旧
+/// 进 zone**、该崩还是会崩、该上报还是会到 Crashlytics。这个实现
+/// 用 `catchError` 把异常整个吃掉 —— 调用点全是「视图已经不在树上」
+/// 那类收尾动作，崩了也没人接，所以故意吞。
+///
+/// 换句话说：**往这里塞新调用之前先想清楚**，它会把失败藏起来。
+/// 需要保留失败线索的，老老实实 `await` + `try/catch` 自己处理。
+///
+/// 本地小工具，故意不借用标准库那个名字：这里的行为更重（吞错），
+/// 共用一个名字会让人以为两者等价。
 void unawaited(Future<void> future) {
   future.catchError((Object _) {});
 }

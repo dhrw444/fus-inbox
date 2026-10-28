@@ -111,6 +111,19 @@ void applyBrowserHeaders(
   // （比如卡在验证），旧证就被无限期发下去。
   final clearance = _clearance;
   if (clearance != null && _clearanceUserAgent == currentUserAgent) {
-    headers.set(HttpHeaders.cookieHeader, 'cf_clearance=$clearance');
+    // **追加，不是覆盖。**
+    //
+    // `set` 会把整个 Cookie 头替换掉。现在的两个调用点都是从
+    // `_http.getUrl(...)` 刚拿到的**新请求**、之前没设过 cookie，所以
+    // 覆盖也无害 —— 但这是靠「调用顺序恰好如此」维持的，哪天有人先往
+    // 同一个请求里塞了会话 cookie 再调这里，那些 cookie 会被静默抹掉，
+    // 而症状（站点认不出会话）离这里很远，很难查。
+    //
+    // 一句话的代价买掉这个地雷。
+    final existing = headers.value(HttpHeaders.cookieHeader);
+    final jar = existing == null || existing.isEmpty
+        ? 'cf_clearance=$clearance'
+        : '$existing; cf_clearance=$clearance';
+    headers.set(HttpHeaders.cookieHeader, jar);
   }
 }

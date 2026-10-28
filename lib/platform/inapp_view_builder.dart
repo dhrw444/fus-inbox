@@ -7,9 +7,10 @@
 /// 两件事的时间轴不同：状态活整个会话，接线只在视图建出来那一刻生效。
 /// 挤在一个文件里，读「UA 什么时候生效」要先跳过六十行回调。
 ///
-/// 拆出的代价是 [InAppWebEngine] 的私有字段要在这边访问，所以它们
-/// 用 `@internal` 标注：仓库内可用、包外不可见，编译器继续替我们拦住
-/// 别处的越界访问。
+/// 拆出的代价是 [InAppWebEngine] 的私有字段要在这边访问。它们**靠注释
+/// 约定**「只给本文件用」，没有 `@internal` 标注 —— 那个标注只对「公开包的
+/// 私有 API」有意义，而本应用 `publish_to: none`、没有对外 API 面，
+/// 标上去 analyzer 会报 `invalid_internal_annotation`。
 library;
 
 import 'dart:collection';
@@ -25,8 +26,13 @@ import 'package:fus_inbox/platform/web_engine.dart';
 ///
 /// 引擎对象在这里只被读，不被改 —— 所有状态变更仍走它自己的方法。
 /// 视图的 [Key] 由调用方传给 `buildView`，这里不重复管。
-Widget buildInAppView(InAppWebEngine engine) {
+Widget buildInAppView(InAppWebEngine engine, {Key? key}) {
   return InAppWebView(
+    // key 必须真的挂上：以前 `buildView({Key? key})` 收了这个参数却一路
+    // 丢掉（这里不收、`InAppWebView` 也没挂），调用方传了等于没传。
+    // 平台视图的 key 决定「换 key 就重建」，静默丢弃会让本该重建的场景
+    // 复用旧视图。
+    key: key,
     webViewEnvironment: engine.environment,
     initialSettings: engineSettings(engine.userAgent),
     initialUserScripts: UnmodifiableListView(engine.pendingUserScripts),
