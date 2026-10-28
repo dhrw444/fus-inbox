@@ -151,6 +151,7 @@ class const InboxSearchSummary({
   required this.codeCount,
   required this.codeOnly,
   required this.query,
+  super.key,
 }) extends StatelessWidget {
   final ThemeData theme;
   final int matchCount;

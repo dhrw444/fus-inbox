@@ -53,7 +53,9 @@
   var lastErr = '';
   var lastKey = '';
   var messages = [];
-  // 与 Dart 侧 InboxStore._maxMessages 保持一致。
+  // 与 Dart 侧的 `kInboxMaxMessages`（lib/features/inbox/application/
+  // inbox_merge.dart）保持一致 —— 两边都截断，数值不一样就会出现
+  // 「Dart 收了 240、JS 只发 150」这种一边砍一边补的怪现象。
   // 上限要容得下「翻几页」。之前是 60，而翻页正是往尾部追加更早的消息，
   // 追加完立刻被 slice(0,60) 砍掉——等于翻页功能从来没生效过。
   // 240 = 10 页（每页 24），够用且每次推送的 JSON 仍在几十 KB 量级。
@@ -650,6 +652,35 @@
     return true;
   }
 
+  // 人机验证框在页面里的位置（CSS 像素，相对视口左上角）。
+  //
+  // 宿主拿它做一件事：**自动弹出时只把这一小块放大显示**，而不是把整个
+  // 站点页面糊在屏幕上 —— 用户要点的就那一个复选框，整页看着难受。
+  // 用户自己点「自己过验证」时不调这个，仍然看整页（他想顺便翻翻站点）。
+  //
+  // `getBoundingClientRect()` 对**跨域 iframe 也算得出来** —— 同源策略
+  // 拦的是读写 iframe 内部，量它自己的位置和尺寸不受影响。Turnstile 的
+  // 复选框正好在 challenges.cloudflare.com 的 iframe 里，所以这条路通。
+  //
+  // 找不到就返回 null，宿主那边回落到「显示整页」—— 宁可多显示，
+  // 不能因为认不出框就让用户没了可点的地方。
+  function challengeRect() {
+    var sel = [
+      'iframe[src*="challenges.cloudflare.com"]',  // Turnstile 本体
+      '.cf-turnstile',                             // 站点给的容器
+      '[data-sitekey]',                            // widget 根节点
+    ];
+    var el = null;
+    for (var i = 0; i < sel.length && !el; i++) {
+      el = document.querySelector(sel[i]);
+    }
+    if (!el) return null;
+    var r = el.getBoundingClientRect();
+    // 宽高为 0 = 还没布局出来（脚本比渲染快）。返回 null 让宿主稍后重试。
+    if (!r || !r.width || !r.height) return null;
+    return { x: r.left, y: r.top, w: r.width, h: r.height };
+  }
+
   window.__fusInbox = {
     rescan: function () { domScan(); pushMessages('rescan'); },
     digest: digest,
@@ -657,6 +688,7 @@
     loadMore: loadMore,
     canLoadMore: function () { return !exhausted && !loadingMore; },
     setNumberId: function (id) { window.__fusNumberId = str(id); },
+    challengeRect: challengeRect,
   };
 
   // ---- 启动 ----

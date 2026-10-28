@@ -108,7 +108,6 @@ BrowserIdentity parseWebViewUserAgent(
     model: deviceModel,
     platformVersion: platform,
     isMobile: true,
-    platform: BrowserIdentity.platformAndroid,
   );
 }
 

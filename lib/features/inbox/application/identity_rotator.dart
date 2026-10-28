@@ -190,6 +190,15 @@ class IdentityRotator({
       final now = DateTime.now();
       final last = _lastProxyRotate;
       if (last != null && now.difference(last) < _proxyRotateCooldown) return;
+      // 池子里真没得换就**不许 discard**：[_rotateToNextProxy] 内部那个
+      // 同款检查在 `_rotateIdentityBody` → `onPageDiscarded()` 之后才到，
+      // 而 discard 会 `store.reset()` 清掉 hold —— 配额卡片整个消失，
+      // 提示只剩骨架屏头部一行小字。用户点了「换 IP 后重置浏览器」，
+      // 页面反而从一张说得清状况的卡片变成一张空白骨架。先判后动。
+      if (!ref.read(proxyProvider).canRotate) {
+        store.note('代理池里没有别的出口可换，需要你换个网络再点重置。');
+        return;
+      }
       _lastProxyRotate = now;
       unawaited(_rotateToNextProxy());
       return;

@@ -39,6 +39,13 @@ final numbersRepositoryProvider = Provider<NumbersRepository>((ref) {
     // 那种情况 _findProxy 会抛异常让请求失败，不会静默退回直连。
     egress: () {
       if (!ref.read(prefsProvider).directoryViaProxy) return 'DIRECT';
+      final active = ref.read(proxyEngineProvider).active;
+      // 用户要的是代理，引擎此刻挂着的却是**直连**（收件页在池子空时
+      // 落的那个占位）。`nativeEgressDirective` 对直连返回 'DIRECT' ——
+      // 照抄它就等于**悄悄拿真实 IP 抓了整份目录**，界面上一个字都不说。
+      //
+      // 直连不是用户的选择，是占位。这里返回 null，让请求失败并报出来。
+      if (!directoryEgressUsable(active)) return null;
       return ref.read(proxyEngineProvider).nativeEgressDirective;
     },
   );
@@ -87,20 +94,64 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
     if (!ref.read(prefsProvider).directoryViaProxy) return null;
 
     final engine = ref.read(proxyEngineProvider);
-    if (engine.active != null) return null;
+    // 「引擎已经有活动出口」**不等于**「目录能用这条出口」。
+    //
+    // 之前这里只判 `engine.active != null`，于是两种情况都被放行：
+    //
+    //  1. 引擎挂着的活动出口**没设成**（`ok == false`）。`apply()` 在
+    //     失败路径上照样写 `_active`，所以 active 非空但那条出口是坏的。
+    //     目录于是拿一个坏出口去抓，请求全失败 —— 用户看到的是
+    //     「目录拉取失败：出口没起来」，真正的原因（代理没设上）被藏了。
+    //  2. 引擎挂着的活动出口**是直连**（收件页在「池子空」时落的）。
+    //     目录于是**悄悄用真实 IP 抓了整份目录** —— 用户以为自己开了
+    //     「目录走代理」，实际一个字节都没走代理，界面上没有任何提示。
+    //
+    // 判据统一到 [directoryEgressUsable]：只认「目录真的能用」的那条出口。
+    // 直连和坏出口都不算；坏出口要**重设一次**，而不是拿旧的下场。
+    if (directoryEgressUsable(engine.active)) return null;
 
-    final proxyState = ref.read(proxyProvider);
+    var proxyState = ref.read(proxyProvider);
     // 清单还没从磁盘读完时 pool 是空的 —— 那不是「没配代理」，
     // 是「还不知道有没有」。跟收件页那个坑是同一个。
+    //
+    // **但不能就此下结论，要等。** 代理池是在 `build()` 里
+    // `Future.microtask(_load)` 异步读盘的（SharedPreferences + 读内置
+    // 资源两个 await），而号码页一进 App 就 `load()`。冷启动时这两件事
+    // 天然是并行的，那几百毫秒里 `loaded` 就是 false ——
+    // 直接返回「还没读完」，上层一律渲染成「代理不可用，先看缓存」，
+    // 于是用户看到的是**「代理明明配好了却说不可用」**，而真因只是
+    // 他进来得比读盘早了一点。
+    //
+    // 收件页早就在等同一个信号（`inbox_screen.dart` 里
+    // `await ref.read(proxyProvider.notifier).ready`），这里是补上那条
+    // 不对称：同一个状态，两个页面不该一个等一个不等。
+    //
+    // `ready` 自带 3 秒兜底（读盘卡死时也会自己回来），所以这里不会挂住。
+    if (!proxyState.loaded) {
+      await ref.read(proxyProvider.notifier).ready;
+      // 等完之后**必须重新读一次**状态快照 —— 上面那份是等待之前的。
+      proxyState = ref.read(proxyProvider);
+    }
     if (!proxyState.loaded) return '代理清单还没读完';
 
     final proxy = proxyState.current;
     if (proxy == null) {
       return '一条代理都没配（去设置里加一条，或关掉「号码目录走代理」）';
     }
+    // 池子里一条都没有时 `current` 兜底到 `all.firstOrNull`，而 `all` 里
+    // 只有用户真加的 / 内置的条目，没有「直连」占位。所以这里判的是
+    // 「引擎只能给直连」那种情况：直连不是用户要的出口，不能拿来交差
+    // （那等于拿真实 IP 抓目录）。
+    if (proxy.isDirectProxy) {
+      return '没有可用的代理出口（当前出口是直连，目录走代理需要一条真代理）';
+    }
 
     final result = await engine.apply(proxy);
-    if (result.ok || proxy.isDirectProxy) return null;
+    // 判据和上面那行一致：用 `directoryEgressUsable`，不是 `result.ok`。
+    // 理由见那个函数的注释 —— `ok` 说的是 **WebView** 的原生代理，
+    // 目录走的是本地桥，两者会分开（老内核不支持代理覆盖时，
+    // 目录那条桥好得很，却被 `ok == false` 判成不可用）。
+    if (directoryEgressUsable(result)) return null;
     return result.detail;
   }
 

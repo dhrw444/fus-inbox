@@ -183,7 +183,6 @@ BrowserIdentity _mintFrom(BrowserIdentity base, Random r) {
     model: model,
     platformVersion: base.platformVersion,
     isMobile: true,
-    platform: BrowserIdentity.platformAndroid,
   );
 }
 

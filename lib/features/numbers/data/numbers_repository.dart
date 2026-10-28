@@ -18,6 +18,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:fus_inbox/core/log.dart';
+import 'package:fus_inbox/core/proxy/active_proxy.dart';
 import 'package:fus_inbox/core/webview/http_headers.dart';
 import 'package:fus_inbox/features/numbers/data/directory_page.dart';
 import 'package:fus_inbox/features/numbers/data/fetch_backoff.dart';
@@ -25,6 +26,45 @@ import 'package:fus_inbox/features/numbers/domain/available_number.dart';
 
 export 'package:fus_inbox/features/numbers/data/directory_page.dart';
 export 'package:fus_inbox/features/numbers/data/fetch_backoff.dart';
+
+/// 目录这一侧能不能用上这条出口。
+///
+/// ## 为什么不能看 [ActiveProxy.ok]
+///
+/// `ok` 判的是「**WebView** 的代理有没有设上」—— 也就是原生那层
+/// `ProxyController.setProxyOverride`（Android）/ WebView2 环境参数
+/// （Windows）。而目录的请求走的是 `dart:io` 的 `HttpClient`，
+/// **完全绕开**那一层：它靠 [HttpClient.findProxy] 指向本地桥。
+///
+/// 两者会分开，而且**分开的时候目录照样能用**：桥起好了、上游 SOCKS5
+/// 也挂上了，只是原生覆盖那一步失败（老内核没有 PROXY_OVERRIDE，
+/// `native_proxy.dart` 里的 `supported()` 问的就是它）。此时 `ok == false`，
+/// 可目录要的出口（`PROXY 127.0.0.1:<桥端口>`）**好得很**。
+///
+/// 目录之前拿 `ok` 当判据，于是正好在这种机器上对用户说「代理不可用，
+/// 换一条试试」—— 而换多少条都没用，那台 WebView 就是不支持代理覆盖。
+///
+/// ## 为什么直连不算「可用」
+///
+/// 调用方已经确认过「用户选了目录走代理」。引擎此刻挂着的直连是收件页
+/// 那边「池子空、只能直连」的产物 —— 搭在它上面等于**拿真实 IP 抓目录**，
+/// 而且界面上一个字都不说。直连是用户**明确**的选择，不是搭车的对象。
+///
+/// ## 判据
+///
+/// - 要桥的（SOCKS5）：目录的出口就是那条本地桥，`bridgePort == 0`
+///   说明桥没起来 → 不可用。
+/// - 不用桥的（HTTP/HTTPS 代理）：目录自己指向那个 HTTP 代理，
+///   原生那步成不成都不影响它 → 可用。
+bool directoryEgressUsable(ActiveProxy? active) {
+  if (active == null) return false;
+  // 直连不算：用户要的是代理，搭直连的顺风车等于悄悄泄漏真实 IP。
+  if (active.config.isDirectProxy) return false;
+  // SOCKS5：目录的出口是本地桥，桥没起来就没有出口。
+  if (active.config.needsBridge) return active.bridgePort != 0;
+  // HTTP/HTTPS 代理：目录直接指向它，跟原生覆盖成不成功无关。
+  return true;
+}
 
 /// 目录数据源。
 ///

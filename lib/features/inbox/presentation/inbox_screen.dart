@@ -27,6 +27,8 @@ import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/features/inbox/application/identity_rotator.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
+import 'package:fus_inbox/features/inbox/domain/challenge_focus.dart';
+import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_app_bar.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_attachments.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_message_list.dart';
@@ -83,6 +85,24 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 只看带验证码的那几条。
   bool _codeOnly = false;
+
+  /// 当前这次弹层是**自动**弹的还是用户自己点的。
+  ///
+  /// 两者的呈现**故意不一样**：
+  /// - 自动弹 = 站点不放行、用户被迫来过验证 → 只放大显示那个复选框，
+  ///   整页糊在屏幕上又难看又容易点到广告；
+  /// - 用户自己点 = 他想顺便看看网页 → 给整页，别自作主张裁掉。
+  bool _challengeAuto = false;
+
+  /// 底部那条 [ChallengeBar] 占的高度（含 SafeArea 的粗略估计）。
+  ///
+  /// 只用来给「聚焦到验证框」留出余量 —— 留多了顶多上面空一点，
+  /// 留少了复选框会被提示栏压住，那是真的点不到。所以宁可估大。
+  static const _challengeBarInset = 88.0;
+
+  /// 验证框在页面里的位置（CSS 像素）。自动弹层时用来算放大/平移。
+  /// null = 还没量到（或量不到）→ 回落到显示整页。
+  Rect? _challengeRect;
 
   /// 搜索输入框的控制器。归本页持有 —— 关闭搜索时要清空它。
   final _searchController = TextEditingController();
@@ -425,10 +445,25 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 25 秒还没拿到任何东西，提示可能卡在风控上。
   void _onWatchdog() {
-    if (!mounted || _store.state.messages.isNotEmpty) return;
-    _store.note(
-      _store.state.hits == 0 ? '25 秒没截获到接口响应，可能卡在站点的人机验证。' : '截获到了接口，但里面没有消息。',
-    );
+    final st = _store.state;
+    if (!mounted || st.messages.isNotEmpty) return;
+    // 失败面板直接把 status 当正文显示（InboxEmptyState 的 failed 分支）。
+    // 这里再 note 一句会把「代理不可用，已停下」顶成「可能卡在风控」——
+    // 用户看到的失败原因凭空变假。失败态有自己的「重试」按钮，不用看门狗。
+    if (st.phase == InboxPhase.failed) return;
+    // 这条提示只写在状态栏里。弹层开着时状态栏被站点页面整个盖住
+    // （见 build 里那个 Positioned.fill 的 Offstage），hold 挂着时状态栏
+    // 被 HoldNotice 顶掉 —— 这两种情况下这一响没人看得见。
+    //
+    // 而看门狗只此一响：_armWatchdog 只在换身份 / 重载（_discardPage）
+    // 时重臂。在这一响上白白耗掉，这个会话剩下的时间就再没有兜底
+    // 提示了 —— 弹层一收起、还是卡着，用户什么提示都等不到。
+    // 所以看不见就别消耗：重臂一轮，等弹层收起 / hold 解除后的下一响。
+    if (_showChallenge || st.hold != null) {
+      _armWatchdog();
+      return;
+    }
+    _store.note(st.hits == 0 ? '25 秒没截获到接口响应，可能卡在站点的人机验证。' : '截获到了接口，但里面没有消息。');
   }
 
   /// 造这个页面的 WebView。
@@ -598,7 +633,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               // 页面藏着一句话说明不了任何问题 —— 放出来让用户自己看
               // 一眼、必要时点一下重试。之前这里只留一条日志，用户
               // 既看不到失败原因也做不了任何事。
-              if (!_showChallenge && !_round.autoPopped) _openChallenge();
+              if (!_showChallenge && !_round.autoPopped) {
+                _openChallenge(auto: true);
+              }
               return;
             }
           }
@@ -642,7 +679,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 必定是需要点一下的那种」。
       if (!_showChallenge && _round.shouldAutoPop) {
         _store.note('这个出口卡住了，已把页面放出来让你点一下。');
-        _openChallenge();
+        _openChallenge(auto: true);
       }
     });
   }
@@ -658,6 +695,59 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       if (value != null && value.isNotEmpty) rememberClearance(value);
     } catch (_) {
       // 读不到就算了，收件箱本身已经能用了。
+    }
+  }
+
+  /// 量一次验证框在页面里的位置。量到就记下来，自动弹层时只放大显示它。
+  ///
+  /// **要试几次**：注入脚本比页面渲染快，第一次量往往撞上「还没布局」——
+  /// 那时 `getBoundingClientRect()` 全是 0，JS 侧会返回 null。
+  /// 每 400ms 试一次，最多 6 次（约 2.4 秒）就放弃，回落到显示整页。
+  ///
+  /// 放弃不是失败：用户至少还能像以前那样看整页、点验证框。宁可多显示，
+  /// 也不能因为认不出框就让他没地方点。
+  Future<void> _measureChallenge() async {
+    for (var i = 0; i < 6; i++) {
+      // 每次循环都重新确认前提：用户可能已经点了「收起」，
+      // 或者站点自己过了验证把弹层收了。
+      if (!mounted || !_showChallenge || !_challengeAuto) return;
+      final rect = await _readChallengeRect();
+      if (rect != null) {
+        if (!mounted || !_showChallenge) return;
+        setState(() => _challengeRect = rect);
+        return;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+    }
+  }
+
+  /// 问注入脚本「验证框在哪儿」。拿不到（没有框 / 还没布局）返回 null。
+  Future<Rect?> _readChallengeRect() async {
+    try {
+      // 让 JS 侧 `JSON.stringify` 一下：`evaluateJavascript` 对对象字面量
+      // 的返回形态各平台不一致（有 Map、有 String），自己序列化最稳。
+      // 那种「拿不到就回空串」的写法也是刻意的 —— `null` 在某些内核上
+      // 会变成字符串 `"null"`，回空串判起来只有一个分支。
+      final raw = await _engine.evaluateJavascript(
+        'window.__fusInbox && window.__fusInbox.challengeRect '
+        '? JSON.stringify(window.__fusInbox.challengeRect()) : ""',
+      );
+      Object? decoded = raw;
+      if (raw is String) {
+        if (raw.isEmpty || raw == 'null') return null;
+        decoded = jsonDecode(raw);
+      }
+      if (decoded is! Map) return null;
+      final x = (decoded['x'] as num?)?.toDouble();
+      final y = (decoded['y'] as num?)?.toDouble();
+      final w = (decoded['w'] as num?)?.toDouble();
+      final h = (decoded['h'] as num?)?.toDouble();
+      if (x == null || y == null || w == null || h == null) return null;
+      if (w <= 0 || h <= 0) return null;
+      return Rect.fromLTWH(x, y, w, h);
+    } catch (_) {
+      // 页面还没就绪时 `evaluateJavascript` 会抛，这是正常时序，不是错误。
+      return null;
     }
   }
 
@@ -686,7 +776,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// 现在不动轮询：它自己有几个退出条件（消息到了、超窗口、明确失败），
   /// 而「到点自动弹」的闸门由 [_round.markPopped] 管住，不会重复弹。
-  void _openChallenge({bool reload = false}) {
+  void _openChallenge({bool reload = false, bool auto = false}) {
     // 不管是谁弹的（用户点的还是到点自动弹的），都算「这次加载弹过了」，
     // 免得收起之后又被自动弹回来。
     _round.markPopped();
@@ -696,7 +786,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _round.begin(rearm: false);
     setState(() {
       _showChallenge = true;
+      _challengeAuto = auto;
+      // 上一轮的框位置不能留着：换了一轮，页面可能整个变了。
+      if (auto) _challengeRect = null;
     });
+    // 自动弹层：去量那个复选框在哪儿，量到了就只放大显示它。
+    // 用户自己点的（auto=false）**不量**，保持整页 —— 他想顺便看看网页。
+    if (auto) unawaited(_measureChallenge());
     if (reload) {
       // 页面可能停在旧状态，重载一次让站点重新发起验证。
       // 重载会走 onPageFinished → 注入脚本，然后轮询自己会发现新状态。
@@ -716,7 +812,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 算的话第一次 tick 就超窗口，当场判超时。
   void _confirmChallengeDone() {
     _verifyPoll?.cancel();
-    setState(() => _showChallenge = false);
+    setState(() {
+      _showChallenge = false;
+      // 弹层收了，聚焦状态一并清掉 —— 下次自动弹时重新量。
+      _challengeAuto = false;
+      _challengeRect = null;
+    });
     _beginVerifyRound();
     unawaited(_rescan());
     _pumpVerification();
@@ -728,7 +829,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 刚说了不想过，6 秒后又自动弹回来等于没给他选。
   void _closeChallenge() {
     _verifyPoll?.cancel();
-    setState(() => _showChallenge = false);
+    setState(() {
+      _showChallenge = false;
+      // 弹层收了，聚焦状态一并清掉 —— 下次自动弹时重新量。
+      _challengeAuto = false;
+      _challengeRect = null;
+    });
     _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。
     _pumpVerification();
@@ -892,7 +998,55 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 child: ColoredBox(
                   // 引擎自己看不见背景，给个深色免得加载瞬间闪白。
                   color: const Color(0xFF10131A),
-                  child: _engine.buildView(),
+                  // 自动弹层且量到了验证框时，只把那块放大显示（见
+                  // [focusOnChallenge]）。量不到就照旧显示整页。
+                  child: LayoutBuilder(
+                    builder: (context, box) {
+                      final rect = _challengeRect;
+                      if (!_challengeAuto || rect == null) {
+                        return _engine.buildView();
+                      }
+                      // 把 `Rect` / `Size` 拆成裸数字传进去：那个纯逻辑
+                      // 文件刻意不 import `dart:ui`，否则单测跑不了。
+                      final focus = focusOnChallenge(
+                        viewportWidth: box.maxWidth,
+                        viewportHeight: box.maxHeight,
+                        rectLeft: rect.left,
+                        rectTop: rect.top,
+                        rectWidth: rect.width,
+                        rectHeight: rect.height,
+                        // 底部提示栏别压住复选框。
+                        bottomInset: _challengeBarInset,
+                      );
+                      if (focus == null) return _engine.buildView();
+                      return ClipRect(
+                        child: Transform(
+                          // 直接写矩阵：`Matrix4.translate` / `.scale` 在
+                          // 新版 vector_math 里是废弃 API，而 CI 跑
+                          // `--fatal-infos`，用一次就挂。
+                          transform: Matrix4(
+                            focus.scale,
+                            0,
+                            0,
+                            0, //
+                            0,
+                            focus.scale,
+                            0,
+                            0, //
+                            0,
+                            0,
+                            1,
+                            0, //
+                            focus.dx,
+                            focus.dy,
+                            0,
+                            1,
+                          ),
+                          child: _engine.buildView(),
+                        ),
+                      );
+                    },
+                  ),
                 ),
               ),
             ),
