@@ -48,6 +48,16 @@ void rememberClearance(String value) {
 ///
 /// 换身份 / 换出口 / 清浏览数据之后应当显式调用。
 /// （就算漏了也不致命：[applyBrowserHeaders] 里还有一道身份比对兜底。）
+/// 现在手上有没有一张可用的通行证。
+///
+/// 给「被挑战方挂起、等人过验证」那条路用的：号码目录拿到
+/// `403 + cf-mitigated: challenge` 之后会轮询这个，一变成 true 就重放原请求
+/// （参照 Han1meViewer 的做法 —— 那边是 `latch.await()` 阻塞网络请求，
+/// 验证完 `chain.proceed()` 重放）。
+///
+/// 这个 getter 早先被我当死代码删过一次 —— 那时确实没人用；现在真有人用了。
+bool get hasClearance => _clearance != null;
+
 void forgetClearance() {
   _clearance = null;
   _clearanceUserAgent = null;

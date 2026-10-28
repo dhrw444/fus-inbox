@@ -158,7 +158,45 @@ class NumbersRepository({
   /// 用 `dart:io` 而不是 `package:http`：这里只需要「GET 一个页面、按 UTF-8 解码」，
   /// 内置客户端够用，还能少一个依赖。注意 [HttpClient] 不会自动带 User-Agent，
   /// 站点按 UA 区分移动端模板，必须显式设。
+  /// 抓一页。**被挑战时会自己挂起等验证、然后重放一次**。
+  ///
+  /// 参照 Han1meViewer 的做法：那边是 OkHttp 拦截器拿到
+  /// `403 + cf-mitigated: challenge` 之后 `latch.await()` 把请求**挂住**，
+  /// 用户过完验证再 `chain.proceed()` **重放**同一个请求。
+  ///
+  /// 这边的对应物就是本仓库自己的 `HttpClient`：目录是应用侧发的请求，
+  /// 确实可以挂起等 —— 不像收件箱那边请求由 WebView 自己发，
+  /// 没有应用侧的请求可挂。
+  ///
+  /// 只重放**一次**：新证也不管用的话，重放多少次都一样，只会一直打站点。
   Future<NumberPage> fetchPage(int page) async {
+    try {
+      return await _fetchPageOnce(page);
+    } on _ChallengePending {
+      // 先把旧证作废：它已经被站点拒了。留着的话 `hasClearance` 还是 true，
+      // 下面的等待会立刻「成功」，然后拿一张废证去重放。
+      forgetClearance();
+      if (!await _waitForClearance()) {
+        throw NumberFetchException(
+          '站点要求先过人机验证。回到收件页点右上角的盾牌过一下，'
+          '过了这里会自动继续读目录。',
+        );
+      }
+      return await _fetchPageOnce(page);
+    }
+  }
+
+  /// 挂起等一张新证。最多 60 秒 —— 用户在收件页点复选框、等 Cloudflare
+  /// 转圈，时间不好估；但也不能无限等，那样界面会一直转圈。
+  Future<bool> _waitForClearance() async {
+    for (var i = 0; i < 60; i++) {
+      if (hasClearance) return true;
+      await Future<void>.delayed(const Duration(seconds: 1));
+    }
+    return false;
+  }
+
+  Future<NumberPage> _fetchPageOnce(int page) async {
     final uri = Uri.parse(_pageUrl(page));
     late final HttpClientResponse res;
     try {
@@ -185,10 +223,7 @@ class NumbersRepository({
       if (res.statusCode == HttpStatus.forbidden &&
           mitigated != null &&
           mitigated.toLowerCase() == 'challenge') {
-        throw NumberFetchException(
-          '站点要求先过人机验证。回到收件页点右上角的盾牌过一下，'
-          '过了这里就能正常读目录。',
-        );
+        throw const _ChallengePending();
       }
       throw NumberFetchException('目录返回 HTTP ${res.statusCode}');
     }
@@ -321,3 +356,12 @@ class NumbersRepository({
   /// `force: true` 顺手掐掉还在飞的请求，页面销毁时不必等。
   void dispose() => _http.close(force: true);
 }
+
+/// 站点要求过人机验证 —— **不是失败，是「等一等再试」**。
+///
+/// 做成独立类型而不是「用消息字符串区分」：调用方要靠类型决定
+/// 「挂起等重放」还是「直接报错」，靠解析消息判断太脆。
+///
+/// 私有（`_` 开头）：它只在 [NumberRepository.fetchPage] 的 catch 里出现，
+/// 外面不需要认识它。
+class const _ChallengePending() implements Exception {}
