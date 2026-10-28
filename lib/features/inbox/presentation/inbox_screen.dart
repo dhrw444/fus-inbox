@@ -755,7 +755,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 放弃不是失败：用户至少还能像以前那样看整页、点验证框。宁可多显示，
   /// 也不能因为认不出框就让他没地方点。
   Future<void> _measureChallenge() async {
-    for (var i = 0; i < 6; i++) {
+    // 15 × 600ms ≈ 9 秒。原来只有 6 × 400ms ≈ 2.4 秒 —— Turnstile 是站点
+    // 用 `turnstile.render()` 动态渲染的（还要先拉到 Cloudflare 的脚本），
+    // 2.4 秒经常不够，量不到就回落成「显示整页」，正是用户看到的那个现象。
+    for (var i = 0; i < 15; i++) {
       // 每次循环都重新确认前提：用户可能已经点了「收起」，
       // 或者站点自己过了验证把弹层收了。
       if (!mounted || !_showChallenge || !_challengeAuto) return;
@@ -765,7 +768,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         setState(() => _challengeRect = rect);
         return;
       }
-      await Future<void>.delayed(const Duration(milliseconds: 400));
+      await Future<void>.delayed(const Duration(milliseconds: 600));
     }
   }
 

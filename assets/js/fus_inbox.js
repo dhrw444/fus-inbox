@@ -665,19 +665,36 @@
   // 找不到就返回 null，宿主那边回落到「显示整页」—— 宁可多显示，
   // 不能因为认不出框就让用户没了可点的地方。
   function challengeRect() {
+    // 选择器**从具体到宽泛**排：Turnstile 是站点用 `turnstile.render()`
+    // 动态渲染的（配置在 `script[data-fair-use-turnstile]` 里），
+    // 静态 HTML 里一个字都没有 —— 所以只能按渲染后的形态找，
+    // 而且要留足「它还没渲染出来」的余地。
     var sel = [
-      'iframe[src*="challenges.cloudflare.com"]',  // Turnstile 本体
-      '.cf-turnstile',                             // 站点给的容器
-      '[data-sitekey]',                            // widget 根节点
+      'iframe[src*="challenges.cloudflare.com"]', // Turnstile 本体
+      'iframe[src*="turnstile"]',
+      '[id^="cf-chl-widget"]',                    // Cloudflare 自己的 widget id
+      '.cf-turnstile',
+      '[data-sitekey]',
+      '[class*="turnstile"]',
+      '[id*="turnstile"]',
     ];
     var el = null;
     for (var i = 0; i < sel.length && !el; i++) {
       el = document.querySelector(sel[i]);
     }
     if (!el) return null;
-    var r = el.getBoundingClientRect();
-    // 宽高为 0 = 还没布局出来（脚本比渲染快）。返回 null 让宿主稍后重试。
-    if (!r || !r.width || !r.height) return null;
+
+    // 找到的那个常常是 0×0：Turnstile 在 managed 模式下先挂一个隐藏的
+    // 占位，或者外层是 inline 元素、尺寸全在祖先上。**往上找第一个有尺寸的**，
+    // 而不是直接放弃 —— 放弃就会回落到「显示整页」，那正是要避免的。
+    var node = el;
+    var r = null;
+    for (var up = 0; up < 6 && node; up++) {
+      var rr = node.getBoundingClientRect();
+      if (rr && rr.width > 2 && rr.height > 2) { r = rr; break; }
+      node = node.parentElement;
+    }
+    if (!r) return null;
     return { x: r.left, y: r.top, w: r.width, h: r.height };
   }
 

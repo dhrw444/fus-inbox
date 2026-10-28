@@ -171,6 +171,25 @@ class NumbersRepository({
     if (res.statusCode != HttpStatus.ok) {
       // 响应体不读会占着连接不放。
       unawaited(res.drain<void>().catchError((Object _) {}));
+      // **先认挑战，再认普通错误。**
+      //
+      // 被 Cloudflare 拦下来时站点回的是 403 + `cf-mitigated: challenge`
+      // —— 那不是一个「错」，是「你得先过个人机验证」。两者混成一句
+      // 「目录返回 HTTP 403」的话，用户既不知道发生了什么，也不知道该做什么，
+      // 而这一路上层还会把它渲染成「代理不可用」那种更误导的说法。
+      //
+      // 参照 Han1meViewer 的做法：挑战要被单独识别出来，然后走「等人过验证
+      // → 用新的 cf_clearance 重放同一个请求」那条路。这里先只做识别 +
+      // 给出可执行的指引；重放要等验证界面能被目录这侧拉起之后才接得上。
+      final mitigated = res.headers.value('cf-mitigated');
+      if (res.statusCode == HttpStatus.forbidden &&
+          mitigated != null &&
+          mitigated.toLowerCase() == 'challenge') {
+        throw NumberFetchException(
+          '站点要求先过人机验证。回到收件页点右上角的盾牌过一下，'
+          '过了这里就能正常读目录。',
+        );
+      }
       throw NumberFetchException('目录返回 HTTP ${res.statusCode}');
     }
     final body = await res.transform(utf8.decoder).join();

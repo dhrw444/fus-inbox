@@ -56,7 +56,13 @@ void forgetClearance() {
 /// 给一个请求装上一整套真实 Chrome 会发的头。
 ///
 /// [base] 站点根（用来推 `sec-fetch-site`），[referer] 上一页地址。
-/// 参数可省，省了就按「直接导航」发。
+///
+/// 参数可省。**省略时 `sameSite` 取 true，发 `sec-fetch-site: same-origin`**
+/// —— 这正是站点自己的 XHR 会发的值（同源请求），而本函数的调用方全是
+/// 「替页面发站内请求」，所以默认值就是对的。
+///
+/// （这段文字以前写成「省了就按『直接导航』发」，那是反的：直接导航发的是
+///  `none`，对应 `sameSite: false`。）
 void applyBrowserHeaders(
   HttpHeaders headers, {
   String? base,
