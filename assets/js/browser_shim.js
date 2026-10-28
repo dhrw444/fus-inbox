@@ -95,18 +95,32 @@
     }
   }
 
-  // GREASE 值。Chrome 每版会换一个 "Not?A_Brand" 之类的占位品牌，
+  // 品牌表**由宿主注入**（Dart 侧的 `BrowserIdentity.brandsFor`）——那边是
+  // 唯一来源。以前这里硬编码一份、Dart 拼请求头又一份，Chrome 每版换
+  // GREASE 品牌时必然只改一边：请求头说一套、页面里 userAgentData 说另一套。
+  //
+  // 下面的兜底只在种子缺席时（旧包、或注入被挡）用，取值和 Dart 侧一致。
+  // GREASE 值：Chrome 每版会换一个 "Not?A_Brand" 之类的占位品牌，
   // 真 Chrome 一定有这一项，缺了反而是特征。
-  var BRANDS = [
-    { brand: 'Chromium', version: MAJOR },
-    { brand: 'Google Chrome', version: MAJOR },
-    { brand: 'Not?A_Brand', version: '99' }
-  ];
-  var FULL_LIST = [
-    { brand: 'Chromium', version: FULL },
-    { brand: 'Google Chrome', version: FULL },
-    { brand: 'Not?A_Brand', version: '99.0.0.0' }
-  ];
+  var SEED_BRANDS = (SEED.brands && SEED.brands.length) ? SEED.brands : null;
+  var BRANDS = SEED_BRANDS
+    ? SEED_BRANDS.map(function (b) {
+        return { brand: b.brand, version: b.version };
+      })
+    : [
+        { brand: 'Chromium', version: MAJOR },
+        { brand: 'Google Chrome', version: MAJOR },
+        { brand: 'Not?A_Brand', version: '99' }
+      ];
+  var FULL_LIST = SEED_BRANDS
+    ? SEED_BRANDS.map(function (b) {
+        return { brand: b.brand, version: b.fullVersion };
+      })
+    : [
+        { brand: 'Chromium', version: FULL },
+        { brand: 'Google Chrome', version: FULL },
+        { brand: 'Not?A_Brand', version: '99.0.0.0' }
+      ];
 
   // ---- navigator.userAgentData ----
   if (!('userAgentData' in navigator)) {

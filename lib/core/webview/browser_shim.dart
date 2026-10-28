@@ -79,6 +79,12 @@ Future<String> buildBrowserShim() async {
     // 而真 Chrome 在 Windows 上只有四段。
     'pv': id.platformVersionHint,
     'mdl': id.model,
+    // 品牌表从 Dart 那侧带过去 —— 见 [BrowserIdentity.brandsFor]，
+    // 那边是唯一来源，垫片里不再硬编码一份。
+    'brands': BrowserIdentity.brandsFor(
+      version: id.chromeMajor,
+      fullVersion: appVersion,
+    ),
   };
 
   final body = await browserShimSource();

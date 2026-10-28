@@ -88,9 +88,53 @@ class BrowserIdentity {
   /// `"Chromium";v="141", "Google Chrome";v="141", "Not?A_Brand";v="99"`
   /// 那个 `Not?A_Brand` 是 Chrome 的 GREASE 值，每个大版本会换，
   /// 但 `99` 在 110+ 一直是合法的。
-  String get secChUa =>
-      '"Chromium";v="$chromeMajor", "Google Chrome";v="$chromeMajor", '
-      '"Not?A_Brand";v="99"';
+  String get secChUa {
+    return brandsFor(version: chromeMajor)
+        .map((b) => '"${b['brand']}";v="${b['version']}"')
+        .join(', ');
+  }
+
+  /// 品牌名和 GREASE 值**只在这里定义一次**。
+  ///
+  /// 以前是两处各写一遍：Dart 这边拼 `Sec-CH-UA` 字符串，注入页面的 JS 垫片
+  /// 那边写一个数组。Chrome 每个大版本会换一个 `Not?A_Brand` 之类的占位品牌，
+  /// 到时必然只改一边 —— 于是请求头说一套、页面里 `userAgentData` 说另一套，
+  /// 一交叉核对就是破绽。
+  static const brandChromium = 'Chromium';
+  static const brandChrome = 'Google Chrome';
+
+  /// GREASE 占位品牌。`99` 在 110+ 一直是合法的。
+  static const greaseBrand = 'Not?A_Brand';
+  static const greaseVersion = '99';
+  static const greaseFullVersion = '99.0.0.0';
+
+  /// 品牌表。`version` 给 `Sec-CH-UA`（大版本），`fullVersion` 给
+  /// `userAgentData.brands`（完整四段）—— 同一个品牌在两处的 version 形状
+  /// **不一样**，所以两列都收在这里，别让调用方自己再拼一遍。
+  /// [fullVersion] **可省**：省略时那一列就用 [version]。[secChUa] 只读
+  /// 大版本那一列、本来没有完整版本可给 —— 它以前硬传
+  /// `fullVersion: chromeMajor`，那是个谎（大版本不是完整版本），
+  /// 只是当时没人读那一列所以看不出来。
+  static List<Map<String, String>> brandsFor({
+    required String version,
+    String? fullVersion,
+  }) => [
+    {
+      'brand': brandChromium,
+      'version': version,
+      'fullVersion': fullVersion ?? version,
+    },
+    {
+      'brand': brandChrome,
+      'version': version,
+      'fullVersion': fullVersion ?? version,
+    },
+    {
+      'brand': greaseBrand,
+      'version': greaseVersion,
+      'fullVersion': greaseFullVersion,
+    },
+  ];
 
   /// `Sec-CH-UA-Platform` 的值。
   String get secChUaPlatform => '"$platform"';
