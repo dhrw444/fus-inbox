@@ -6,6 +6,7 @@ library;
 
 import 'package:fus_inbox/features/numbers/domain/state_names.dart';
 
+/// 目录里的一条号码。
 class const AvailableNumber({
   required this.id,
   required this.number,
@@ -48,7 +49,8 @@ class const AvailableNumber({
   /// 序列化成 JSON，供磁盘缓存使用。
   ///
   /// 手写而不是用 json_serializable：这个模型只有 7 个字段、结构固定，
-  /// 为一个 model 引入 build_runner 整条生成链不值得。
+  /// 为一个 model 引入 build_runner 整条生成链不值得。键名单字母是为了
+  /// 压缓存体积：上百条号码的缓存每次启动都要读一遍。
   Map<String, Object?> toJson() => {
     'id': id,
     'n': number,
@@ -61,8 +63,6 @@ class const AvailableNumber({
 
   /// 从缓存 JSON 还原。字段缺失或类型不对时退回默认值，不抛异常——
   /// 缓存是加速手段，坏了就当没有，绝不能因此让首页打不开。
-  ///
-  /// 键名用单字母是为了压体积：上百条号码的缓存每次启动都要读一遍。
   static AvailableNumber? fromJson(Object? raw) {
     if (raw is! Map) return null;
     final id = raw['id'];
@@ -97,7 +97,8 @@ class const AvailableNumber({
 
   /// 搜索用：号码数字、中文州名、英文州名、区号拼在一起。
   ///
-  /// 两个州名都放进去，用户打「佛州」查不到，打 `Florida` 或 `佛罗里达` 都能中。
+  /// 英文州名也放进去：用户打 `Florida`、`佛罗里达` 都能中。
+  /// 中文通过 [stateZh] 现查，不另存一份。
   String get searchBlob =>
       '$number $state ${stateZh(state)} $areaCode'.toLowerCase();
 

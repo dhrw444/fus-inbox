@@ -1,20 +1,35 @@
-/// 本机 HTTP 代理 → SOCKS5 隧道。
+/// 本机 HTTP 代理 → SOCKS5 隧道：常驻监听，上游可热切换。
 ///
-/// ## 这个文件存在的唯一理由
+/// ## 这个文件存在的理由
 ///
-/// Android WebView 的 `ProxyController.setProxyOverride` **只接受
-/// HTTP / HTTPS 代理**。给它一个 `socks5://` 地址，系统会静默忽略，
-/// 页面照样打开、照样直连 —— 没有报错，没有异常，只有「IP 没变」
-/// 这一个看不出来的事实。
+/// **旧注释是错的**，而「要不要动这个文件」的判断恰恰依赖它。旧注释说
+/// 「`ProxyController.setProxyOverride` 只接受 HTTP / HTTPS，给它
+/// `socks5://` 会被静默忽略」。查官方 `ProxyConfig` 的规则串语法，写的是
+/// `[scheme://]host[:port]`，scheme 可以是 HTTP / HTTPS / **SOCKS**
+/// （SOCKS 默认端口 1080）。「WebView 用不了 SOCKS」这个前提站不住。
 ///
-/// 所以整个链路是：
+/// 桥真正站得住的理由只有一条：**规则串语法里没有 userinfo 位。**
+/// 本仓内置的 589 条代理**全部带账号密码**，`addProxyRule` 没办法把凭据
+/// 带出去；而 `SocksTunnel` 是按 RFC 1929 做用户名/密码认证的，能认。
+/// 所以「SOCKS5 + 认证」这条必须过桥。
+///
+/// 唯一没亲手验证的是 WebView 的**运行时**行为（本机没有 Android）。
+/// 所以：**别**因为「WebView 不支持 socks5」这句话去删这个文件 —— 那句是
+/// 错的；真要动它，先按上面前提重新验一遍。
+///
+/// 早先这里还写着「代理挂了会静默回退直连，那是 `ProxyControllerBridge.kt`
+/// 里 `.addDirect()` 的锅」：那份手写的 Kotlin 桥**整个文件都已经删掉**，
+/// 原生代理现在走 `flutter_inappwebview` 自带的 `ProxyController`
+/// （见 `native_proxy.dart`）。那条备注只留作历史，与桥无关。
+///
+/// 链路：
 ///
 /// ```
 ///   WebView
-///     │  HTTP CONNECT / 普通请求
+///     │  HTTP CONNECT / 绝对 URI 的明文请求
 ///     ▼
 ///   127.0.0.1:<本机端口>        ← 这个文件
-///     │  SOCKS5 握手
+///     │  SOCKS5 握手（含 RFC 1929 用户名/密码）
 ///     ▼
 ///   远端 SOCKS5 代理
 ///     │
@@ -22,48 +37,97 @@
 ///   freeussms.com
 /// ```
 ///
-/// WebView 看到的永远是「一个 HTTP 代理」，它乐意接受；实际出口
-/// 由 SOCKS5 决定。这是唯一能让 WebView 走 SOCKS5 的办法。
+/// WebView 看到的永远是「一个 HTTP 代理」，它乐意接受；实际出口由
+/// SOCKS5 决定。
 ///
 /// ## 支持什么
 ///
 /// - `CONNECT host:port` —— HTTPS 全靠这条，是主路径
 /// - 绝对 URI 的明文 HTTP（`GET http://host/path HTTP/1.1`）
 ///
-/// 不支持代理认证（本机回环，不需要）。
+/// 不支持代理认证：监听在回环上，不需要。
+///
+/// ## 文件边界
+///
+/// 报文怎么解析、怎么重写、状态行怎么回，在 `bridge_requests.dart`；
+/// 字节通道抽象在 `bridge_io.dart`。这里只管**连接的生命周期**：
+/// 接客户端、按当前出口连上游、双向泵字节、换上游、关桥。
 library;
 
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
+import 'package:fus_inbox/core/proxy/bridge_io.dart';
+import 'package:fus_inbox/core/proxy/bridge_requests.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/socket_reader.dart';
 import 'package:fus_inbox/core/proxy/socks5_client.dart';
 
-/// 一条正在运行的桥。
-class LocalProxyBridge._(this._server, this.proxy) {
+export 'package:fus_inbox/core/proxy/bridge_io.dart'
+    show BridgePipe, SocketPipe, TunnelPipe;
+
+class LocalProxyBridge._(this._server, this._upstream) {
   final ServerSocket _server;
 
-  /// 出口代理。换代理就是关掉重建，不在这里改。
-  final ProxyConfig proxy;
+  /// 当前出口。`null` = 直连。
+  ///
+  /// **可空是有意的，不是「还没设」**：Windows 上 WebView2 从进程启动就
+  /// 一直指向这条桥，用户完全可能一条代理都不配 —— 那时桥必须自己直连
+  /// 出去，而不是拒绝服务。换句话说，这条桥的语义是「按当前出口转发」，
+  /// 而不是「一条 SOCKS5 隧道」。
+  ProxyConfig? _upstream;
+
+  /// 出口变了多少次。只用于测试和排查。
+  int get upstreamSwitches => _switches;
+  int _switches = 0;
+
+  ProxyConfig? get upstream => _upstream;
 
   int get port => _server.port;
 
-  /// WebView 要用的代理地址。
+  /// 起一条桥。
   ///
-  /// 注意：只能写 `127.0.0.1`，不能写 `localhost` —— WebView 的
-  /// proxy override 不做域名解析，写 localhost 会被当成一个
-  /// 需要经代理解析的主机名，直接失败。
-  String get webViewProxy => '127.0.0.1:$port';
-
-  static Future<LocalProxyBridge> start(ProxyConfig proxy) async {
-    // 绑回环即可。绑 0.0.0.0 会让同一 WiFi 下的其他设备也能用，
+  /// [port] 为 0 时由系统分配（Android 用得上，因为端口不用提前知道）。
+  /// Windows 必须传一个固定端口 —— WebView2 的代理设置是进程级的，
+  /// 端口一变就得重建。
+  /// 端口被占用会抛，调用方自己决定退到哪个端口。
+  static Future<LocalProxyBridge> start({
+    ProxyConfig? upstream,
+    int port = 0,
+  }) async {
+    // 只绑回环。绑 0.0.0.0 会让同一 WiFi 下的其他设备也能借道出去，
     // 那是个不该开的口子。
-    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
-    final bridge = LocalProxyBridge._(server, proxy);
+    final server = await ServerSocket.bind(InternetAddress.loopbackIPv4, port);
+    final bridge = LocalProxyBridge._(server, upstream);
+    // 单个 accept 失败（客户端连上就断之类）不该把整个监听关掉。
     server.listen(bridge._handle, onError: (Object _) {});
     return bridge;
+  }
+
+  /// 换出口。只影响**之后建立**的连接；已经在传的隧道不动
+  /// （中途换掉会把正在收的短信截断）。
+  ///
+  /// `null` = 直连。同一条代理（id 相同）重复设不算切换，不累加计数。
+  void setUpstream(ProxyConfig? next) {
+    if (identical(next, _upstream) || next?.id == _upstream?.id) return;
+    _upstream = next;
+    _switches++;
+  }
+
+  /// 按当前出口连到 `host:port`。
+  ///
+  /// 每次连接都现读一次 [_upstream]（不是启动时抓的快照）——
+  /// 换号是热切换，抓快照就等于永远停在第一条出口上。
+  Future<BridgePipe> _connect(String host, int port) async {
+    final up = _upstream;
+    if (up == null || up.isDirectProxy) {
+      // 直连也要超时：DNS 卡住或对端黑洞时，不设超时就是永久占一条
+      // 客户端连接 + 一个 fd。
+      return SocketPipe(
+        await Socket.connect(host, port, timeout: _connectTimeout),
+      );
+    }
+    return TunnelPipe(await SocksTunnel.open(up, host, port));
   }
 
   Future<void> stop() async {
@@ -72,234 +136,142 @@ class LocalProxyBridge._(this._server, this.proxy) {
 
   Future<void> _handle(Socket client) async {
     client.setOption(SocketOption.tcpNoDelay, true);
-    final head = _ClientReader(client);
-    SocksTunnel? tunnel;
-    StreamSubscription<Uint8List>? down;
+    final head = SocketReader(client);
+    BridgePipe? pipe;
 
     try {
-      final requestLine = await head.readHeaderBlock();
-      if (requestLine == null) return;
+      final raw = await head.readUntil(crlfCrlf, timeout: _headTimeout);
+      if (raw == null) {
+        // 读头超时，或者对端灌了超长垃圾（`readUntil` 有 64KB 上限）。
+        //
+        // 必须显式收掉这条连接，不能直接 `return`：那样 reader 的订阅还
+        // 挂着，客户端之后发什么都进缓冲没人消费 —— fd 不释放、内存无上限涨。
+        //
+        // 实测：5 个「连上就不发请求」的客户端，21 秒后 fd 仍是 +10；
+        // 客户端断开后服务端那 5 个进 CLOSE_WAIT，再没人关。
+        await head.close();
+        client.destroy();
+        return;
+      }
+      final headerText = utf8.decode(raw, allowMalformed: true);
+      final request = BridgeRequest.parse(headerText);
+      if (request == null) {
+        await sendHttpStatus(client, 'HTTP/1.1', 400, '无法解析的请求行');
+        await head.close();
+        client.destroy();
+        return;
+      }
 
-      final lines = const LineSplitter().convert(requestLine);
-      if (lines.isEmpty) return;
-      final parts = lines.first.split(' ');
-      if (parts.length < 3) return;
-
-      final method = parts[0].toUpperCase();
-      final target = parts[1];
-      final version = parts[2];
-
-      if (method == 'CONNECT') {
-        // CONNECT host:port —— HTTPS 走这条
-        final hostPort = _splitHostPort(target);
+      if (request.method == 'CONNECT') {
+        final hostPort = BridgeRequest.splitConnectTarget(request.target);
         if (hostPort == null) {
-          await _sendStatus(client, version, 400, 'Bad CONNECT target');
+          await sendHttpStatus(
+            client,
+            request.version,
+            400,
+            'CONNECT 目标不是 host:port',
+          );
+          await head.close();
+          client.destroy();
           return;
         }
-        tunnel = await SocksTunnel.open(proxy, hostPort.$1, hostPort.$2);
+        pipe = await _connect(hostPort.$1, hostPort.$2);
 
-        // Socket.write 返回 void，不能 await —— 写完单独 flush。
+        // `Socket.write` 返回 void，不能 await —— 写完单独 flush。
         client.write(
-          '$version 200 Connection Established\r\n'
+          '${request.version} 200 Connection Established\r\n'
           'Proxy-Agent: fus-bridge\r\n\r\n',
         );
         await client.flush();
       } else {
-        // 绝对 URI 的明文 HTTP。把 URI 拆成 host:port + path，
-        // 然后当成一次普通的源服务器请求发给它。
-        final uri = Uri.tryParse(target);
-        if (uri == null || uri.host.isEmpty) {
-          await _sendStatus(client, version, 400, 'Bad request target');
+        // 绝对 URI 的明文 HTTP：拆出口 + 重写报文都在那边做，
+        // 这里只管连上、把重写完的报文发出去。
+        final fwd = BridgeRequest.buildForwardRequest(request, headerText);
+        if (fwd == null) {
+          await sendHttpStatus(client, request.version, 400, '目标不是可用的绝对 URI');
+          await head.close();
+          client.destroy();
           return;
         }
-        final host = uri.host;
-        final port = uri.hasPort
-            ? uri.port
-            : (uri.scheme == 'https' ? 443 : 80);
-        tunnel = await SocksTunnel.open(proxy, host, port);
-
-        // 重写请求行：绝对 URI → 路径。源服务器不认绝对 URI。
-        final path = uri.hasQuery ? '${uri.path}?${uri.query}' : uri.path;
-        final rest = lines.length > 1 ? lines.sublist(1) : const <String>[];
-        final rebuilt = StringBuffer()
-          ..write('${parts[0]} ${path.isEmpty ? '/' : path} $version\r\n');
-        for (final line in rest) {
-          // 逐跳头必须删掉：代理链路自己会用，转发给源服务器
-          // 会让它困惑（尤其 Connection: close）。
-          final lower = line.toLowerCase();
-          if (lower.startsWith('proxy-connection:') ||
-              lower.startsWith('proxy-authorization:')) {
-            continue;
-          }
-          rebuilt.write('$line\r\n');
-        }
-        rebuilt.write('\r\n');
-        tunnel.write(utf8.encode(rebuilt.toString()));
-        await tunnel.flush();
+        pipe = await _connect(fwd.$1, fwd.$2);
+        pipe.write(fwd.$3);
+        await pipe.flush();
       }
 
-      // 双向对接。客户端剩下的字节（POST body 之类）先送过去。
-      final pending = head.takeBuffer();
-      if (pending.isNotEmpty) {
-        tunnel.write(pending);
-        await tunnel.flush();
+      await _pump(client, head, pipe);
+    } catch (e) {
+      // 失败要把话说清楚：502 比「连接被重置」有用得多。
+      try {
+        await sendHttpStatus(client, 'HTTP/1.1', 502, '上游代理连接失败：$e');
+      } catch (_) {
+        // 连「告诉你 502」都失败了 —— 客户端已经断了。没有补救动作，
+        // 下面照样 destroy，不留这条连接。
       }
+      // 走到这里说明 _pump 没接手，pipe 要么没建起来、要么建起来就废了。
+      pipe?.close();
+      client.destroy();
+    } finally {
+      // _pump 成功时它自己会收尾（两条 listen 的 onDone），这里只兜
+      // 「压根没进泵」的情况：读者还握着 socket 订阅，必须放掉。
+      if (pipe == null) await head.close();
+    }
+  }
 
-      final t = tunnel;
-      // 客户端 → 隧道
-      //
-      // 不能再 `client.listen(...)` —— Socket 是单订阅流，_ClientReader
-      // 已经订阅了，第二次 listen 直接抛「Stream has already been
-      // listened to」。改成让 reader 自己切到转发模式。
-      head.forwardTo((chunk) {
+  /// 双向对接。客户端剩下的字节（POST body 之类）先送过去。
+  ///
+  /// 客户端 → 隧道这段**不能**再 `client.listen(...)` —— Socket 是单订阅
+  /// 流，SocketReader 已经订阅了，第二次 listen 直接抛「Stream has already
+  /// been listened to」。改成让 reader 自己切到转发模式。
+  static Future<void> _pump(
+    Socket client,
+    SocketReader head,
+    BridgePipe t,
+  ) async {
+    final pending = head.takeBuffer();
+    if (pending.isNotEmpty) {
+      t.write(pending);
+      await t.flush();
+    }
+
+    head.forward();
+    head.incoming.listen(
+      (chunk) {
         try {
           t.write(chunk);
         } catch (_) {
-          t.close();
-          client.destroy();
+          // 隧道已经关了（对端先断），继续写只会一直抛。
+          _shutdown(t, client);
         }
-      }, onDone: t.close);
+      },
+      onError: (Object _) => _shutdown(t, client),
+      onDone: () => _shutdown(t, client),
+    );
 
-      // 隧道 → 客户端
-      down = t.incoming.listen(
-        (chunk) {
-          try {
-            client.add(chunk);
-          } catch (_) {
-            client.destroy();
-          }
-        },
-        onError: (Object _) => client.destroy(),
-        onDone: () => client.destroy(),
-        cancelOnError: true,
-      );
-    } catch (e) {
-      // 失败要把话说清楚：500 比「连接被重置」有用得多。
-      try {
-        await _sendStatus(client, 'HTTP/1.1', 502, 'Upstream proxy failed: $e');
-      } catch (_) {}
-      client.destroy();
-    } finally {
-      // 不在 finally 里主动关 tunnel —— 上面两条 listen 的 onDone
-      // 会各自收尾。这里只在完全没建起来时兜一下。
-      if (tunnel == null) {
-        await down?.cancel();
-      }
-    }
-  }
-
-  Future<void> _sendStatus(
-    Socket client,
-    String version,
-    int code,
-    String message,
-  ) async {
-    final body = utf8.encode(message);
-    final head = StringBuffer()
-      ..write(
-        '${version.startsWith('HTTP') ? version : 'HTTP/1.1'} $code X\r\n',
-      )
-      ..write('Content-Type: text/plain; charset=utf-8\r\n')
-      ..write('Content-Length: ${body.length}\r\n')
-      ..write('Connection: close\r\n\r\n');
-    client
-      ..add(utf8.encode(head.toString()))
-      ..add(body);
-    await client.flush();
-  }
-
-  /// `host:port` / `[v6]:port` → (host, port)。
-  static (String, int)? _splitHostPort(String s) {
-    if (s.startsWith('[')) {
-      final close = s.indexOf(']');
-      if (close < 0) return null;
-      final host = s.substring(1, close);
-      final rest = s.substring(close + 1);
-      if (!rest.startsWith(':')) return null;
-      final port = int.tryParse(rest.substring(1));
-      return port == null ? null : (host, port);
-    }
-    final colon = s.lastIndexOf(':');
-    if (colon <= 0) return null;
-    final host = s.substring(0, colon);
-    final port = int.tryParse(s.substring(colon + 1));
-    if (port == null) return null;
-    return (host, port);
-  }
-}
-
-/// 读到 `\r\n\r\n` 为止，之后转为整块转发。
-///
-/// 和 socks5_client 里的 `_SocketReader` 是同一个模式，理由也一样：
-/// Socket 只能 listen 一次，握手/读头阶段要「读定长」，之后就变成
-/// 「原样转发」，两件事必须共用同一个订阅。
-class _ClientReader {
-  // 参数名不是 this.，构造体里要用它调 listen()，主构造器写法访问不到。
-  // ignore: use_primary_constructors
-  _ClientReader(Socket socket) {
-    socket.listen(
+    // 隧道 → 客户端
+    t.incoming.listen(
       (chunk) {
-        if (_sink != null) {
-          _sink!(chunk);
-          return;
+        try {
+          client.add(chunk);
+        } catch (_) {
+          // 客户端已经断了，把隧道也收掉，别留半条。
+          _shutdown(t, client);
         }
-        _buffer.addAll(chunk);
-        _pump();
       },
-      onError: (Object _) {},
-      onDone: () {
-        if (!_done.isCompleted) _done.complete(null);
-        _onDone?.call();
-      },
-      cancelOnError: false,
+      onError: (Object _) => _shutdown(t, client),
+      onDone: () => _shutdown(t, client),
+      cancelOnError: true,
     );
   }
 
-  final List<int> _buffer = [];
-  final Completer<String?> _done = Completer<String?>();
-  void Function(Uint8List)? _sink;
-  void Function()? _onDone;
-
-  void _pump() {
-    if (_done.isCompleted) return;
-    final end = _findHeaderEnd();
-    if (end < 0) return;
-    final head = utf8.decode(_buffer.sublist(0, end), allowMalformed: true);
-    _buffer.removeRange(0, end + 4);
-    _done.complete(head);
+  /// 一边断了就把两边都收掉。半开的隧道没有任何用处，只会占 fd。
+  static void _shutdown(BridgePipe t, Socket client) {
+    t.close();
+    client.destroy();
   }
 
-  int _findHeaderEnd() {
-    for (var i = 0; i + 3 < _buffer.length; i++) {
-      if (_buffer[i] == 13 &&
-          _buffer[i + 1] == 10 &&
-          _buffer[i + 2] == 13 &&
-          _buffer[i + 3] == 10) {
-        return i;
-      }
-    }
-    return -1;
-  }
+  /// 读请求头的上限。20 秒足够慢网络发完一行请求头，再久就是对面不说话。
+  static const _headTimeout = Duration(seconds: 20);
 
-  Future<String?> readHeaderBlock() =>
-      _done.future.timeout(const Duration(seconds: 20), onTimeout: () => null);
-
-  /// 取走读头之后残留的 body 字节。
-  Uint8List takeBuffer() {
-    final out = Uint8List.fromList(_buffer);
-    _buffer.clear();
-    return out;
-  }
-
-  /// 切到转发模式：之后来的字节直接交给 [sink]。
-  void forwardTo(void Function(Uint8List) sink, {void Function()? onDone}) {
-    _sink = sink;
-    _onDone = onDone;
-    // 转发开始前已经缓冲的字节要先送出去，否则就丢了。
-    if (_buffer.isNotEmpty) {
-      final pending = Uint8List.fromList(_buffer);
-      _buffer.clear();
-      sink(pending);
-    }
-  }
+  /// 连上游/直连的超时。SocksTunnel 内部自己也有超时，这里管直连那条。
+  static const _connectTimeout = Duration(seconds: 12);
 }

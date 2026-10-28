@@ -43,14 +43,34 @@ class ProxyState {
 
   /// 还有没有别的代理可换。
   ///
-  /// 只有一条（或全被判死只剩一条）时返回 false —— 那种情况下
-  /// 「自动换」只会原地打转，界面该让用户自己去换 IP。
+  /// ## 判据必须和 [pickRotation] 完全一致
   ///
-  /// 放在 [ProxyState] 上而不是 notifier 上：notifier 的公开 API
-  /// 应该只有 `state`（`avoid_public_notifier_properties`）。
+  /// 这个 getter 决定界面说什么、以及自动换出口那条路走不走得下去；
+  /// `pickRotation`（`proxy_pool_ops.dart`）决定真的换到哪一条。两边
+  /// 用不同规则，就会出现「说没有可换的，其实有」这种卡死。
+  ///
+  /// ## 原来那条规则错在哪
+  ///
+  /// 以前写的是「可用条数 > 1」，两种情况会误判成「没得换」：
+  ///
+  ///   1. 池里 2 条、检测判死 1 条 —— 可用只剩 1 条，于是 `1 > 1` 为假。
+  ///      可那条**不是当前出口**，换过去完全有效。用户被判死一条烂
+  ///      出口之后，会一直卡在剩下那条上，界面还告诉他「没有别的出口」。
+  ///      这是最常撞上的一种：粘一批免费 SOCKS5 进来、点一次全部检测，
+  ///      只剩一条通的。
+  ///   2. 全池被判死。可用 0 条，`0 > 1` 为假。但 [pickRotation] 的
+  ///      规则是「全判死就不剔 —— 宁可用可疑代理，不裸奔直连」，
+  ///      也就是说它**愿意**换。两条规则互相矛盾。
+  ///
+  /// 现在直接问 [IdentityLedger.nextUsableProxy]：「按换出口的规则，
+  /// 下一条是不是还是我自己？」是就是没得换。规则只有一处定义，
+  /// 不可能再对不上。
   bool get canRotate {
-    final usable = all.where((p) => !isUnusable(p.id));
-    return usable.length > 1;
+    final usable = all.where((p) => !isUnusable(p.id)).toList();
+    // 和 pickRotation 一样：全判死也不剔，全池当候选。
+    final candidates = usable.isNotEmpty ? usable : all;
+    if (candidates.isEmpty) return false;
+    return ledger.nextUsableProxy(candidates, currentId)?.id != currentId;
   }
 
   /// 这条代理是不是被检测判死了。

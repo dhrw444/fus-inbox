@@ -1,9 +1,14 @@
+/// 主题的三层降级：系统取色 → 动态调色板 → 内置配色。
+///
+/// 第三层是保命的：取色在部分 ROM 上会抛异常，绝不能因此白屏。
+library;
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:material_color_utilities/material_color_utilities.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:fus_inbox/core/theme/app_theme.dart';
 import 'package:fus_inbox/core/theme/theme_provider.dart';
+import 'package:material_color_utilities/material_color_utilities.dart';
+import 'package:material_ui/material_ui.dart';
 
 void main() {
   group('dynamicThemeProvider', () {

@@ -5,16 +5,15 @@
 library;
 
 import 'package:dynamic_color/dynamic_color.dart';
-import 'package:material_ui/material_ui.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-
-import 'package:fus_inbox/core/theme/app_theme.dart';
+import 'package:fus_inbox/core/log.dart';
+import 'package:fus_inbox/core/prefs/storage_keys.dart';
 import 'package:fus_inbox/core/theme/android_color_schemes.dart';
+import 'package:fus_inbox/core/theme/app_theme.dart';
 import 'package:fus_inbox/core/theme/dynamic_color_scheme.dart';
 import 'package:fus_inbox/core/theme/util.dart';
-
-const _kThemeMode = 'theme_mode';
+import 'package:material_ui/material_ui.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 /// 一对主题。
 class const AppThemeProvider({
@@ -61,7 +60,7 @@ final dynamicThemeProvider = FutureProvider<AppThemeProvider>((ref) async {
     try {
       return await loadDynamicCorePalette();
     } catch (e) {
-      debugPrint('取色失败，回落到内置配色: $e');
+      logLine('取色失败，回落到内置配色: $e');
       return null;
     }
   }();
@@ -101,7 +100,7 @@ class ThemeModeNotifier() extends Notifier<ThemeMode> {
     _restored = true;
     try {
       final prefs = await SharedPreferences.getInstance();
-      final m = _parse(prefs.getString(_kThemeMode));
+      final m = _parse(kThemeModeKey.readString(prefs));
       if (m != null && m != state) state = m;
     } catch (_) {
       // 读不到就跟随系统，不影响启动。
@@ -126,7 +125,7 @@ class ThemeModeNotifier() extends Notifier<ThemeMode> {
     state = m;
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_kThemeMode, _name(m));
+      await kThemeModeKey.writeString(prefs, _name(m));
     } catch (_) {
       // 落盘失败不影响本次会话内的切换。
     }

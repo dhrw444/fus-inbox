@@ -519,7 +519,7 @@ void main() {
         mintChromeMajor: mintChrome,
       );
       ok(
-        led.usedFor(p.proxy.id) < IdentityLedger.slotsPerIdentity ||
+        led.usedFor(p.proxy.id) < led.maxPerIdentity ||
             p.action == OpenAction.reuse,
         '第 ${i + 1} 次轮转落在还有余额的出口上',
       );
@@ -534,7 +534,7 @@ void main() {
   {
     final led = IdentityLedger();
     for (var i = 0; i < pool.length; i++) {
-      for (var j = 0; j < IdentityLedger.slotsPerIdentity; j++) {
+      for (var j = 0; j < led.maxPerIdentity; j++) {
         final p = led.plan(
           pool: pool,
           currentProxyId: pool[i].id,
@@ -703,6 +703,82 @@ void main() {
 
     // 空池返回 null，不抛。
     ok(led.nextUsableProxy(const [], pool[0].id) == null, '空池返回 null');
+  }
+
+  // ---------- 20. 只剩一条候选时不能假装换出口 ----------
+  //
+  // 触发面比「用户只配一条」大得多：`plan` 的候选是
+  // `usable.isNotEmpty ? usable : pool`。用户点一次「全部检测」，只要这批
+  // 公共代理里只剩一条通的，候选就变成 1 —— 之后每个第 4 个号都会在
+  // **同一个烂 IP** 上造一台「新身份」。
+  //
+  // 那正是 identity_ledger 开头说的最扎眼信号（同一个 IP 上冒出第二台），
+  // 而且 reason 还宣称「换代理 X」，而 X 就是当前这条：用户在界面上看到
+  // 「换到新出口」，实际一个字节都没换，只是额度又少一个。
+  {
+    final solo = <ProxyConfig>[pool[0]];
+    final led = IdentityLedger();
+    String? firstUa;
+    for (var j = 0; j < led.maxPerIdentity; j++) {
+      final p = led.plan(
+        pool: solo,
+        currentProxyId: pool[0].id,
+        numberId: 'solo-$j',
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      firstUa ??= p.binding.userAgent;
+      led.commit(p.proxy.id, 'solo-$j', p.binding);
+    }
+    eq(led.usedFor(pool[0].id), 3, '单条出口已用满');
+
+    final over = led.plan(
+      pool: solo,
+      currentProxyId: pool[0].id,
+      numberId: 'solo-over',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(over.action, OpenAction.reuse, '只有一条出口时不假装轮转');
+    eq(over.proxy.id, pool[0].id, '出口确实没变');
+    eq(over.binding.userAgent, firstUa, '沿用原身份，不在同一个 IP 上造第二台');
+  }
+
+  // ---------- 21. 整池用满 → 回落到当前这条时，同样不能假装 ----------
+  //
+  // 和 19 的区别：19 是「全满，但下一条是别人」，这里是「全满，且
+  // `_nextProxy` 的兜底 `pool[start % pool.length]` 正好又回到当前这条」。
+  // 少了这条判断，就会在同一个出口上无限造新身份。
+  {
+    final led = IdentityLedger();
+    for (var i = 0; i < pool.length; i++) {
+      for (var j = 0; j < led.maxPerIdentity; j++) {
+        final p = led.plan(
+          pool: pool,
+          currentProxyId: pool[i].id,
+          numberId: 'all-$i-$j',
+          mintUserAgent: mintUa,
+          mintModel: mintModel,
+          mintChromeMajor: mintChrome,
+        );
+        led.commit(p.proxy.id, 'all-$i-$j', p.binding);
+      }
+    }
+    // 候选只剩一条时，即便客观上池子里还有别的出口，也不会去用它们 ——
+    // 这正是「全部检测后只剩一条通」的现实形态。
+    final only = <ProxyConfig>[pool[1]];
+    final over = led.plan(
+      pool: only,
+      currentProxyId: pool[1].id,
+      numberId: 'all-over',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(over.action, OpenAction.reuse, '候选只剩当前这条时不假装轮转');
+    ok(over.reason.contains('没有别的可用出口'), 'reason 如实说明没有别的出口  (${over.reason})');
   }
 
   print('\n$pass passed, $fail failed');

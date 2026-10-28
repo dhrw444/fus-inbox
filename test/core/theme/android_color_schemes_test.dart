@@ -1,3 +1,9 @@
+/// Android 系统动态配色的取用与回落。
+///
+/// 覆盖三种情况：拿到原生色、拿不到时回落到内置调色板、以及原生给了
+/// 畸形颜色值（老 ROM 上真出现过）时不崩。
+library;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';

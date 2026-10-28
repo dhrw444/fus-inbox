@@ -1,3 +1,13 @@
+// 改 pubspec.yaml 里的 version 行。
+//
+// 被 test/release_version_test.dart 直接 import，所以这里的校验逻辑
+// 就是**发版门禁本身**：它一旦放过畸形版本号，整条流水线就带着坏版本号出包。
+//
+// 拒绝带 build metadata 的版本（`1.2.3+4`）：Flutter 的 version 字段里
+// `+` 后面那截是构建号，语义和 semver 的 build metadata 不是一回事，
+// 混着用会在 CI 里造出「同一个版本号两个不同产物」。
+//
+// 跑：dart run tool/set_release_version.dart <version>
 import 'dart:io';
 
 import 'package:pub_semver/pub_semver.dart';

@@ -1,7 +1,7 @@
-/// 假 SOCKS5 服务器 + 假目标服务器，验证客户端的协议实现。
-///
-/// 不连真实代理 —— 那需要账号。这里自建一个按 RFC 1928/1929 说话的
-/// 服务端，逐字节核对客户端发出的内容。
+// 假 SOCKS5 服务器 + 假目标服务器，验证客户端的协议实现。
+//
+// 不连真实代理 —— 那需要账号。这里自建一个按 RFC 1928/1929 说话的
+// 服务端，逐字节核对客户端发出的内容。
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -359,5 +359,8 @@ Future<void> main() async {
   }
 
   print('\n$pass passed, $fail failed');
-  if (fail > 0) exit(1);
+  // **无条件**退出：这个脚本不在 gate.dart 的 import 列表里，CI 单独跑它。
+  // 跑完 VM 不会自己结束（未取消的 socket 订阅吊着事件循环），
+  // 不 exit 的话 CI 那一步会一直挂到 job 超时。
+  exit(fail == 0 ? 0 : 1);
 }

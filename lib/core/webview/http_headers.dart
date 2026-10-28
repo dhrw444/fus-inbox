@@ -53,9 +53,6 @@ void forgetClearance() {
   _clearanceUserAgent = null;
 }
 
-/// 当前是否持有一张仍可用的通行证。
-bool get hasClearance => _clearance != null;
-
 /// 给一个请求装上一整套真实 Chrome 会发的头。
 ///
 /// [base] 站点根（用来推 `sec-fetch-site`），[referer] 上一页地址。

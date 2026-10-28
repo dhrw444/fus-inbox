@@ -1,3 +1,12 @@
+/**
+ * 把 Android 系统配色（Material You 的动态取色角色）读成一组十六进制色值。
+ *
+ * 挂在 fusinbox/theme 通道的 getColorSchemes 上，由
+ * lib/core/theme/android_color_schemes.dart 消费。
+ *
+ * 读不到某个角色时回落到同名的非模式角色，再取不到就跳过 —— 让 Dart 侧
+ * 按「缺了就回落内置配色」处理，比在这里抛异常强：取色失败不该让界面没颜色。
+ */
 package com.yg.fusinbox
 
 import android.content.Context
