@@ -25,6 +25,16 @@ import 'package:fus_inbox/features/numbers/domain/first_seen.dart';
 
 /// 号码 → 收录时间。键用 E.164 纯数字（`14197797678`）。
 class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
+  /// 读盘完成。**所有写操作先等它**（见 [_restore] 的注释）。
+  final Completer<void> _ready = Completer<void>();
+
+  /// 等读盘结束。带 3 秒兜底 —— 读盘卡死时写操作也不会被永久挡住。
+  ///
+  /// 和 `ProxyNotifier.ready` 是同一套：那边是为了防「还没读完就落盘，
+  /// 把用户数据覆盖成默认值」，这边是为了防「读完回来把新数据覆盖掉」。
+  Future<void> get ready =>
+      _ready.future.timeout(const Duration(seconds: 3), onTimeout: () {});
+
   @override
   Map<String, DateTime> build() {
     // 不 watch 任何东西：这份缓存只由 put() 写入。
@@ -47,9 +57,22 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
         final t = DateTime.tryParse(v);
         if (t != null) out[k] = t;
       }
-      if (out.isNotEmpty) state = out;
+      // **合并，不是覆盖。**
+      //
+      // 读盘期间用户可能已经点开过某个号、`put()` 进了新的收录时间
+      // （`build()` 是立刻返回空状态的，`_restore()` 还在 await 读盘）。
+      // 一句 `state = out` 会把那些刚写进去的**当场抹掉** —— 界面上的
+      // 「收录于…」闪一下就不见了。
+      //
+      // 冲突时以**内存里的**为准：它是这次会话刚抓到的，比盘上的新。
+      // （写操作现在都会先 `await ready`，正常不会再撞上；这条合并是
+      //  兜住「3 秒兜底超时之后才写盘」那种边角情况，多一层保险不亏。）
+      if (out.isNotEmpty) state = {...out, ...state};
     } catch (_) {
       // 缓存坏了当没有：附注信息不值得任何补救路径。
+    } finally {
+      // 成功、失败、压根没缓存 —— 都要放开闸门，否则写操作会一直等到超时。
+      if (!_ready.isCompleted) _ready.complete();
     }
   }
 
@@ -61,6 +84,7 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
   /// 不清的话缓存只增不减。每次目录刷新后调用一次。
   /// 数量没变就跳过，避免每次都白写一遍盘。
   Future<void> retainOnly(Set<String> keep) async {
+    await ready;
     final next = <String, DateTime>{
       for (final e in state.entries)
         if (keep.contains(e.key)) e.key: e.value,
@@ -81,6 +105,7 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
 
   /// 写入一条并落盘。已经有的不重复写。
   Future<void> put(String number, DateTime at) async {
+    await ready;
     if (state[number] == at) return;
     state = {...state, number: at};
     await _save();
@@ -164,6 +189,10 @@ class FirstSeenFiller() {
     _cancelled = false;
     var added = 0;
     try {
+      // 先等读盘。`missingFrom` 是拿内存里的 state 算差集，而 state 在
+      // 读盘回来之前是空的 —— 不等的话这一轮会把**所有号**都当成缺的，
+      // 白抓一遍（抓回来 `put` 又发现值没变，连盘都不写，只剩纯粹的请求）。
+      await store.ready;
       // 差集逻辑只有一处（store.missingFrom），这里不要再自己写一遍：
       // 两份实现迟早会漂移，而「该不该抓」判断错了要么重复请求、
       // 要么永远不补。
