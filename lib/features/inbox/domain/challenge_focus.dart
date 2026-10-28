@@ -62,6 +62,21 @@ ChallengeFocus? focusOnChallenge({
   if (viewportWidth <= 0 || visibleH <= 0) return null;
   if (rectWidth <= 0 || rectHeight <= 0) return null;
 
+  // **装不下就不动** —— 返回 null，调用方回落显示整页。
+  //
+  // 这是防「选择器选错了」的那道保险：JS 那边按
+  // `iframe[src*="challenges.cloudflare.com"]` 找框，万一站点把 Turnstile
+  // 塞在某个大 wrapper 里、匹配到的是那个容器，量出来的矩形会比视口还大。
+  // 那种情况按比例算是缩小、被夹到 1，只能靠平移居中 —— 而居中一个超大
+  // 容器等于只显示它的**中间**，真正的复选框要是在角上就被推出屏幕，
+  // 用户反而点不到（比不放大更糟）。
+  //
+  // 宁可退化成「以前那样看整页」，也不能制造「放大了却点不到」。
+  //
+  // 注意判据用的是不带 padding 的原始尺寸：加了 padding 会把「刚好装得下」
+  // 误判成装不下，那是不必要的退化。
+  if (rectWidth > viewportWidth || rectHeight > visibleH) return null;
+
   final wantW = rectWidth + padding * 2;
   final wantH = rectHeight + padding * 2;
 

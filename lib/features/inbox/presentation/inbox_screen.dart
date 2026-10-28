@@ -94,6 +94,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// - 用户自己点 = 他想顺便看看网页 → 给整页，别自作主张裁掉。
   bool _challengeAuto = false;
 
+  /// 「自动判验证过了」的检查在跑没有 —— 防止上一轮还没读完 cookie 就再起一轮。
+  bool _autoConfirming = false;
+
   /// 底部那条 [ChallengeBar] 占的高度（含 SafeArea 的粗略估计）。
   ///
   /// 只用来给「聚焦到验证框」留出余量 —— 留多了顶多上面空一点，
@@ -681,7 +684,52 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         _store.note('这个出口卡住了，已把页面放出来让你点一下。');
         _openChallenge(auto: true);
       }
+
+      // 自动弹层开着 → 盯着 cf_clearance，它一出现就自动收层继续。
+      // （用户自己点开的那个弹层不自动收：他可能只是想顺便看看网页。）
+      if (_showChallenge && _challengeAuto) {
+        unawaited(_autoConfirmIfPassed());
+      }
     });
+  }
+
+  /// 自动弹层时盯着 `cf_clearance`：一出现就说明人机验证真的过了，
+  /// 立刻收层继续，不用用户再去点「验证好了」。
+  ///
+  /// ## 判据只认这一个 cookie，不认 DOM 猜
+  ///
+  /// 「挑战容器消失了」「页面里出现消息节点了」这类 DOM 信号在导航栏、
+  /// 广告、骨架屏上都成立 —— 项目里为此误判过一整轮。而 `cf_clearance`
+  /// 是 Cloudflare **只在真的放行之后**才下发的凭证，且它是 HttpOnly，
+  /// 页面的 JS 根本读不到，只有原生 cookie 接口拿得到。
+  ///
+  /// 这条思路和站点的做法一致：Han1meViewer 那边判通过也是
+  /// 「页面加载完 + 挑战标记都不在 + cookie 里有 cf_clearance」三条同时成立，
+  /// 而其中决定性的那条就是最后这个 cookie。
+  Future<void> _autoConfirmIfPassed() async {
+    if (_autoConfirming) return;
+    _autoConfirming = true;
+    try {
+      final cookies = await _engine.readCookies(widget.number.inboxUrl);
+      final value = cookies['cf_clearance'];
+      if (value == null || value.isEmpty) return;
+      // 读 cookie 是异步的，回来时前提可能已经变了（用户点了收起 / 页面走了）。
+      if (!mounted || !_showChallenge || !_challengeAuto) return;
+      rememberClearance(value);
+      _store.note('验证通过，继续加载。');
+      // **不能直接在这里调 `_confirmChallengeDone`**：这个方法本身是从
+      // `_verifyPoll` 的 Timer 回调里被调起来的，而 `_confirmChallengeDone`
+      // 第一句就是 `_verifyPoll?.cancel()` —— 在正在执行的回调里取消自己
+      // 属于竞态（旧回调可能还没 await 回来，新一轮就已经起了）。
+      //
+      // 推迟到当前微任务队列之后再做：那时这一轮回调已经完整返回，
+      // 取消 + 重启就是干净的一次状态切换。
+      unawaited(Future<void>.microtask(_confirmChallengeDone));
+    } catch (_) {
+      // 页面正在导航时读 cookie 会抛，那是正常时序，下一轮再试。
+    } finally {
+      _autoConfirming = false;
+    }
   }
 
   /// 把 WebView cookie 库里的 cf_clearance 搬到原生 HTTP 的请求头。
@@ -938,30 +986,35 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         if (_showChallenge) _closeChallenge();
       },
       child: Scaffold(
-        appBar: InboxAppBar(
-          number: widget.number,
-          messageCount: s.messages.length,
-          searching: _searching,
-          controller: _searchController,
-          codeOnly: _codeOnly,
-          onQuery: (q) => setState(() => _query = q),
-          onOpenSearch: () => setState(() => _searching = true),
-          onCloseSearch: () {
-            // 关闭时把关键词和「只看验证码」一起清掉 —— 下次点开搜索是
-            // 全新的，不会莫名其妙只剩几条。
-            _searchController.clear();
-            setState(() {
-              _searching = false;
-              _query = '';
-              _codeOnly = false;
-            });
-          },
-          onToggleCodeOnly: () => setState(() => _codeOnly = !_codeOnly),
-          onChallenge: _openChallenge,
-          onRotateIdentity: _rotator.rotateIdentity,
-          onRescan: _rescan,
-          onReload: _reload,
-        ),
+        // 验证态**不挂收件页的 AppBar**：那一刻用户不在收件箱里，他在做
+        // 站点要求的一个动作。顶栏换成 [ChallengeHeader]（见下面的 Stack），
+        // 说清「现在在干什么、怎么退出去」。
+        appBar: _showChallenge
+            ? null
+            : InboxAppBar(
+                number: widget.number,
+                messageCount: s.messages.length,
+                searching: _searching,
+                controller: _searchController,
+                codeOnly: _codeOnly,
+                onQuery: (q) => setState(() => _query = q),
+                onOpenSearch: () => setState(() => _searching = true),
+                onCloseSearch: () {
+                  // 关闭时把关键词和「只看验证码」一起清掉 —— 下次点开搜索是
+                  // 全新的，不会莫名其妙只剩几条。
+                  _searchController.clear();
+                  setState(() {
+                    _searching = false;
+                    _query = '';
+                    _codeOnly = false;
+                  });
+                },
+                onToggleCodeOnly: () => setState(() => _codeOnly = !_codeOnly),
+                onChallenge: _openChallenge,
+                onRotateIdentity: _rotator.rotateIdentity,
+                onRescan: _rescan,
+                onReload: _reload,
+              ),
         body: Stack(
           children: [
             // 界面层铺满，永远可见。
@@ -1050,6 +1103,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 ),
               ),
             ),
+
+            // 独立验证界面的标题栏，顶到 SafeArea 上沿。
+            if (_showChallenge)
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                child: ChallengeHeader(
+                  theme: theme,
+                  auto: _challengeAuto,
+                  onClose: _closeChallenge,
+                ),
+              ),
 
             // 用户自己过验证时的底栏。叠在引擎上方、贴底，不遮住
             // 复选框区域（实测复选框在视口 y≈600，底栏只占最下面一条）。

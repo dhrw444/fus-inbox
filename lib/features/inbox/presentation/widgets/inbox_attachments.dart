@@ -194,3 +194,70 @@ class const InboxSearchSummary({
     );
   }
 }
+
+/// **独立验证界面**的标题栏。
+///
+/// 验证态的收件页 AppBar 是藏起来的（见 `inbox_screen.build` 里
+/// `appBar: _showChallenge ? null : ...`），顶上换成这一条。
+///
+/// 为什么需要一个「独立界面」的样子，而不是让收件页的 AppBar 继续挂着：
+/// 人机验证是**被迫中断去做的一件事** —— 用户没在收件箱里翻消息，他在做
+/// 站点要他做的一个动作。界面得说清「现在在干什么、怎么退出去」。
+/// 顶着收件页的号码和五个按钮，会让人以为还在原来的流程里，
+/// 于是不知道该点哪儿、也不知道「关闭」是放弃还是返回。
+class const ChallengeHeader({
+  required this.theme,
+  required this.auto,
+  required this.onClose,
+  super.key,
+}) extends StatelessWidget {
+  final ThemeData theme;
+
+  /// 这次是自动弹的还是用户自己点的 —— 决定副标题说什么。
+  final bool auto;
+
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = theme.colorScheme;
+    return Material(
+      // 盖在站点页面之上，必须有不透明底色 —— 否则标题和页面文字叠在一起，
+      // 两边都看不清。
+      color: scheme.surface,
+      elevation: 2,
+      child: SafeArea(
+        bottom: false,
+        child: SizedBox(
+          height: 52,
+          child: Row(
+            children: [
+              const SizedBox(width: 4),
+              IconButton(
+                tooltip: '关闭验证',
+                onPressed: onClose,
+                icon: const Icon(Icons.close),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text('完成人机验证', style: theme.textTheme.titleMedium),
+                    Text(
+                      auto ? '这个出口站点要求先过验证。过完会自动继续。' : '在下面完成验证；过完点底部的「验证好了」。',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
