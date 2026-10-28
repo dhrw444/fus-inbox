@@ -35,7 +35,19 @@ class VerifyRound {
   /// 这一轮已经等了多久。用真实时间算，不是累加定时器 tick ——
   /// 定时器会被系统挂起（切后台、Doze），挂起期间 tick 不来，
   /// 累加值就落后于真实时间。
-  Duration elapsed = Duration.zero;
+  ///
+  /// **派生值，不是存的字段。** 以前它是 `Duration elapsed`，只在
+  /// [refresh] 里被赋值，于是 [timedOut] / [shouldAutoPop] 读到的是
+  /// **上一次 refresh 时的快照** —— 任何一处调用方忘了先 refresh，
+  /// 超时和自动弹出就永远不触发（表现是卡在验证页等到底）。
+  /// 判定依赖「调用顺序」是这类状态机最容易长出来的暗礁。
+  ///
+  /// 现在读一次算一次，`refresh()` 退化成「顺手返回它」（调用点不用改）。
+  Duration get elapsed {
+    final s = _start;
+    if (s == null) return Duration.zero;
+    return _clock().difference(s);
+  }
 
   /// 站点报过 ready 了吗。
   ///
@@ -62,7 +74,6 @@ class VerifyRound {
   /// 路径传 `rearm: false`。
   void begin({bool rearm = true}) {
     _start = _clock();
-    elapsed = Duration.zero;
     readySeen = false;
     if (rearm) autoPopped = false;
   }
@@ -76,12 +87,9 @@ class VerifyRound {
   }
 
   /// 刷新 [elapsed]。每个 tick 调一次。
-  Duration refresh() {
-    final s = _start;
-    if (s == null) return elapsed;
-    elapsed = _clock().difference(s);
-    return elapsed;
-  }
+  /// 保留这个入口只为兼容调用点（每个 tick 调一次）—— [elapsed] 现在
+  /// 自己就是真值，这里没有「刷新」可做。
+  Duration refresh() => elapsed;
 
   /// 等太久，该停了。
   bool get timedOut => elapsed > window;

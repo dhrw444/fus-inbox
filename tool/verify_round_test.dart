@@ -267,6 +267,28 @@ void main() {
     check('14.4 收起后再等 10 秒也不会自动弹回来', !r.shouldAutoPop);
   }
 
+  print('');
+  print('=== 15. 【回归】不先 refresh 也能读到真值 ===');
+  {
+    // 旧实现里 elapsed 是存的字段、只在 refresh() 里赋值，于是
+    // `timedOut` / `shouldAutoPop` 读的是**上一次 refresh 时的快照**：
+    // 哪个调用方漏了刷新，超时和自动弹出就永远不触发（卡在验证页等到底）。
+    // 现在它是派生 getter —— 读一次算一次，不依赖调用顺序。
+    final c = FakeClock();
+    final r = VerifyRound(clock: c.call);
+    r.begin();
+    c.advance(const Duration(seconds: 120));
+    // 关键：**故意不调 refresh()**
+    check('15.1 没 refresh 也判得出超时', r.timedOut, '(elapsed=${r.elapsed})');
+    c.advance(const Duration(seconds: 10));
+    check(
+      '15.2 没 refresh 也读得到增长',
+      r.elapsed > const Duration(seconds: 120),
+      '(elapsed=${r.elapsed})',
+    );
+    check('15.3 不会出现负值', !r.elapsed.isNegative);
+  }
+
   print('$_pass passed, $_fail failed');
   if (_fail > 0) throw StateError('$_fail 条失败');
 }
