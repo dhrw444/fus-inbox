@@ -36,10 +36,6 @@ class const InboxSearch({
   /// 没在搜索：搜索框收起、关键词空、不过滤。
   static const closed = InboxSearch(open: false, query: '', codeOnly: false);
 
-  /// 搜不搜得到东西由 [query] 和 [codeOnly] 决定，和 [open] 无关 ——
-  /// 用户收起搜索框之后列表不该突然变回全部（那会让列表跳一下）。
-  bool get active => query.trim().isNotEmpty || codeOnly;
-
   /// 换关键词。**顺手保证 `open` 为真**：能改关键词就说明搜索框开着，
   /// 不存在「关键词有值但框收起」这种半套状态。
   InboxSearch withQuery(String value) =>

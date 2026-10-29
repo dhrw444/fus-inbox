@@ -20,21 +20,6 @@
 /// 几十个身份在几秒内全打光。
 library;
 
-/// 什么时候该自动换身份。
-enum RotationTrigger() {
-  /// 配额用完（429 + pause）。**换** —— 新身份不继承旧计数。
-  quota,
-
-  /// 服务端临时繁忙（503）。也换，顺手换一个干净的再试。
-  busy,
-
-  /// 需要人机验证（403）。换，绕开这次挑战。
-  challenge,
-
-  /// 会话/身份失效。换。
-  sessionBroken,
-}
-
 /// 自动换身份的节流器。
 class IdentityRotationPolicy({
   this.cooldown = const Duration(seconds: 30),
@@ -57,9 +42,6 @@ class IdentityRotationPolicy({
 
   final List<DateTime> _recent = [];
   DateTime? _last;
-
-  /// 所有拒绝类型都换身份。
-  static bool shouldRotateFor(RotationTrigger trigger) => true;
 
   /// 现在能不能自动重置。不能的话第二个值是给用户看的原因。
   (bool, String) canRotate(DateTime now) {
