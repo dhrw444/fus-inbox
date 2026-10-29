@@ -364,4 +364,4 @@ class NumbersRepository({
 ///
 /// 私有（`_` 开头）：它只在 [NumberRepository.fetchPage] 的 catch 里出现，
 /// 外面不需要认识它。
-class const _ChallengePending() implements Exception {}
+class const _ChallengePending() implements UnretryableDirectoryError {}

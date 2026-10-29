@@ -81,6 +81,14 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
 
   @override
   void dispose() {
+    // 停掉收录时间补齐 —— 页面没了，那 100+ 个详情页请求不该继续打。
+    //
+    // `FirstSeenFiller.cancel()` 原来只被 `ref.onDispose` 调到，而
+    // `firstSeenFillerProvider` 是**全 App 一个** Provider、不随页面销毁 ——
+    // 于是注释写的「用户切走就停」从来没有实现过：进号码页之后
+    // 立刻点开某个号，补齐任务会在后台继续打完整轮，和收件页的
+    // WebView 请求叠在一起撞风控。
+    ref.read(firstSeenFillerProvider).cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -94,6 +102,12 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   }
 
   void _openInbox(AvailableNumber n) {
+    // 进收件页之前停掉补齐 —— 接下来是收件页在打站点，
+    // 两边同时发请求最容易撞风控。
+    //
+    // NumbersScreen 此刻**不会**销毁（它还在导航栈里），所以光靠
+    // `dispose` 停不住。
+    ref.read(firstSeenFillerProvider).cancel();
     Navigator.of(context)
         .push(MaterialPageRoute<void>(builder: (_) => InboxScreen(number: n)));
   }

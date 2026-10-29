@@ -64,7 +64,11 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
           : '加了 ${total - errors.length} 条，${errors.length} 条格式不对';
     });
     // 有错的留着不清 —— 用户要看着那几行改。全加成功了才清空。
-    if (errors.length < total) _input.clear();
+    // **全成功才清空。** 原来写的是 `errors.length < total`（= 至少成功
+    // 一条就清），而注释要的是「全加成功了才清空」，两者差一个 `isEmpty`。
+    // 后果：粘 10 行、3 行格式不对时，输入框连同那 3 行错误内容一起被清掉，
+    // 用户看着「3 条格式不对」却无从照着改。
+    if (errors.isEmpty) _input.clear();
   }
 
   @override

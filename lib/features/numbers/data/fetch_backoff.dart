@@ -20,6 +20,22 @@
 library;
 
 /// 一次抓取最多试几次（含首次）。
+/// 标记「这个失败重试也没用」。
+///
+/// ## 为什么需要它
+///
+/// [withBackoff] 原来用 `on Object catch` 兜住一切（那是对的：连接重置、
+/// TLS 握手失败都不是 [NumberFetchException] 的子类，不兜会穿透整个
+/// `fetchAll`、把已经抓到的几页全丢）。
+///
+/// 但它把「等验证」也当成了可重试的抖动 —— 站点要人机验证时，
+/// `fetchPage` 会挂起等人过验证（最多 60 秒），而退避循环会把这个过程
+/// **重复三次**。用户看到的就是界面白转 180 秒，而且他连验证框都看不到
+/// （目录那条链路没有 UI）。
+///
+/// 所以需要一个「明确不可重试」的标记：见到它立刻放弃，不进退避。
+abstract interface class UnretryableDirectoryError implements Exception {}
+
 const directoryMaxAttempts = 3;
 
 /// 每次重试前的等待（毫秒）。第 N 次重试取第 N-1 项，不够就复用最后一项。
@@ -43,6 +59,12 @@ Future<T?> withBackoff<T>(
     try {
       return await op();
     } on Object catch (e) {
+      // 明确不可重试的（比如「等人过验证」）—— 立刻放弃，
+      // 不要拿退避循环去重复一遍等待。见 [UnretryableDirectoryError]。
+      if (e is UnretryableDirectoryError) {
+        onGiveUp?.call(e);
+        return null;
+      }
       last = e;
       if (attempt < maxAttempts - 1) {
         final i = attempt < delaysMs.length ? attempt : delaysMs.length - 1;

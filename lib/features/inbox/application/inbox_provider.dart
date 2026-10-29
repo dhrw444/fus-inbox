@@ -200,8 +200,22 @@ class InboxStore({this.onChanged}) {
     _emit(_state.copyWith(visible: _state.visible + step));
   }
 
+  /// 报一个失败。
+  ///
+  /// **必须连 `loadingMore` 一起清。** 翻页途中页面出错
+  /// （`onWebResourceError` 走这条）时，`loadingMore` 若保持为真：
+  /// - 列表底部永远显示转圈
+  /// - `_loadMore` 开头那句 `if (s.loadingMore) return` 把之后**所有**
+  ///   翻页入口堵死 —— 用户再也没有「加载更多」可用
+  ///
+  /// 那是「失败之后状态不一致」的典型：一个瞬时错误让功能永久失效。
   void fail(String message) => _emit(
-    _state.copyWith(phase: InboxPhase.failed, error: message, status: message),
+    _state.copyWith(
+      phase: InboxPhase.failed,
+      error: message,
+      status: message,
+      loadingMore: false,
+    ),
   );
 
   void reset() {
