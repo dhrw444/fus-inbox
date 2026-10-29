@@ -20,6 +20,7 @@ import 'package:flutter/foundation.dart';
 
 import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_merge.dart';
+import 'package:fus_inbox/features/inbox/domain/challenge_params.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 
 export 'package:fus_inbox/features/inbox/application/inbox_merge.dart'
@@ -108,6 +109,12 @@ class InboxStore({this.onChanged}) {
           title: payload['title']?.toString() ?? '',
           message: payload['message']?.toString() ?? '',
           retrySeconds: retry is int ? retry : int.tryParse('$retry') ?? 0,
+          // 站点在挑战那条 403 的 body 里给了渲染参数 —— 见 [SiteHold.challenge]。
+          challenge: parseChallengeParams(
+            payload['challenge'] is Map
+                ? jsonEncode(payload['challenge'])
+                : '${payload['challenge'] ?? ''}',
+          ),
         ),
         phase: InboxPhase.waiting,
         clearError: true,

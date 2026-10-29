@@ -6,6 +6,8 @@
 /// 由 WebView 内的 `assets/js/fus_inbox.js` 归一化后经 `FusInbox` 通道回传。
 library;
 
+import 'challenge_params.dart';
+
 /// 单条短信。
 class const InboxMessage({
   required this.id,
@@ -109,6 +111,7 @@ class const SiteHold({
   required this.title,
   required this.message,
   this.retrySeconds = 0,
+  this.challenge,
 }) {
   final SiteHoldKind kind;
 
@@ -119,6 +122,17 @@ class const SiteHold({
 
   /// 站点建议多少秒后再试。0 表示它没说。
   final int retrySeconds;
+
+  /// 人机验证的渲染参数（只有 [SiteHoldKind.challenge] 才有）。
+  ///
+  /// 站点在 `403 + reader_verification_required` 的 body 里给
+  /// `sitekey` / `action` / `cdata` —— 有了它们就能在**收件页自己**
+  /// （站点源、有 `crypto.subtle`、有 cookie）里渲染一个验证框。
+  ///
+  /// 另开页面那条路走不通：安卓 WebView 上 `loadData` 生成的文档
+  /// origin 是 `null`，`fetch('/sms-api/...')` 跨域被拦、
+  /// `crypto.subtle` 也直接抛 —— 真机卡在「正在准备验证…」。
+  final ChallengeParams? challenge;
 }
 
 class const InboxState({

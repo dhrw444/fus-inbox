@@ -27,6 +27,7 @@ import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/features/inbox/application/identity_rotator.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
+import 'package:fus_inbox/features/inbox/domain/challenge_overlay.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_app_bar.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_attachments.dart';
@@ -785,6 +786,31 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
+  /// 在收件页里盖一层「只含验证框」的覆盖层。
+  ///
+  /// 见 `challenge_overlay.dart` 的文件头：另开页面那条路在安卓 WebView 上
+  /// 走不通（`loadData` 的 origin 是 null，fetch 跨域、crypto.subtle 抛）。
+  /// 收件页本身是站点源，所以在这里盖一层最可靠。
+  Future<void> _renderChallengeOverlay() async {
+    final params = _store.state.hold?.challenge;
+    if (params == null || !params.complete) {
+      // 还没拿到参数（站点可能还没发出那次被拦的请求）。
+      // 不硬等：露出收件页让用户自己看，总比一片空白强。
+      return;
+    }
+    try {
+      await _engine.runJavaScript(
+        challengeOverlayScript(
+          sitekey: params.sitekey,
+          action: params.action,
+          cdata: params.cdata,
+        ),
+      );
+    } catch (e) {
+      logLine('渲染验证框失败：$e');
+    }
+  }
+
   /// 把站点页面亮出来，让用户自己在上面过验证。
   ///
   /// 为什么要留这个入口 —— 自动路径（[_pumpVerification]）覆盖大多数情况，
@@ -831,14 +857,31 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 站点界面上做别的事（比如换个号码试试）。那种情况把页面换成验证框
     // 等于剥夺了他本来要的东西，所以照旧露出收件页。
     if (auto) {
-      unawaited(_loadChallengePage());
+      // **自动弹：在收件页自己里渲染一个验证框**，不另开页面。
+      //
+      // 另开页面那条路（`loadData` + `assets/challenge/challenge.html`）
+      // 真机上走不通：安卓 WebView 给 `loadData` 生成的文档的 origin 是
+      // `null`，页面里 `fetch('/sms-api/v1/session')` 跨域被拦、
+      // `crypto.subtle` 直接抛 —— 卡在「正在准备验证…」。
+      //
+      // 收件页本身就是站点源：有 cookie、有 `crypto.subtle`、
+      // 站点自己的 `turnstile` loader 也已经加载好了。所以把
+      // `SiteHold.challenge` 那三个参数（sitekey / action / cdata）交给它，
+      // 在页面上盖一层只含验证框的覆盖层 —— 屏幕上看不到网站内容。
+      unawaited(_renderChallengeOverlay());
     }
     // 内核版本太低时，Turnstile 根本过不去 —— 必须当场说出来，
     // 否则用户只会一直重试（真机踩过：114 的 WebView 永远转不完）。
     if (reload) {
-      // 页面可能停在旧状态，重载一次让站点重新发起验证。
-      // 重载会走 onPageFinished → 注入脚本，然后轮询自己会发现新状态。
-      unawaited(_engine.reload());
+      // **手动点必须 loadUrl 回收件页，不能 reload。**
+      //
+      // 自动弹那次已经把 `assets/challenge/challenge.html` 装进 WebView
+      // （只有验证框那个页面）。这时候 reload 重载的是**当前文档**，也就是
+      // 验证页本身 —— 用户点「自己过验证」想看的网页根本没出来。
+      //
+      // 手动点这个入口的全部意义就是「我要看网站页面、自己在上面过验证」，
+      // 所以一律回到收件页。
+      unawaited(_engine.loadUrl(widget.number.inboxUrl));
     } else if (_verifyPoll == null) {
       // 真没在跑才启动（比如页面刚加载完、还没走到 _pumpVerification）。
       _pumpVerification();

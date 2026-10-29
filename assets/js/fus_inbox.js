@@ -342,7 +342,7 @@
     }[kind] || { title: '', message: '' };
   }
 
-  function reportHold(kind, retry, scope, serverMessage) {
+  function reportHold(kind, retry, scope, serverMessage, challenge) {
     // 同一种拒绝 + 同一个重试秒数只报一次，避免每帧刷屏。
     var key = kind + '|' + retry;
     if (holdupSeen[key]) return;
@@ -353,6 +353,7 @@
       type: 'holdup',
       kind: kind,
       scope: scope || '',
+      challenge: challenge || null,
       retry: retry || 0,
       title: copy.title,
       message: serverMessage || copy.message,
@@ -390,7 +391,19 @@
               if (hold) {
                 try {
                   res.clone().json().then(function (d) {
-                    reportHold(hold.kind, hold.retry, d && d.scope, d && d.message);
+                    reportHold(
+                      hold.kind, hold.retry, d && d.scope, d && d.message,
+                      // 挑战那一条还要把渲染参数带上去 —— 站点在 403 的 body 里给了
+                      // sitekey / action / cdata，有了它们就能在**当前页面**（站点源、
+                      // 有 crypto.subtle、有 cookie）里单独渲染一个验证框，不用另开页面。
+                      //
+                      // 之前试过另开一个 `loadData` 页面：安卓 WebView 上它的 origin 是
+                      // null，`fetch('/sms-api/...')` 跨域被拦、`crypto.subtle` 也直接抛
+                      // —— 真机上卡在「正在准备验证…」。
+                      d && d.error === 'reader_verification_required'
+                        ? { sitekey: d.sitekey, action: d.action, cdata: d.cdata }
+                        : null
+                    );
                   }).catch(function () {
                     reportHold(hold.kind, hold.retry, '', '');
                   });
