@@ -181,12 +181,55 @@ class IdentityRotator({
   ///
   /// 这里只是可重入闸；真正的判定在 [_maybeAutoRotateBody]，见
   /// [_autoRotating]。
+  /// 判一次「要不要自动换」。
+  ///
+  /// ## 闸门必须覆盖**整个异步过程**
+  ///
+  /// 原来这里是同步 try/finally：
+  ///
+  /// ```dart
+  /// if (_autoRotating) return;
+  /// _autoRotating = true;
+  /// try { _maybeAutoRotateBody(); }   // 内部 unawaited(...) 起异步
+  /// finally { _autoRotating = false; } // ← 立刻放开
+  /// ```
+  ///
+  /// 而 `_maybeAutoRotateBody` 里启动的 `_rotateToNextProxy()` 是异步的，
+  /// 它内部第一件事就是 `store.note(...)` —— 那会触发 `onChanged`，
+  /// 而 `onChanged` 又调回本方法。此时闸门**已经放开**（finally 早跑完
+  /// 了），于是又起一个 `_rotateToNextProxy`，它又 note、又 onChanged…
+  ///
+  /// 结果就是**无限递归地起换身份任务**，每个都在分配对象、写状态、
+  /// 开 Timer —— 真机上表现为「点一下就闪退、运行内存被跑满」。
+  ///
+  /// 现在闸门一直持到异步过程结束（`whenComplete`），中途的 onChanged
+  /// 一律被挡回去。
+  /// 判一次「要不要自动换」。
+  ///
+  /// ## 真正挡住重入的是 [_rotating]，不是这个同步闸
+  ///
+  /// 原来这里是同步 try/finally：设真 → 调 body → 立刻放开。而 body
+  /// 里 `unawaited(...)` 出去的换身份任务是**异步**的，它内部第一件事
+  /// 就是 `store.note(...)` —— 那会触发 `onChanged`，而 `onChanged`
+  /// 又调回本方法。此时闸门早已放开，于是又起一个任务，它又 note、
+  /// 又 onChanged…
+  ///
+  /// 真机表现：**点一下就闪退、运行内存被跑满**（无限递归地起任务，
+  /// 每个都在分配对象、写状态、开 Timer）。
+  ///
+  /// 修法：这里只负责「同步判一次」，**重入交给 [_rotating] 挡**。
+  /// `rotateIdentity` / `_rotateToNextProxy` 在入口就把 `_rotating` 置真、
+  /// 在整个异步过程结束后才放开 —— 那才是覆盖全程的闸。
+  ///
+  /// 所以下面 `_maybeAutoRotateBody` 里那两处 `unawaited(...)` 调的都是
+  /// **带 `_rotating` 闸门的入口**，第二轮的调用会被它们挡回去。
   void maybeAutoRotate() {
     if (_autoRotating) return;
     _autoRotating = true;
     try {
       _maybeAutoRotateBody();
     } finally {
+      // 同步部分结束就放开 —— 异步部分的闸在 [_rotating] 上。
       _autoRotating = false;
     }
   }
@@ -272,6 +315,16 @@ class IdentityRotator({
   /// 没得换时（池空 / 只剩一条可用）就什么都不做，界面上的
   /// 「换 IP 后重置浏览器」还留着，由用户自己换。
   Future<void> _rotateToNextProxy() async {
+    // **入口必须有闸。**
+    //
+    // 这里原来只有 `_rotating = true`、没有前置检查 —— 而 `rotateIdentity`
+    // 有。差别是致命的：本方法内部第一件事就是 `store.note(...)`，
+    // 那会触发 `onChanged` → `maybeAutoRotate()`，而此时
+    // `_autoRotating` 已经放开（它是同步闸）—— 于是又调回本方法，
+    // 没有闸就**无限递归地起任务**。
+    //
+    // 真机表现：点一下就闪退、运行内存被跑满。
+    if (_rotating) return;
     _rotating = true;
     try {
       final notifier = ref.read(proxyProvider.notifier);
