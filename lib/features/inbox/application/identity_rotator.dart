@@ -351,7 +351,16 @@ class IdentityRotator({
     if (!isAlive()) return;
     onPageDiscarded();
     try {
-      await engine.reload();
+      // **必须 loadUrl 回收件页，不能 reload。**
+      //
+      // `reload` 重载的是**当前文档** —— 而当前文档可能不是收件页：
+      // 验证界面会自动弹层时把 `assets/challenge/challenge.html` 装进
+      // WebView（只有验证框那个页面）。这时候 reload 会把验证页再加载一遍，
+      // 换完身份用户看到的还是验证框、而不是新身份的收件页。
+      //
+      // 这条是「验证页」那次改动带进来的回归 —— 加验证页之前当前文档
+      // 一定是收件页，所以 reload 一直是对的。
+      await engine.loadUrl(inboxUrl);
     } catch (e) {
       logLine('重载失败: $e');
     }
