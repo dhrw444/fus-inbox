@@ -492,10 +492,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // （见 build 里那个 Positioned.fill 的 Offstage），hold 挂着时状态栏
     // 被 HoldNotice 顶掉 —— 这两种情况下这一响没人看得见。
     //
-    // 而看门狗只此一响：_armWatchdog 只在换身份 / 重载（_discardPage）
-    // 时重臂。在这一响上白白耗掉，这个会话剩下的时间就再没有兜底
-    // 提示了 —— 弹层一收起、还是卡着，用户什么提示都等不到。
-    // 所以看不见就别消耗：重臂一轮，等弹层收起 / hold 解除后的下一响。
     // **看不见就不消耗这一响，但也不要空转重臂。**
     //
     // 原来这里 `_armWatchdog()` 再起一个 25 秒 Timer —— 于是弹层开着

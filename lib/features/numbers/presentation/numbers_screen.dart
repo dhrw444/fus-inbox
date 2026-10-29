@@ -61,15 +61,20 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
       await notifier.hydrateFromCache();
       if (!mounted) return;
 
-      // 缓存到位后立刻开始补收录时间，和网络刷新并行。
+      // **补齐要在目录到手之后。**
       //
-      // 之前是 `await load()` 之后才补 —— 而 load 要跑完 5 页（约 2 秒），
-      // 等于把补齐硬生生推迟到那之后。现在两件事同时跑：网络在后台拿新
-      // 数据，补齐用的是缓存里已有的号，两者互不阻塞。
+      // 原来这两句顺序反了：先 `_fillFirstSeen()`、再 `load()`。而
+      // `_fillFirstSeen` 第一句就是读 `numberDirectoryProvider.all` ——
+      // 那一刻目录还是空的（缓存可能没读到 / 首次启动没缓存），于是
+      // `numbers.isEmpty` 成立、直接 return。之后 `load()` 把目录拉回来，
+      // **却没有任何人再触发一次补齐** → 收录时间永远不显示。
+      //
+      // 现在先 `await` 目录（不 force，有缓存就秒回），再补。
+      await notifier.load(force: true);
+      if (!mounted) return;
       unawaited(_fillFirstSeen());
 
       // 网络刷新放到最后，不 await。
-      unawaited(notifier.load(force: true));
     } catch (e) {
       logLine('目录启动失败: $e');
     }
