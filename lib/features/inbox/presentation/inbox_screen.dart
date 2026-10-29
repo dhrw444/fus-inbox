@@ -77,6 +77,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 见 `challenge_ui.dart` 的文件头。
   ChallengeUi _challenge = ChallengeUi.closed;
 
+  /// 这次弹层已经画过哪一组挑战参数。
+  ///
+  /// `onChanged` 每收到一帧都会调 [_renderChallengeOverlay]，不去重的话
+  /// 会反复销毁重建 Turnstile —— 用户正在点的那个组件一直闪，点不到。
+  String _renderedChallenge = '';
+
   /// 搜索框展开了没有。
   /// 搜索状态。三个值必须一起变，所以收成一个不可变对象 ——
   /// 见 `inbox_search_state.dart` 的文件头。
@@ -136,6 +142,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         setState(() {});
         // 状态一变就重新判一次「是不是被拒了」。可重入闸在控制器里。
         _rotator.maybeAutoRotate();
+
+        // 挑战参数到了就补画一次覆盖层。
+        //
+        // 自动弹出的那一刻 `hold.challenge` 往往还是空的 —— 站点要
+        // 先发出那次被拦的 `POST /sms-api/v1/session`，参数才跟着
+        // `holdup` 帧回来。所以不能只在弹出时画一次。
+        //
+        // **这里补、不是轮询里补**：`onChanged` 是站点推送触发的，
+        // 参数只到一次，所以只会画一次。放轮询里的话每 900ms 重画，
+        // 用户正在点的 Turnstile 会被反复销毁重建 —— 那就成了「自己乱动」。
+        if (_challenge.open && _challenge.auto) {
+          unawaited(_renderChallengeOverlay());
+        }
       },
     );
     _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
@@ -722,16 +741,21 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 还挂着，哪怕 cookie 已经下发也不能收（可能是上一次留下的）。
       //
       // 三个标记是 Cloudflare 挑战页自己的 id，不是猜的：
-      // `#challenge-form`（要填的表单）、`#challenge-success-text`（成功文案
-      // 还在渲染）、`#challenge-error-text`（失败重试）。
+      // `id="challenge-form"`（要填的表单）、`id="challenge-success-text"`（成功文案
+      // 还在渲染）、`id="challenge-error-text"`（失败重试）。
       final stillChallenging = await _engine.evaluateJavascript(
         'var h = document.head ? document.head.innerHTML : "";'
         'var b = document.body ? document.body.innerHTML : "";'
         'var s = h + b;'
-        's.indexOf("#challenge-form") >= 0'
-        ' || s.indexOf("#challenge-success-text") >= 0'
-        ' || s.indexOf("#challenge-error-text") >= 0'
-        ' ? "1" : "0";',
+        // **查 id="..."，不是查 #...。**
+        //
+        // innerHTML 里是 id="challenge-form"，根本没有 # 号。原来查的是
+        // indexOf("#challenge-form")，恒为假 —— 于是「挑战标记还在就别收层」
+        // 这道闸形同不存在。
+        'var a = s.indexOf("id=\\"challenge-form\\"") >= 0;'
+        'var b2 = s.indexOf("id=\\"challenge-success-text\\"") >= 0;'
+        'var c2 = s.indexOf("id=\\"challenge-error-text\\"") >= 0;'
+        '(a || b2 || c2) ? "1" : "0";',
       );
       if ('$stillChallenging'.contains('1')) return;
 
@@ -777,12 +801,15 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 走不通（`loadData` 的 origin 是 null，fetch 跨域、crypto.subtle 抛）。
   /// 收件页本身是站点源，所以在这里盖一层最可靠。
   Future<void> _renderChallengeOverlay() async {
+    // 同一组参数只画一次 —— 见 [_renderedChallenge]。
     final params = _store.state.hold?.challenge;
     if (params == null || !params.complete) {
       // 还没拿到参数（站点可能还没发出那次被拦的请求）。
       // 不硬等：露出收件页让用户自己看，总比一片空白强。
       return;
     }
+    final key = params.sitekey + params.action + params.cdata;
+    if (key == _renderedChallenge) return;
     try {
       await _engine.runJavaScript(
         challengeOverlayScript(
@@ -791,6 +818,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           cdata: params.cdata,
         ),
       );
+      _renderedChallenge = key;
     } catch (e) {
       logLine('渲染验证框失败：$e');
     }
@@ -883,6 +911,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _verifyPoll?.cancel();
     setState(() {
       _challenge = ChallengeUi.closed;
+      _renderedChallenge = '';
     });
     // **闸门保持关着（`rearm: false`）。**
     //
@@ -906,6 +935,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _verifyPoll?.cancel();
     setState(() {
       _challenge = ChallengeUi.closed;
+      _renderedChallenge = '';
     });
     _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。
