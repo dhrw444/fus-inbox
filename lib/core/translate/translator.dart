@@ -86,6 +86,9 @@ class Translator {
   /// 串行化用：上一条翻完再发下一条。
   Future<void> _queue = Future<void>.value();
 
+  /// 已作废。见 [dispose]。
+  bool _disposed = false;
+
   static final _cjk = RegExp(r'[\u4e00-\u9fff]');
   static final _latin = RegExp(r'[A-Za-z]');
 
@@ -153,6 +156,17 @@ class Translator {
   /// 命中缓存直接返回。全部引擎都失败才抛 [TranslationException]，
   /// 调用方负责降级到原文显示。
   Future<Translation> translate(String text) {
+    // 已作废的实例不再发请求。
+    //
+    // 切语言 / 清缓存时旧实例会被 `ref.onDispose` 掉，而 `_queue` 上
+    // 可能还排着十几条 —— 不拦的话它们会**继续打完全部引擎**才轮到新
+    // 语言的请求。用户切到繁體后最长要等几分钟才见第一条译文。
+    if (_disposed) {
+      throw const TranslationException(
+        reason: TranslationFailure.notNeeded,
+        detail: '翻译器已作废',
+      );
+    }
     final t = text.trim();
     final cached = _cache[t];
     if (cached != null) return Future<Translation>.value(cached);
@@ -166,7 +180,18 @@ class Translator {
 
     // 排队：上一条结束再发下一条。链上任何一次失败都不能卡住后来者，
     // 所以 catchError 把异常吞掉只用于放行队列。
-    final result = _queue.then((_) => _request(t));
+    // 排队到执行之间可能已经作废了 —— 那时**别再发请求**。
+    // 这里判而不只在开头判：一条请求从入队到真正执行可能等几十秒，
+    // 期间用户完全可能已经切了语言。
+    final result = _queue.then((_) {
+      if (_disposed) {
+        throw const TranslationException(
+          reason: TranslationFailure.notNeeded,
+          detail: '翻译器已作废',
+        );
+      }
+      return _request(t);
+    });
     _queue = result.then<void>((_) {}, onError: (Object _) {});
     return result;
   }
@@ -203,5 +228,13 @@ class Translator {
     );
   }
 
-  void dispose() => _transport.dispose();
+  /// 作废：排队中的请求不再发出去，连接池关掉。
+  ///
+  /// 置 [_disposed] 是关键 —— 只 dispose 连接池的话，`_queue` 上排着的
+  /// 那十几条照样会跑（只是每条都失败），用户等的是失败而不是新语言的
+  /// 结果。
+  void dispose() {
+    _disposed = true;
+    _transport.dispose();
+  }
 }

@@ -131,6 +131,21 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         setState(() {});
         // 状态一变就重新判一次「是不是被拒了」。可重入闸在控制器里。
         _rotator.maybeAutoRotate();
+
+        // 翻页结束了就撤掉那 15 秒看门狗。
+        //
+        // 它原来只在「发起下一次翻页」和 `dispose` 时取消 —— 正常翻完
+        // 成功之后还留着，15 秒后空转一次。看着无害，但**同一秒内第二次
+        // `_loadMore` 失败了**的话（`fail()` 以前不清 `loadingMore`），
+        // 旧 Timer 会把新请求的 `loadingMore` 清掉并谎报「翻页超时」。
+        //
+        // 挂在 `onChanged` 上而不是三条 ingest 分支里：那三条帧在
+        // `inbox_provider` 里处理，本页看不到；而 `loadingMore` 一旦变 false
+        // 就是「这一轮结束了」，无论哪条帧导致的。
+        if (!_store.state.loadingMore) {
+          _loadMoreWatchdog?.cancel();
+          _loadMoreWatchdog = null;
+        }
       },
     );
     _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
