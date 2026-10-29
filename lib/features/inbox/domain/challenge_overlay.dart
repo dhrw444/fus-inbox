@@ -2,8 +2,7 @@
 ///
 /// ## 为什么在收件页里做，不另开页面
 ///
-/// 试过另开页面（`WebEngine.loadHtml` + `assets/challenge/challenge.html`），
-/// 真机卡在「正在准备验证…」。根因是安卓 WebView 给 `loadData` 生成的
+/// 试过另开页面（`loadData` 装一段 HTML），真机卡在「正在准备验证…」。根因是安卓 WebView 给 `loadData` 生成的
 /// 文档的 origin 是 **`null`**：页面里 `fetch('/sms-api/v1/session')`
 /// 跨域被拦、`crypto.subtle` 在非安全上下文直接抛。`baseUrl` 只影响
 /// 相对 URL 的解析，**改不了 origin**。

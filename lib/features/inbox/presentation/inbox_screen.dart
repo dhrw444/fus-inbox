@@ -46,14 +46,6 @@ const _kChannel = 'FusInbox';
 /// 站点自己的页面——第三方页面拿到它就等于能往状态层里塞任意数据。
 const _kAllowedHost = 'freeussms.com';
 
-/// 验证页的 baseUrl。
-///
-/// **必须是站点的源**，不能是 `about:blank` 或本地文件：验证页里要拉
-/// `/wp-content/themes/freeussms/assets/reader.js`（Turnstile 的 loader
-/// 在它里面）、还要 `POST /sms-api/v1/session` 拿挑战参数。换成别的源，
-/// 这两个都会被 CORS / 同源策略挡掉，页面里就只剩一句「准备验证失败」。
-const _kChallengeBaseUrl = 'https://$_kAllowedHost/';
-
 class const InboxScreen({required this.number, super.key})
     extends ConsumerStatefulWidget {
   final AvailableNumber number;
@@ -763,29 +755,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
-  /// 把「只含验证框」的页面装进 WebView。
-  ///
-  /// 见 `assets/challenge/challenge.html`：它自己发
-  /// `POST /sms-api/v1/session` 拿 sitekey/action/cdata，再
-  /// `turnstile.render()`。屏幕上只有那个验证框，没有网站内容。
-  ///
-  /// 资源和站点同源（`baseUrl` 用站点的源），否则它拉的 `reader.js`
-  /// 会被 CORS 拦掉、`window.isSecureContext` 也不成立。
-  Future<void> _loadChallengePage() async {
-    try {
-      final html = await rootBundle.loadString(
-        'assets/challenge/challenge.html',
-      );
-      if (!mounted || !_showChallenge) return;
-      await _engine.loadHtml(html, baseUrl: _kChallengeBaseUrl);
-    } catch (e) {
-      // 装不上就退回「露出收件页」—— 至少用户还能自己看页面过验证。
-      logLine('验证页装载失败：$e');
-      if (!mounted || !_showChallenge) return;
-      unawaited(_engine.reload());
-    }
-  }
-
   /// 在收件页里盖一层「只含验证框」的覆盖层。
   ///
   /// 见 `challenge_overlay.dart` 的文件头：另开页面那条路在安卓 WebView 上
@@ -859,8 +828,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     if (auto) {
       // **自动弹：在收件页自己里渲染一个验证框**，不另开页面。
       //
-      // 另开页面那条路（`loadData` + `assets/challenge/challenge.html`）
-      // 真机上走不通：安卓 WebView 给 `loadData` 生成的文档的 origin 是
+      // 另开页面那条路（`loadData` 装一段 HTML）真机上走不通：
+      // 安卓 WebView 给 `loadData` 生成的文档的 origin 是
       // `null`，页面里 `fetch('/sms-api/v1/session')` 跨域被拦、
       // `crypto.subtle` 直接抛 —— 卡在「正在准备验证…」。
       //
@@ -875,9 +844,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     if (reload) {
       // **手动点必须 loadUrl 回收件页，不能 reload。**
       //
-      // 自动弹那次已经把 `assets/challenge/challenge.html` 装进 WebView
-      // （只有验证框那个页面）。这时候 reload 重载的是**当前文档**，也就是
-      // 验证页本身 —— 用户点「自己过验证」想看的网页根本没出来。
+      // 自动弹那次已经在收件页上盖了验证框覆盖层。这时候 reload 重载的是
+      // **当前文档**，覆盖层会跟着重画 —— 用户点「自己过验证」想看的网页
+      // 根本没出来。
       //
       // 手动点这个入口的全部意义就是「我要看网站页面、自己在上面过验证」，
       // 所以一律回到收件页。
