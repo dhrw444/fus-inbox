@@ -133,7 +133,20 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         if (!mounted) return;
         setState(() {});
         // 状态一变就重新判一次「是不是被拒了」。可重入闸在控制器里。
-        _rotator.maybeAutoRotate();
+        // **`_rotator` 此刻可能还没赋值。**
+        //
+        // `InboxStore` 的构造就在上面几行，而 `_rotator` 要到下面才 `late final`
+        // 初始化。中间这段里只要有任何状态变化（比如注入脚本读不到时那句
+        // `_store.fail(...)`），`onChanged` 就会执行 —— 访问未初始化的
+        // `late final` 字段抛 `LateInitializationError`，**直接闪退**。
+        //
+        // 用 try 兜住：还没就绪时这一轮跳过就行，状态变化本身已经 `setState`
+        // 刷过界面了，不差这一次「判要不要换身份」。
+        try {
+          _rotator.maybeAutoRotate();
+        } catch (_) {
+          // 还没初始化完。见上面的说明。
+        }
 
         // 看门狗被「看不见」吞掉的那一响，现在可见了 —— 重新武装。
         // 见 [_onWatchdog]：原来它是空转重臂，永远不休眠。
@@ -162,13 +175,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         }
       },
     );
-    _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
-      _store.fail('注入脚本读不到：$e');
-      return '';
-    });
-    _engine = _buildEngine();
-    // 轮换控制器。两个回调是**屏幕这一侧的义务**：那三个计时器
-    // （看门狗 / 验证轮询）归本页持有，控制器不许碰。
     _rotator = IdentityRotator(
       ref: ref,
       store: _store,
@@ -179,6 +185,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       onLoadStarted: _beginPageRound,
       toast: _toast,
     );
+    _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
+      _store.fail('注入脚本读不到：$e');
+      return '';
+    });
+    _engine = _buildEngine();
+    // 轮换控制器。两个回调是**屏幕这一侧的义务**：那三个计时器
+    // （看门狗 / 验证轮询）归本页持有，控制器不许碰。
     // 两条都要等：垫片得在页面任何脚本之前装好，WebView 实例也得
     // 先挂进视图树（原生侧要遍历 content view 才找得到那个实例）。
     unawaited(_startUp());
