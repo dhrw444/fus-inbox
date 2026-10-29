@@ -94,6 +94,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// - 用户自己点 = 他想顺便看看网页 → 给整页，别自作主张裁掉。
   bool _challengeAuto = false;
 
+  /// 这次弹层已经画过哪一组挑战参数（`sitekey|action|cdata`）。
+  ///
+  /// 轮询每 900ms 会调一次 [_renderChallengeOverlay]，不去重的话会
+  /// 反复销毁重建 Turnstile —— 用户正在点的那个组件每 900ms 消失一次，
+  /// 根本点不到。
+  String _renderedChallengeKey = '';
+
   /// 「自动判验证过了」的检查在跑没有 —— 防止上一轮还没读完 cookie 就再起一轮。
   bool _autoConfirming = false;
 
@@ -680,6 +687,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       if (_showChallenge && _challengeAuto) {
         unawaited(_autoConfirmIfPassed());
       }
+
+      // **覆盖层可能还没画出来。**
+      //
+      // 自动弹的那一刻 `hold.challenge` 往往还是空的 —— 站点要先发出
+      // 那次被拦的 `POST /sms-api/v1/session` 才有参数。所以这里每轮
+      // 都试一次：参数到了就画，画过了 `_renderChallengeOverlay` 自己
+      // 会先移除旧节点再重建，不会叠加。
+      unawaited(_renderChallengeOverlay());
     });
   }
 
@@ -767,6 +782,10 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 不硬等：露出收件页让用户自己看，总比一片空白强。
       return;
     }
+    // 同一组参数只画一次 —— 轮询每 900ms 调一次，反复重建的话
+    // 用户正在点的那个组件每 900ms 消失一次，根本点不到。
+    final key = params.sitekey + params.action + params.cdata;
+    if (key == _renderedChallengeKey) return;
     try {
       await _engine.runJavaScript(
         challengeOverlayScript(
@@ -775,6 +794,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           cdata: params.cdata,
         ),
       );
+      _renderedChallengeKey = key;
     } catch (e) {
       logLine('渲染验证框失败：$e');
     }
@@ -869,6 +889,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     setState(() {
       _showChallenge = false;
       _challengeAuto = false;
+      _renderedChallengeKey = '';
     });
     // **闸门保持关着（`rearm: false`）。**
     //
@@ -893,6 +914,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     setState(() {
       _showChallenge = false;
       _challengeAuto = false;
+      _renderedChallengeKey = '';
     });
     _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。

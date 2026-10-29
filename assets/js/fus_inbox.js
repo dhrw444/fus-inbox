@@ -310,7 +310,20 @@
 
   function holdFromResponse(res) {
     var marker = res.headers && res.headers.get('X-Fair-Use');
-    if (!marker) return null;
+    if (!marker) {
+      // **`/sms-api/v1/session` 的 403 没有 `X-Fair-Use` 头。**
+      //
+      // 站点在它自己的 `reader.js` 里这样判：`r.status !== 403 ||
+      // d.error !== 'reader_verification_required'` 才算失败，否则就是
+      // 「要过人机验证」。所以这一条**不能靠响应头认**，只能看 body 里的
+      // error 码 —— 而 body 只有调用方读过才知道（见下面 wrapped 里那段）。
+      //
+      // 这里给一个「可能是挑战」的标记，调用方读完 body 再确认。
+      if (res.status === 403 && isSessionUrl(res.url || '')) {
+        return { kind: 'challenge', retry: 0, needBody: true };
+      }
+      return null;
+    }
     var kind = res.status === 429 ? 'pause'
       : res.status === 403 ? 'challenge'
       : res.status === 503 ? 'unavailable'
@@ -318,6 +331,11 @@
     if (!kind) return null;
     var retry = parseInt(res.headers.get('Retry-After') || '', 10);
     return { kind: kind, retry: isFinite(retry) ? retry : 0 };
+  }
+
+  // session 端点：拿 grant / 触发挑战的那一个。
+  function isSessionUrl(u) {
+    return typeof u === 'string' && u.indexOf('/sms-api/v1/session') >= 0;
   }
 
   // 从页面 DOM 抄站点的原话。站点自己会渲染这段说明，
@@ -388,6 +406,23 @@
               // 先看有没有被拒。这几条响应的 body 里没有 messages，
               // 交给 digest 只会被当成「空」，原因就丢了。
               var hold = holdFromResponse(res);
+              // `needBody` = 没有 `X-Fair-Use` 头、只能靠 body 认的那条
+              // （`/sms-api/v1/session` 的 403）。body 里不是
+              // `reader_verification_required` 就**不是**挑战 —— 别误报。
+              if (hold && hold.needBody) {
+                var pending = hold;
+                try {
+                  res.clone().json().then(function (d) {
+                    if (d && d.error === 'reader_verification_required') {
+                      reportHold(
+                        'challenge', 0, d.scope, d.message,
+                        { sitekey: d.sitekey, action: d.action, cdata: d.cdata }
+                      );
+                    }
+                  }).catch(function () {});
+                } catch (e) {}
+                return res;
+              }
               if (hold) {
                 try {
                   res.clone().json().then(function (d) {
