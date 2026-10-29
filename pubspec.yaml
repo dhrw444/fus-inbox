@@ -69,6 +69,7 @@ flutter:
     - assets/icon/icon.png
     - assets/js/
     - assets/proxies/
+    - assets/challenge/
 
 flutter_launcher_icons:
   android: "ic_launcher"

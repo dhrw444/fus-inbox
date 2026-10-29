@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>完成人机验证</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #ffffff;
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 100%;
+  }
+  #box {
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  #slot { min-height: 76px; display: flex; align-items: center; }
+  #hint {
+    margin-top: 20px;
+    font-size: 14px;
+    line-height: 1.5;
+    color: #5f6368;
+    text-align: center;
+    max-width: 320px;
+  }
+</style>
+</head>
+<body>
+<div id="box">
+  <div id="slot"></div>
+  <div id="hint">正在准备验证…</div>
+</div>
+
+<script>
+  var hint = document.getElementById('hint');
+  function setHint(t) { if (hint) hint.textContent = t; }
+
+  // ---- 1. 生成一对一次性 ECDSA P-256 密钥，只为了拿到挑战参数 ----
+  //
+  // 站点只校验公钥**格式**（JWK 的 kty/crv/x/y 四段），不认它是谁；
+  // 换 grant 时才验签，而那个密钥由 reader.js 自己管（存在 IndexedDB）。
+  function b64u(buf) {
+    var bytes = new Uint8Array(buf);
+    var s = '';
+    for (var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  async function freshPublicKey() {
+    var pair = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign', 'verify']
+    );
+    var jwk = await crypto.subtle.exportKey('jwk', pair.publicKey);
+    return { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
+  }
+
+  // ---- 2. 问站点要挑战参数 ----
+  //
+  // `POST /sms-api/v1/session` 带自己的公钥。站点回
+  // `403 + reader_verification_required`，body 里就是
+  // sitekey / action / cdata —— 有了这三个才能单独渲染验证框。
+  async function fetchChallenge() {
+    var key = await freshPublicKey();
+    var res = await fetch('/sms-api/v1/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: key })
+    });
+    var data = null;
+    try { data = await res.json(); } catch (e) { data = null; }
+    if (res.status !== 403 || !data || data.error !== 'reader_verification_required') {
+      var why = (data && data.error) ? data.error : ('HTTP ' + res.status);
+      throw new Error(why);
+    }
+    return data;
+  }
+
+  // ---- 3. 等 Turnstile 就绪，然后渲染 ----
+  function waitTurnstile(ms) {
+    return new Promise(function (resolve, reject) {
+      var started = Date.now();
+      var tick = setInterval(function () {
+        if (window.turnstile && window.turnstile.render) {
+          clearInterval(tick); resolve(window.turnstile);
+        } else if (Date.now() - started > ms) {
+          clearInterval(tick); reject(new Error('验证组件加载超时'));
+        }
+      }, 150);
+    });
+  }
+
+  async function main() {
+    var data;
+    try {
+      setHint('正在准备验证…');
+      data = await fetchChallenge();
+    } catch (e) {
+      setHint('准备验证失败：' + (e && e.message ? e.message : e));
+      return;
+    }
+
+    var ts;
+    try {
+      ts = await waitTurnstile(20000);
+    } catch (e) {
+      setHint('验证组件加载超时，检查网络后重试。');
+      return;
+    }
+
+    var slot = document.getElementById('slot');
+    slot.innerHTML = '';
+    setHint('请完成下面的验证');
+    try {
+      ts.render(slot, {
+        sitekey: data.sitekey,
+        action: data.action,
+        cData: data.cdata,
+        theme: 'light',
+        language: 'en',
+        callback: function (token) {
+          setHint('验证通过，正在继续…');
+          // 交回宿主：宿主拿 token 去换 grant。
+          if (window.FusChallenge && window.FusChallenge.token) {
+            window.FusChallenge.token(token);
+          }
+        },
+        'error-callback': function (code) {
+          setHint('验证失败（' + code + '），点上面重试。');
+        },
+        'expired-callback': function () {
+          setHint('验证已过期，正在重新加载…');
+          main();
+        }
+      });
+    } catch (e) {
+      setHint('渲染失败：' + (e && e.message ? e.message : e));
+    }
+  }
+
+  main();
+</script>
+<script src="/wp-content/themes/freeussms/assets/reader.js"></script>
+</body>
+</html>

@@ -83,6 +83,13 @@ abstract class WebEngine() {
   /// 加载一个 URL。
   Future<void> loadUrl(String url);
 
+  /// 直接装一段 HTML 当页面。
+  ///
+  /// [baseUrl] 决定**页面算哪个源** —— 验证页必须挂在站点自己的源上，
+  /// 否则它里面拉的 `reader.js` 会被 CORS 拦掉、`window.isSecureContext`
+  /// 也不成立（站点脚本里明写这两个前提）。
+  Future<void> loadHtml(String html, {required String baseUrl});
+
   /// 在页面里执行一段 JS（不关心返回值）。
   Future<void> runJavaScript(String script);
 

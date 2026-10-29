@@ -158,6 +158,18 @@ class InAppWebEngine({String userAgent = '', this.environment})
   }
 
   @override
+  Future<void> loadHtml(String html, {required String baseUrl}) async {
+    final c = _controller;
+    if (c == null || _disposed) return;
+    await c.loadData(
+      data: html,
+      mimeType: 'text/html',
+      encoding: 'utf-8',
+      baseUrl: WebUri(baseUrl),
+    );
+  }
+
+  @override
   Future<void> runJavaScript(String script) async {
     final c = _controller;
     if (c == null || _disposed) return;

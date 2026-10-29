@@ -42,7 +42,6 @@ import 'number_sort_test.dart' as sort;
 import 'proxy_logic_test.dart' as proxy;
 import 'ready_test.dart' as ready;
 import 'verify_round_test.dart' as verify;
-import 'webview_version_test.dart' as webviewVersion;
 
 /// 一段检查。抛异常 = 这段失败。
 typedef Case = void Function();
@@ -66,7 +65,6 @@ void main() {
     'findProxy 兜底': findproxy.main,
     'ready 超时语义': ready.main,
     '代理失败必须停': leak.main,
-    'WebView 版本检测': webviewVersion.main,
   };
 
   final failed = <String>[];

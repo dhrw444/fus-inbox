@@ -28,7 +28,6 @@ import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/features/inbox/application/identity_rotator.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
-import 'package:fus_inbox/features/inbox/domain/webview_version_check.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_app_bar.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_attachments.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_message_list.dart';
@@ -45,6 +44,14 @@ const _kChannel = 'FusInbox';
 /// [InboxStore.ingestRaw] 会无条件接收通道送来的 JSON，所以通道只能留给
 /// 站点自己的页面——第三方页面拿到它就等于能往状态层里塞任意数据。
 const _kAllowedHost = 'freeussms.com';
+
+/// 验证页的 baseUrl。
+///
+/// **必须是站点的源**，不能是 `about:blank` 或本地文件：验证页里要拉
+/// `/wp-content/themes/freeussms/assets/reader.js`（Turnstile 的 loader
+/// 在它里面）、还要 `POST /sms-api/v1/session` 拿挑战参数。换成别的源，
+/// 这两个都会被 CORS / 同源策略挡掉，页面里就只剩一句「准备验证失败」。
+const _kChallengeBaseUrl = 'https://$_kAllowedHost/';
 
 class const InboxScreen({required this.number, super.key})
     extends ConsumerStatefulWidget {
@@ -93,12 +100,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///   整页糊在屏幕上又难看又容易点到广告；
   /// - 用户自己点 = 他想顺便看看网页 → 给整页，别自作主张裁掉。
   bool _challengeAuto = false;
-
-  /// 内核版本过低时的告警文案（空串 = 不显示）。
-  ///
-  /// 在打开验证页时算一次就存着 —— 用户看到这个界面的时间可能很短，
-  /// 每次 build 都去解析 UA 没有意义。
-  String _versionWarning = '';
 
   /// 「自动判验证过了」的检查在跑没有 —— 防止上一轮还没读完 cookie 就再起一轮。
   bool _autoConfirming = false;
@@ -761,27 +762,27 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
-  /// 算一次内核版本告警。
+  /// 把「只含验证框」的页面装进 WebView。
   ///
-  /// 只认 UA 里的 `Chrome/<四段>` —— 安卓 WebView 的 UA 里还有个
-  /// `Version/4.0`（WebView 自己的老标记，恒为 4.0），读错那个会把所有
-  /// 机器都判成「版本 4，太低了」。判据在 [checkWebViewVersion] 里
-  /// （纯逻辑，有单测）。
-  Future<void> _checkWebViewVersion() async {
-    final check = checkWebViewVersion(currentUserAgent);
-    // 解析不出来就沉默：既不报警也不说够用。
-    if (check.unknown || !check.tooLow) {
-      if (_versionWarning.isNotEmpty && mounted) {
-        setState(() => _versionWarning = '');
-      }
-      return;
+  /// 见 `assets/challenge/challenge.html`：它自己发
+  /// `POST /sms-api/v1/session` 拿 sitekey/action/cdata，再
+  /// `turnstile.render()`。屏幕上只有那个验证框，没有网站内容。
+  ///
+  /// 资源和站点同源（`baseUrl` 用站点的源），否则它拉的 `reader.js`
+  /// 会被 CORS 拦掉、`window.isSecureContext` 也不成立。
+  Future<void> _loadChallengePage() async {
+    try {
+      final html = await rootBundle.loadString(
+        'assets/challenge/challenge.html',
+      );
+      if (!mounted || !_showChallenge) return;
+      await _engine.loadHtml(html, baseUrl: _kChallengeBaseUrl);
+    } catch (e) {
+      // 装不上就退回「露出收件页」—— 至少用户还能自己看页面过验证。
+      logLine('验证页装载失败：$e');
+      if (!mounted || !_showChallenge) return;
+      unawaited(_engine.reload());
     }
-    final text =
-        '这台机器的 WebView 内核偏低（${check.display}），'
-        '人机验证可能过不去。推荐 $recommendedWebViewMajor.x 以上 —— '
-        '更新「Android System WebView」后再试。';
-    if (!mounted) return;
-    setState(() => _versionWarning = text);
   }
 
   /// 把站点页面亮出来，让用户自己在上面过验证。
@@ -821,9 +822,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _showChallenge = true;
       _challengeAuto = auto;
     });
+    // **把验证页装进 WebView**，而不是露出收件页。
+    //
+    // 收件页是正常的网站页面 —— 露出来用户看到的是整个站点，验证框只是
+    // 里面的一小块（站点用 `reader.js` 动态渲染它）。Han1meViewer 那边看着
+    // 「只有一个验证弹窗」，是因为它拦的是**页面请求**、Cloudflare 直接回了
+    // 挑战页；本站被拦的是 API，返回 JSON 不是挑战页，照搬不了。
+    //
+    // 所以自己渲染：页面里先 `POST /sms-api/v1/session` 拿
+    // sitekey/action/cdata（站点那 403 的 body 里就带着），再
+    // `turnstile.render()`。屏幕上就只有那个验证框。
+    //
+    // `baseUrl` 必须是站点源 —— 否则页面里拉的 `reader.js` 被 CORS 拦掉，
+    // 而且站点脚本明写「要 `window.isSecureContext`」。
+    unawaited(_loadChallengePage());
     // 内核版本太低时，Turnstile 根本过不去 —— 必须当场说出来，
     // 否则用户只会一直重试（真机踩过：114 的 WebView 永远转不完）。
-    unawaited(_checkWebViewVersion());
     if (reload) {
       // 页面可能停在旧状态，重载一次让站点重新发起验证。
       // 重载会走 onPageFinished → 注入脚本，然后轮询自己会发现新状态。
@@ -1055,7 +1069,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 child: ChallengeHeader(
                   theme: theme,
                   auto: _challengeAuto,
-                  versionWarning: _versionWarning,
                   onClose: _closeChallenge,
                 ),
               ),
