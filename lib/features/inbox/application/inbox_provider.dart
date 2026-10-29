@@ -93,7 +93,14 @@ class InboxStore({this.onChanged}) {
     final kind = payload['kind']?.toString() ?? '';
     if (kind.isEmpty) {
       // 解除：站点又开始给消息了。
-      _emit(_state.copyWith(clearHold: true, clearError: true));
+      // 解除 hold，但**不要动已经失败的 error**。
+      //
+      // 原来无条件 `clearError: true`，于是站点发一条空 holdup 就能把
+      // 真正的失败原因抹掉 —— 比如「代理不可用，已停下」刚写上去，
+      // 站点那边一声「解除」，失败面板的正文就空了（phase 还是 failed，
+      // 但没话可说）。用户看到一个说不出原因的失败界面。
+      final keepError = _state.phase == InboxPhase.failed;
+      _emit(_state.copyWith(clearHold: true, clearError: !keepError));
       return;
     }
     final retry = payload['retry'];
@@ -145,7 +152,11 @@ class InboxStore({this.onChanged}) {
       firstBatchDone: _firstBatchDone,
     );
     _seen = merged.seen;
-    _firstBatchDone = true;
+    //
+    // 原来是无条件置真。注入脚本早期那次 DOM 扫描可能一条有效消息都
+    // 没有（页面还没渲染、或抓到的全是空文本/受保护行），那一帧会被
+    // 当成「首屏」—— 之后接口帧里每条消息都会被标成「新」。
+    if (merged.messages.isNotEmpty) _firstBatchDone = true;
     final messages = merged.messages;
 
     final src = payload['src']?.toString() ?? _state.source;

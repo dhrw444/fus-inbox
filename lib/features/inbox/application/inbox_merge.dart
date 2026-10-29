@@ -70,6 +70,11 @@ const kInboxMaxMessages = 240;
           : (old?.receivedAt ?? ''),
       phone: msg.phone.isNotEmpty ? msg.phone : (old?.phone ?? ''),
       isProtected: msg.isProtected,
+      // **`isNew` 要带过来。**
+      //
+      // 重建 `InboxMessage` 时漏了它 —— 每收到一帧，已经标为「新」的
+      // 消息都被重置成默认的 false，「新」横幅出现一帧就被下一帧抹掉。
+      isNew: old?.isNew ?? false,
     );
   }
 

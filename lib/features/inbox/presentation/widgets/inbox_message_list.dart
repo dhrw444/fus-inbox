@@ -41,6 +41,7 @@ class const InboxMessageList({
   required this.query,
   required this.codeOnly,
   required this.onRescan,
+  required this.onReload,
   required this.onChallenge,
   required this.onRestart,
   required this.onRevealMore,
@@ -61,6 +62,9 @@ class const InboxMessageList({
 
   /// 下拉刷新 / 空态里的「重新扫描」。
   final Future<void> Function() onRescan;
+
+  /// 真正会重新发请求的动作（reload）。见 `HoldNotice.onReload`。
+  final Future<void> Function() onReload;
 
   /// 空态里「我自己去过验证」—— 会带 reload（见 `_openChallenge`）。
   final VoidCallback onChallenge;
@@ -101,6 +105,7 @@ class const InboxMessageList({
                 state: state,
                 theme: theme,
                 onRescan: onRescan,
+                onReload: onReload,
                 onChallenge: onChallenge,
                 onRestart: onRestart,
               ),

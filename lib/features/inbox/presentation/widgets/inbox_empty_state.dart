@@ -28,6 +28,7 @@ class const HoldNotice({
   required this.onRestart,
   required this.onChallenge,
   required this.onRescan,
+  required this.onReload,
   super.key,
 }) extends StatelessWidget {
   final SiteHold hold;
@@ -35,6 +36,14 @@ class const HoldNotice({
   final VoidCallback onRestart;
   final VoidCallback onChallenge;
   final VoidCallback onRescan;
+
+  /// 真正会**重新发请求**的动作（reload）。
+  ///
+  /// temporal hold 的「重试」按钮原来接的是 `onRescan`（只重扫现有 DOM）——
+  /// 而 hold 本身由接口响应头产生（`holdFromResponse`），DOM 里不会有新东西，
+  /// 清 hold 的空 holdup 帧只随新响应到来。**重扫永远清不掉 hold**：
+  /// 用户点「重试」，界面纹丝不动。
+  final VoidCallback onReload;
 
   @override
   Widget build(BuildContext context) {
@@ -112,7 +121,7 @@ class const HoldNotice({
             ),
           ] else
             FilledButton.tonalIcon(
-              onPressed: onRescan,
+              onPressed: onReload,
               icon: const Icon(Icons.refresh, size: 18),
               label: const Text('重试'),
             ),
@@ -132,6 +141,7 @@ class const InboxEmptyState({
   required this.state,
   required this.theme,
   required this.onRescan,
+  required this.onReload,
   required this.onChallenge,
   required this.onRestart,
   super.key,
@@ -139,6 +149,7 @@ class const InboxEmptyState({
   final InboxState state;
   final ThemeData theme;
   final VoidCallback onRescan;
+  final VoidCallback onReload;
   final VoidCallback onChallenge;
   final VoidCallback onRestart;
 
@@ -157,6 +168,7 @@ class const InboxEmptyState({
         onRestart: onRestart,
         onChallenge: onChallenge,
         onRescan: onRescan,
+        onReload: onReload,
       );
     }
 

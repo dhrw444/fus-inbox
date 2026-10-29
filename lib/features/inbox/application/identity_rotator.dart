@@ -239,8 +239,16 @@ class IdentityRotator({
         store.note('代理池里没有别的出口可换，需要你换个网络再点重置。');
         return;
       }
-      _consecutiveRotations++;
-      _lastProxyRotate = now;
+      // **计数和冷却时间戳都不在这里加。**
+      //
+      // 原来加在这里，也就是「还没真正换」之前 —— 而 `_rotateToNextProxy`
+      // 里 `apply(next)` 可能失败（新出口握手失败）就直接 return，
+      // 什么都没换，计数却已经 +1、45 秒冷却也已经起算。
+      //
+      // 后果：自动换出口失败一次，接下来 45 秒内**连手动重载都不再触发**
+      // 自动换 —— 页面停在旧会话上，用户只有一行状态字可看。
+      //
+      // 现在挪到真正换成功之后（见 `_rotateToNextProxy` / `_rotateIdentityBody`）。
       unawaited(_rotateToNextProxy());
       return;
     }
@@ -253,7 +261,6 @@ class IdentityRotator({
       return;
     }
     _rotationPolicy.record(now);
-    _consecutiveRotations++;
     unawaited(rotateIdentity());
   }
 
@@ -284,6 +291,9 @@ class IdentityRotator({
         return;
       }
       store.note('配额用满，换到 ${next.displayName}（${active.detail}）。');
+
+      // 出口**真的换成了**才起算冷却。见上面那段说明。
+      _lastProxyRotate = DateTime.now();
       // 直调 body：本方法已经持有 [_rotating] 了。走公开的
       // [rotateIdentity] 会被它自己的闸门当成「正在换」直接 return，
       // 自动轮换就此失效 —— 而且失效得很安静。
@@ -401,6 +411,9 @@ class IdentityRotator({
       // 新身份加载完也要盯验证状态 —— 换身份之后站点会重新
       // pending → ready 走一遍，这是一次全新的加载，计时从头算。
       onLoadStarted();
+
+      // 换成功了一次 —— 连续计数在这里 +1（上面两处提前计数已删）。
+      _consecutiveRotations++;
 
       if (!isAlive()) return;
       toast(

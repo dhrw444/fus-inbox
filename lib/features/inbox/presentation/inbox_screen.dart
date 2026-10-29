@@ -219,7 +219,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// AppBar 的「重新加载」：本页作废 → 重载 → 重开一轮等待。
   Future<void> _reload() async {
     _discardPage();
-    await _engine.reload();
+    // 引擎在导航中被销毁、或内核报错时 `reload` 会抛。
+    //
+    // 原来这里没有 catch：异常从 `unawaited(...)` 调用链里逃出去，
+    // 下面那句 `_beginPageRound()` **不会执行** —— 轮询不起、看门狗
+    // 不重臂。用户点「重新加载」之后页面就静在那里，再也不会自己恢复。
+    try {
+      await _engine.reload();
+    } catch (e) {
+      logLine('重新加载失败: $e');
+    }
+    // 无论成功失败都要重开这一轮 —— 失败更需要它把页面救回来。
     _beginPageRound();
   }
 
@@ -1025,6 +1035,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               query: _search.query,
               codeOnly: _search.codeOnly,
               onRescan: _rescan,
+              onReload: _reload,
               onChallenge: () => _openChallenge(reload: true),
               onRestart: _rotator.restartWithNewIdentity,
               onRevealMore: _store.revealMore,
