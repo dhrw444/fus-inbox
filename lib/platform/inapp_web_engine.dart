@@ -161,12 +161,11 @@ class InAppWebEngine({String userAgent = '', this.environment})
   Future<void> loadHtml(String html, {required String baseUrl}) async {
     final c = _controller;
     if (c == null || _disposed) return;
-    await c.loadData(
-      data: html,
-      mimeType: 'text/html',
-      encoding: 'utf-8',
-      baseUrl: WebUri(baseUrl),
-    );
+    // 只传**改了默认值**的那一项。`mimeType: 'text/html'` 和
+    // `encoding: 'utf8'` 都是 `loadData` 自己的默认值 —— 显式传一遍会被
+    // `avoid_redundant_argument_values` 判冗余，CI 跑 `--fatal-infos`
+    // 会直接挂（已经挂过一次）。
+    await c.loadData(data: html, baseUrl: WebUri(baseUrl));
   }
 
   @override
