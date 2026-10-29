@@ -211,8 +211,8 @@ class ProxyNotifier() extends Notifier<ProxyState> {
   /// 对全部代理跑一遍连通性检测。
   ///
   /// 真的走 SOCKS5 握手 + 到达站点 + 读回出口 IP，不是只看端口开没开。
-  /// 内置清单里实测 616 条端口开着、只有 589 条真能用 —— 差 27 条，
-  /// 光探端口会把这 27 条当成好的。
+  /// 内置清单里**当时**实测：端口开着的一大截、真能用的少一截，
+  /// 光探端口会把差的那部分当成好的。
   Future<void> probeAll({int concurrency = 24}) async {
     if (state.probing) return;
     final targets = state.all;

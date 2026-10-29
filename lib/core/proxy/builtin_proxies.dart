@@ -1,6 +1,6 @@
 /// 内置代理清单的读取。
 ///
-/// 清单在 `assets/proxies/builtin.txt`（589 条，全部是带账号密码的
+/// 清单在 `assets/proxies/builtin.txt`（全部是带账号密码的
 /// SOCKS5）。用户删掉的记在排除表里，所以「恢复内置代理」是清空那张表，
 /// 而不是把资源重新拷一遍。
 library;

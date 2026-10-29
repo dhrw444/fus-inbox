@@ -4,7 +4,7 @@
 ///
 /// 不是因为 WebView 不支持 socks —— 官方 `ProxyConfig` 的规则串语法里
 /// scheme 是可以写 SOCKS 的。真正的障碍是**认证**：规则串没有 userinfo 位，
-/// 而本仓内置的 589 条代理全部带账号密码，`addProxyRule` 带不出凭据；
+/// 而本仓内置的代理全部带账号密码，`addProxyRule` 带不出凭据；
 /// 这里按 RFC1929 做用户名/密码认证。
 ///
 /// 所以架构是「本机 HTTP 代理 → SOCKS5 隧道」：WebView 把流量发给

@@ -94,7 +94,7 @@ class const ProxyConfig({
   /// 桥存在的理由：官方 `ProxyConfig` 的规则串语法是
   /// `[scheme://]host[:port]`，scheme 可为 HTTP / HTTPS / **SOCKS** ——
   /// 也就是说 WebView 未必走不了 socks。真正过不去的是**认证**：规则串里
-  /// 没有 userinfo 位，而内置的 589 条代理全部带账号密码。
+  /// 没有 userinfo 位，而内置的代理全部带账号密码。
   /// （旧注释写的是「ProxyController 只支持 HTTP/HTTPS」，那是错的，
   /// 详见 `local_http_bridge.dart` 文件头。）
   ///

@@ -45,7 +45,7 @@ class _ProxyListState() extends State<ProxyList> {
 
   /// 代理列表。长列表默认收起，展开后一次放出 [_pageSize] 条。
   ///
-  /// 之前这里是 `...all.map(...)` —— 589 个 ListTile 一次性全建出来，
+  /// 之前这里是 `...all.map(...)` —— 整份清单的 ListTile 一次性全建出来，
   /// 每次进设置页都卡。现在按需放：没展开就只显示前 [_pageSize] 条，
   /// 点「再显示」再加一百。
   List<Widget> _rows() {

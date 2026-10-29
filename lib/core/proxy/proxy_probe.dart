@@ -1,8 +1,7 @@
 /// 代理连通性检测。
 ///
 /// **真的走一遍 SOCKS5 握手 + 到达站点 + 读回出口 IP**，不是只看端口开没开。
-/// 内置清单里实测 616 条端口开着、只有 589 条真能用 —— 光探端口会把那
-/// 27 条当成好的。
+/// 内置清单里**当时**实测：端口开着的一大截、真能用的少一截 —— 光探端口会把那部分当成好的。
 ///
 /// 出口 IP 是配额的真单位：两条代理出口同一个 IP，对站点来说就是一条。
 library;
@@ -48,7 +47,7 @@ class const ProxyProbeResult({
 /// 连通性检测。
 ///
 /// 不是探 TCP 端口 —— 那只能证明端口开着。实测这批代理里，
-/// TCP 通的有 616 条，真能走 SOCKS5 握手并连到站点的只有 589 条。
+/// TCP 通的有一大批，真能走 SOCKS5 握手并连到站点的只是其中一部分。
 /// 所以这里做两件事：
 ///
 /// 1. 完整 SOCKS5 握手 + 认证（RFC 1928/1929）
@@ -201,7 +200,7 @@ class ProxyProbe({this.timeout = const Duration(seconds: 10)}) {
     final completer = Completer<void>();
     late final StreamSubscription<List<int>> sub;
     // 读不完就别等了 —— 有的代理不回 FIN。计时器必须自己收掉，
-    // 否则每条代理留一个活 Timer，589 条就是 589 个。
+    // 否则每条代理留一个活 Timer，整份清单就是一大堆。
     final guard = Timer(timeout, () {
       if (!completer.isCompleted) completer.complete();
     });

@@ -317,7 +317,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 它们，所以不会白烧。
     final fresh = mintIdentity();
     return proxyState.ledger.plan(
-      // 必须用 all：内置的 589 条和用户手加的分开存（内置的在 APK
+      // 必须用 all：内置的和用户手加的分开存（内置的在 APK
       // 资源里，只能靠排除表隐藏），只传 pool 的话内置代理在运行时
       // 一条都用不上，等于白内置。
       pool: proxyState.all,
