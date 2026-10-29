@@ -209,6 +209,7 @@ class const ChallengeHeader({
   required this.theme,
   required this.auto,
   required this.onClose,
+  this.versionWarning = '',
   super.key,
 }) extends StatelessWidget {
   final ThemeData theme;
@@ -217,6 +218,17 @@ class const ChallengeHeader({
   final bool auto;
 
   final VoidCallback onClose;
+
+  /// 内核版本过低时的告警（空串 = 不显示）。
+  ///
+  /// 真机上踩到过：114 的 WebView 上验证永远转不完，而界面一句话都没有，
+  /// 用户只能一直重试。把版本摊出来，他至少知道「不是网络问题、不是代理
+  /// 问题，是这台机器内核太旧」。
+  ///
+  /// 参照 Han1meViewer：它的验证页会把
+  /// 「当前WebView版本: 114.0.5735.196 / ⚠ 版本过低，推荐 120.x.x.x以上」
+  /// 直接印在提示框里。
+  final String versionWarning;
 
   @override
   Widget build(BuildContext context) {
@@ -246,10 +258,22 @@ class const ChallengeHeader({
                     Text('完成人机验证', style: theme.textTheme.titleMedium),
                     Text(
                       auto ? '这个出口站点要求先过验证。过完会自动继续。' : '在下面完成验证；过完点底部的「验证好了」。',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
                     ),
+                    if (versionWarning.isNotEmpty)
+                      Text(
+                        versionWarning,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: scheme.error,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
                   ],
                 ),
               ),

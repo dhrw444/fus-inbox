@@ -28,6 +28,7 @@ import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/features/inbox/application/identity_rotator.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
+import 'package:fus_inbox/features/inbox/domain/webview_version_check.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_app_bar.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_attachments.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_message_list.dart';
@@ -92,6 +93,12 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///   整页糊在屏幕上又难看又容易点到广告；
   /// - 用户自己点 = 他想顺便看看网页 → 给整页，别自作主张裁掉。
   bool _challengeAuto = false;
+
+  /// 内核版本过低时的告警文案（空串 = 不显示）。
+  ///
+  /// 在打开验证页时算一次就存着 —— 用户看到这个界面的时间可能很短，
+  /// 每次 build 都去解析 UA 没有意义。
+  String _versionWarning = '';
 
   /// 「自动判验证过了」的检查在跑没有 —— 防止上一轮还没读完 cookie 就再起一轮。
   bool _autoConfirming = false;
@@ -754,6 +761,29 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     }
   }
 
+  /// 算一次内核版本告警。
+  ///
+  /// 只认 UA 里的 `Chrome/<四段>` —— 安卓 WebView 的 UA 里还有个
+  /// `Version/4.0`（WebView 自己的老标记，恒为 4.0），读错那个会把所有
+  /// 机器都判成「版本 4，太低了」。判据在 [checkWebViewVersion] 里
+  /// （纯逻辑，有单测）。
+  Future<void> _checkWebViewVersion() async {
+    final check = checkWebViewVersion(currentUserAgent);
+    // 解析不出来就沉默：既不报警也不说够用。
+    if (check.unknown || !check.tooLow) {
+      if (_versionWarning.isNotEmpty && mounted) {
+        setState(() => _versionWarning = '');
+      }
+      return;
+    }
+    final text =
+        '这台机器的 WebView 内核偏低（${check.display}），'
+        '人机验证可能过不去。推荐 $recommendedWebViewMajor.x 以上 —— '
+        '更新「Android System WebView」后再试。';
+    if (!mounted) return;
+    setState(() => _versionWarning = text);
+  }
+
   /// 把站点页面亮出来，让用户自己在上面过验证。
   ///
   /// 为什么要留这个入口 —— 自动路径（[_pumpVerification]）覆盖大多数情况，
@@ -791,6 +821,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _showChallenge = true;
       _challengeAuto = auto;
     });
+    // 内核版本太低时，Turnstile 根本过不去 —— 必须当场说出来，
+    // 否则用户只会一直重试（真机踩过：114 的 WebView 永远转不完）。
+    unawaited(_checkWebViewVersion());
     if (reload) {
       // 页面可能停在旧状态，重载一次让站点重新发起验证。
       // 重载会走 onPageFinished → 注入脚本，然后轮询自己会发现新状态。
@@ -1022,6 +1055,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
                 child: ChallengeHeader(
                   theme: theme,
                   auto: _challengeAuto,
+                  versionWarning: _versionWarning,
                   onClose: _closeChallenge,
                 ),
               ),
