@@ -95,6 +95,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     super.deactivate();
   }
 
+  @override
   void dispose() {
     _searchController.dispose();
     super.dispose();
