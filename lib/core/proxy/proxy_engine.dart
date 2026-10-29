@@ -78,9 +78,48 @@ class ProxyEngine() {
   /// 创建参数，端口要在那一刻就定下来。Android 上早调晚调都行。
   ///
   /// 幂等：桥已经在了就原样返回端口。
+  /// 确保本地桥起来了，返回它的端口。
+  ///
+  /// ## 必须单飞（single-flight）
+  ///
+  /// 收件页的 `_applyProxyPlan` 和号码目录的 `_ensureEgress` **是同一时刻
+  /// 调 `apply()` 的**（一进号码页，收件页那边还在启动）。原来这里没有
+  /// 并发保护：
+  ///
+  /// ```dart
+  /// if (_bridge != null) return _bridge!.port;
+  /// _bridge = await LocalProxyBridge.start(port: _preferredBridgePort);
+  /// ```
+  ///
+  /// 两个调用方都读到 `_bridge == null`，于是**都去 start**。第一个抢到
+  /// 固定端口，第二个失败 → 退到随机端口，或者直接抛。
+  ///
+  /// 抛出去之后 `apply()` 返回 `bridgePort = 0`，而号码目录的判据是
+  /// `directoryEgressUsable`（SOCKS5 要求 `bridgePort != 0`）—— 于是
+  /// **明明能用的代理被报成「代理不可用，先看缓存」**。这就是那个
+  /// 「明明是可用的」的真因。
+  ///
+  /// 现在把启动过程本身缓存起来：第一个调用方创建 Future，后面的一律
+  /// 等同一个。成功之后清掉（桥已在，走上面那条快路），失败也清掉
+  /// （下次还能重试）。
   Future<int> ensureBridge() async {
     final existing = _bridge;
     if (existing != null) return existing.port;
+    final pending = _bridgeStarting;
+    if (pending != null) return pending;
+    final future = _startBridge();
+    _bridgeStarting = future;
+    try {
+      return await future;
+    } finally {
+      _bridgeStarting = null;
+    }
+  }
+
+  /// 正在启动中的桥。见 [ensureBridge] 的单飞说明。
+  Future<int>? _bridgeStarting;
+
+  Future<int> _startBridge() async {
     try {
       _bridge = await LocalProxyBridge.start(port: _preferredBridgePort);
     } catch (_) {

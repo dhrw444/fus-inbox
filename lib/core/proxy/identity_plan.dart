@@ -23,10 +23,17 @@ import 'package:fus_inbox/core/proxy/proxy_config.dart';
 /// 账本的决策器。纯逻辑，不碰磁盘不碰网络。
 class const LedgerPlanner({
   required this.bindings,
+  required this.owners,
   required this.maxPerIdentity,
 }) {
   /// 账本里的绑定表：代理 id -> 那个出口上绑着的身份。
   final Map<String, IdentityBinding> bindings;
+
+  /// 号码 → 出口 id 的确定映射（见 `IdentityLedger.owners`）。
+  ///
+  /// 有它就不用扫 `bindings` 猜「谁看过这个号」了 —— 猜法在一个号挂在
+  /// 多个绑定上时必然不准。
+  final Map<String, String> owners;
 
   /// 一个身份最多看几个号。
   final int maxPerIdentity;
@@ -46,20 +53,6 @@ class const LedgerPlanner({
     openedNumbers: const [],
     createdAtMs: DateTime.now().millisecondsSinceEpoch,
   );
-
-  /// 哪个绑定已经看过这个号。没有就返回 null。
-  ///
-  /// 多个绑定都看过时取**最早创建**的那个 —— 正常情况下一个号只会
-  /// 落在一个绑定上（commit 只在代理真设成之后才写），这里只是兜底，
-  /// 取个确定的顺序，免得行为飘。
-  IdentityBinding? _bindingSeeing(String numberId) {
-    IdentityBinding? found;
-    for (final b in bindings.values) {
-      if (!b.hasSeen(numberId)) continue;
-      if (found == null || b.createdAtMs < found.createdAtMs) found = b;
-    }
-    return found;
-  }
 
   /// 决定这次打开该用哪个代理、哪个身份。
   ///
@@ -117,7 +110,12 @@ class const LedgerPlanner({
     //
     // 之前这里只查 bindings[current.id]，轮换过之后回头点老号必然
     // 落到新身份上 —— 就是「重新点进去不是之前那条 socks5 + 身份」。
-    final owner = _bindingSeeing(numberId);
+    // 这个号归哪条出口 —— **直接查表，不猜**。
+    //
+    // 以前是扫 `bindings` 的 `openedNumbers` 猜「谁看过它」，一个号挂在
+    // 多个绑定上时必然猜错。现在 `commit` 每次都写死归属，这里查就完了。
+    final ownerProxyId = owners[numberId];
+    final owner = ownerProxyId == null ? null : bindings[ownerProxyId];
     if (owner != null) {
       // 这个号有归属身份。**要不要切回去，分两种情况** ——
       // 原来只判 `owner.proxyId != current.id`，漏了第二种。

@@ -781,6 +781,81 @@ void main() {
     ok(over.reason.contains('没有别的可用出口'), 'reason 如实说明没有别的出口  (${over.reason})');
   }
 
+  // ---------- 19. 一个号被两个身份看过：归属按**最后一次** ----------
+  //
+  // 真机踩过：用户切回一个**已经验证过**的号，身份却变成新的了。
+  //
+  // 根因是原来靠扫 `bindings` 的 `openedNumbers` 猜「谁看过它」，而
+  // 一个号可以挂在多个绑定上（A 看过，A 满了换到 B，B 又看了一次）。
+  // 猜法取「最早创建」的那个 → 永远拉回 A，而 A 的站点密钥早被清掉，
+  // 站点不认，看起来就是「身份变成新的」。
+  //
+  // 现在 `commit` 每次都写死「这个号归这条出口」，`plan` 直接查表。
+  {
+    final led = IdentityLedger(maxPerIdentity: 1);
+
+    // A 出口看号 n1（用满 1 个）
+    final a = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'n1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(a.proxy.id, 'n1', a.binding);
+    eq(led.ownerOf('n1'), pool[0].id, 'n1 先归 A');
+
+    // A 满了 → 换到 B 看 n1（同一个号，B 又看了一次）
+    final b = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'n2',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    ok(b.rotated, 'A 满了要换出口');
+    led.commit(b.proxy.id, 'n2', b.binding);
+
+    // 现在把 n1 记到 B 名下（模拟 B 也看过它）
+    led.commit(b.proxy.id, 'n1', b.binding);
+    eq(led.ownerOf('n1'), b.proxy.id, 'n1 被 B 重新看过之后归 B');
+
+    // 用户切回 n1 —— 必须回到 **B**，不是最早的 A
+    final back = led.plan(
+      pool: pool,
+      currentProxyId: pool[1].id,
+      numberId: 'n1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(back.proxy.id, b.proxy.id, '切回 n1 要回到最后看过它的 B');
+    // 当前已经在 B 出口、当前绑定就是 B —— 那就什么都不用换。
+    // `reuse` 而不是 `restore` 是对的：`restore` 的意思是「从别处切回来」，
+    // 而这里压根没离开过。
+    ok(!back.rotated, '不能又造新身份');
+    ok(!back.restored || back.proxy.id == b.proxy.id, '不能切到别的出口');
+    eq(back.binding.createdAtMs, b.binding.createdAtMs, '用的必须是 B 那个身份');
+  }
+
+  // ---------- 20. 归属表会持久化 ----------
+  {
+    final led = IdentityLedger(maxPerIdentity: 3);
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'keep',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(p.proxy.id, 'keep', p.binding);
+    final round = IdentityLedger.fromJson(led.toJson());
+    eq(round.ownerOf('keep'), p.proxy.id, '归属表存盘后能读回来');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }
