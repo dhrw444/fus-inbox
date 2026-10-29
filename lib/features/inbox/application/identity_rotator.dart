@@ -121,7 +121,7 @@ class IdentityRotator({
 
   /// 上一次因为配额换出口的时间。
   ///
-  /// 单独记一份、而且比 [_rotationPolicy] 长得多：换出口之后站点要
+  /// 单独记一份、而且比 [_rotationPolicy] 的 30 秒更长：换出口之后站点要
   /// 重新握手、重新验人机，这期间 hold 还是旧的，状态一变就又会
   /// 触发一次。真连着换下去会把整份池子在一分钟内烧穿 ——
   /// 而且每换一次在站点眼里都是「同一个 IP 又来一个新访客」的
@@ -131,11 +131,31 @@ class IdentityRotator({
   /// 回到列表再点下一个号就归零，等于没设。
   static DateTime? _lastProxyRotate;
 
+  /// 连续换了几次都没摆脱拒绝。
+  ///
+  /// 冷却只挡「换得太快」，挡不住「换了很多次仍然被拒」—— 那种情况
+  /// 说明站点不是按 IP/身份拒的（整站维护、或者用户自己没网）。
+  /// 继续换只会把代理池烧穿、把用户晾在转圈里。
+  ///
+  /// 真机上踩过：冷却只有 6 秒时 `hold` 一直不清 → 每 6 秒换一次 →
+  /// 用户看到的就是「一直循环换身份」，连点都点不到。
+  static int _consecutiveRotations = 0;
+
+  /// 连续换这么多次还在被拒，就停下来让用户自己看。
+  static const _maxConsecutiveRotations = 3;
+
   /// 两次换出口之间至少隔这么久。
   ///
   /// 一次换出口 ≈ 清数据 + 换 UA + 重载 + 站点重新握手，几秒钟。
-  /// 冷却比这稍长一点，避免同一次限额信号重复触发。
-  static const _proxyRotateCooldown = Duration(seconds: 6);
+  /// 冷却必须**明显长于**一次换出口的耗时，否则就是死循环：
+  ///
+  /// 换出口 → 站点还在重新握手、旧 `hold` 还没被新状态覆盖 →
+  /// 状态一变又满足「被拒了」→ 再换一次 → 无限循环。
+  ///
+  /// 原来这里是 **6 秒**，比一次换出口（清数据 + 换 UA + 重载 +
+  /// 重新握手 + 重新验人机）短得多，所以真机上就是「一直循环换身份」。
+  /// 45 秒是给「新出口至少能完整试一次」留的余量。
+  static const _proxyRotateCooldown = Duration(seconds: 45);
 
   /// 引擎在 `onPageFinished` 里问一次：这一趟加载完是不是该删站点密钥。
   ///
@@ -176,7 +196,14 @@ class IdentityRotator({
     final hold = store.state.hold;
     final status = store.state.status;
     // 没有任何拒绝信号就不动。
-    if (hold == null && !status.contains('reader_verification')) return;
+    if (hold == null && !status.contains('reader_verification')) {
+      // 状态干净了 —— 这一轮真的摆脱了拒绝。
+      //
+      // 必须在这里归零：否则换满 [_maxConsecutiveRotations] 次之后
+      // 就永久卡死，用户之后再被拒也换不动了。
+      _consecutiveRotations = 0;
+      return;
+    }
 
     // 配额和挑战都是 **IP 级** 的，换浏览器身份解决不了 ——
     // 实测：同一个 IP 上清空 localStorage / IndexedDB / cookie（等于换
@@ -185,6 +212,18 @@ class IdentityRotator({
     // 但「换 IP」是 App 自己能做的事：代理池里还有别的出口就直接
     // 换下一条，连身份一起重置（只换一样站点都还认得出是同一个人）。
     // 池子空或只剩一条时才退化成让用户自己换 IP。
+    // 连续换了很多次还是被拒 —— 停手。
+    //
+    // 这不是「再试一次就好」：站点要么在维护、要么按别的东西在拒
+    // （不是 IP 也不是身份）。继续换只会把池子烧穿、让界面一直转圈。
+    if (_consecutiveRotations >= _maxConsecutiveRotations) {
+      store.note(
+        '已经连换 $_maxConsecutiveRotations 次还是被拒，先停下。'
+        '换个网络、或过一会儿再试。',
+      );
+      return;
+    }
+
     if (hold?.kind == SiteHoldKind.quota ||
         hold?.kind == SiteHoldKind.challenge) {
       if (!ref.read(proxyProvider).autoRotate) return;
@@ -200,6 +239,7 @@ class IdentityRotator({
         store.note('代理池里没有别的出口可换，需要你换个网络再点重置。');
         return;
       }
+      _consecutiveRotations++;
       _lastProxyRotate = now;
       unawaited(_rotateToNextProxy());
       return;
@@ -213,6 +253,7 @@ class IdentityRotator({
       return;
     }
     _rotationPolicy.record(now);
+    _consecutiveRotations++;
     unawaited(rotateIdentity());
   }
 
@@ -291,6 +332,15 @@ class IdentityRotator({
   }
 
   Future<void> _rotateIdentityBody() async {
+    // **先清 hold，再动手。**
+    //
+    // `onPageDiscarded()` 里也会 `store.reset()`，但它在函数**后半段**
+    // （`loadUrl` 之前）。中间这一串 `await` 每次都会 `store.note()`，
+    // 每次 note 都触发 `onChanged` → `maybeAutoRotate()`。此时旧的
+    // `hold` 还在，于是又满足「被拒了」→ 再换一次 → 死循环。
+    //
+    // 真机上就是这个表现：一直循环换身份，用户根本来不及点。
+    store.reset();
     store.note('正在重置浏览器身份…');
 
     try {
