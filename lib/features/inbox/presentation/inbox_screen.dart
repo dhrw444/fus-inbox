@@ -63,6 +63,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   late final Future<String> _scriptFuture;
   Timer? _watchdog;
 
+  /// 看门狗这一响被「看不见」吞掉了，等可见时重新武装。见 [_onWatchdog]。
+  bool _watchdogPending = false;
+
   /// 翻页看门狗。和 [_watchdog] 分开：那个管首屏，这个管翻页。
   /// 必须留引用，否则页面销毁后它还会触发 setState。
   Timer? _loadMoreWatchdog;
@@ -131,6 +134,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         setState(() {});
         // 状态一变就重新判一次「是不是被拒了」。可重入闸在控制器里。
         _rotator.maybeAutoRotate();
+
+        // 看门狗被「看不见」吞掉的那一响，现在可见了 —— 重新武装。
+        // 见 [_onWatchdog]：原来它是空转重臂，永远不休眠。
+        if (_watchdogPending &&
+            !_round.open &&
+            _store.state.hold == null &&
+            _store.state.messages.isEmpty &&
+            _store.state.phase != InboxPhase.failed) {
+          _watchdogPending = false;
+          _armWatchdog();
+        }
 
         // 翻页结束了就撤掉那 15 秒看门狗。
         //
@@ -482,8 +496,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 时重臂。在这一响上白白耗掉，这个会话剩下的时间就再没有兜底
     // 提示了 —— 弹层一收起、还是卡着，用户什么提示都等不到。
     // 所以看不见就别消耗：重臂一轮，等弹层收起 / hold 解除后的下一响。
+    // **看不见就不消耗这一响，但也不要空转重臂。**
+    //
+    // 原来这里 `_armWatchdog()` 再起一个 25 秒 Timer —— 于是弹层开着
+    // 或 hold 挂着的时候，每 25 秒空转一次，**永远不休眠**。
+    // 用户挂着验证页放在那儿，这个 Timer 就一直跑。
+    //
+    // 现在什么都不做，只把「该重新武装」这件事记下来：
+    // 弹层收起 / hold 解除时（`onChanged` 里）重新武装一轮。
+    // 那时候用户看得见状态栏，这一响才有意义。
     if (_round.open || st.hold != null) {
-      _armWatchdog();
+      _watchdogPending = true;
       return;
     }
     _store.note(st.hits == 0 ? '25 秒没截获到接口响应，可能卡在站点的人机验证。' : '截获到了接口，但里面没有消息。');
@@ -685,10 +708,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               // 页面藏着一句话说明不了任何问题 —— 放出来让用户自己看
               // 一眼、必要时点一下重试。之前这里只留一条日志，用户
               // 既看不到失败原因也做不了任何事。
-              // 验证已经明确失败了（Cloudflare 报错也走这条），这时候页面藏着
-              // 一句话说明不了任何问题 —— 放出来让用户自己看一眼、必要时点一下
-              // 重试。只留一条日志的话，用户既看不到失败原因也做不了任何事。
-              if (!_round.open && !_round.autoPopped) {
+              // **弹层已经开着时也要让用户看见原因。**
+              //
+              // 原来只在 `!_round.open` 时才做什么 —— 于是手动弹层（用户自己点
+              // 「自己过验证」）期间站点报验证失败，他什么提示都看不到：状态栏
+              // 被站点页面盖住，弹层里又没有失败文案。
+              //
+              // 现在弹层开着时，把失败原因写进底栏那条提示（`ChallengeBar`），
+              // 那是弹层里唯一可见的文本位。
+              if (_round.open) {
+                _store.note(
+                  message.isNotEmpty ? '站点验证失败：$message' : '站点验证失败（$category）',
+                );
+              } else if (!_round.autoPopped) {
                 _openChallenge(auto: true);
               }
               return;
