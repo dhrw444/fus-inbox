@@ -25,6 +25,21 @@ export 'package:fus_inbox/features/numbers/application/number_directory_state.da
 export 'package:fus_inbox/features/numbers/domain/number_sort.dart'
     show NumberSort;
 
+/// 号码相关请求（目录 + 收录时间）共用的出口回调。
+///
+/// **两处必须用同一个。** 收录时间那条链路原来自己 new 一个裸
+/// `HttpClient`，从不设 `findProxy` —— 而 `dart:io` 不走 WebView 的
+/// `ProxyController`，不挂就是直连，于是把 100+ 个详情页请求全交给
+/// 真实 IP，界面一个字都不说。
+///
+/// 抽成顶层函数就是为了让 `FirstSeenFiller` 也拿到它。
+String? numbersEgress(Ref ref) {
+  if (!ref.read(prefsProvider).directoryViaProxy) return 'DIRECT';
+  final active = ref.read(proxyEngineProvider).active;
+  if (!directoryEgressUsable(active)) return null;
+  return ref.read(proxyEngineProvider).nativeEgressDirective;
+}
+
 final numbersRepositoryProvider = Provider<NumbersRepository>((ref) {
   final repo = NumbersRepository(
     // 目录页的出口由用户偏好决定：
@@ -37,17 +52,7 @@ final numbersRepositoryProvider = Provider<NumbersRepository>((ref) {
     // 注意这里返回 'DIRECT' 和返回 null 是**两件事**：
     // DIRECT 是用户明确选了直连；null 是「选了走代理但代理不可用」，
     // 那种情况 _findProxy 会抛异常让请求失败，不会静默退回直连。
-    egress: () {
-      if (!ref.read(prefsProvider).directoryViaProxy) return 'DIRECT';
-      final active = ref.read(proxyEngineProvider).active;
-      // 用户要的是代理，引擎此刻挂着的却是**直连**（收件页在池子空时
-      // 落的那个占位）。`nativeEgressDirective` 对直连返回 'DIRECT' ——
-      // 照抄它就等于**悄悄拿真实 IP 抓了整份目录**，界面上一个字都不说。
-      //
-      // 直连不是用户的选择，是占位。这里返回 null，让请求失败并报出来。
-      if (!directoryEgressUsable(active)) return null;
-      return ref.read(proxyEngineProvider).nativeEgressDirective;
-    },
+    egress: () => numbersEgress(ref),
   );
   ref.onDispose(repo.dispose);
   return repo;
@@ -55,6 +60,8 @@ final numbersRepositoryProvider = Provider<NumbersRepository>((ref) {
 
 /// 目录页的 notifier：状态迁移 + 两条入口（缓存恢复、网络加载）。
 class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
+  /// 「正在拉目录」的**同步**闸门。见 [load] 的说明。
+  bool _inFlight = false;
   @override
   NumberDirectoryState build() => const NumberDirectoryState();
 
@@ -162,79 +169,94 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
   /// 用户点刷新是明确的意图，不该被 App 拦住；真遇到站点限流，
   /// 让请求失败并报出来，比假装按钮坏了要好。
   Future<void> load({bool force = false}) async {
-    if (state.loading) return;
-    if (!force && state.all.isNotEmpty) return;
-
-    // 先上缓存（如果调用方还没 hydrate 过）。
-    await hydrateFromCache();
-
-    state = state.copyWith(
-      loading: true,
-      clearError: true,
-      progress: '正在拉取号码目录…',
-    );
-
+    // **同步闸门。**
+    //
+    // `state.loading` 那个判据隔着 `await hydrateFromCache()`
+    // （SharedPreferences 读盘）才把 `loading` 置真 —— 两个调用方
+    // （首屏 `_boot` 和用户点「重试」）都能穿过那道检查，于是**两份
+    // `fetchAll` 同时发**：各起一轮 5 页 × 3 并发抓取，请求量翻倍，
+    // 恰好是最容易撞站点风控的行为。
+    //
+    // 这个 `bool` 在第一个 `await` 之前置位，同步路径上不可能被穿透。
+    if (_inFlight) return;
+    _inFlight = true;
     try {
-      // 只有选了「目录走代理」才需要先备好出口 —— 直连不需要准备。
-      // 不能在 fetchAll 里做这件事：那里已经开始分页并发了。
-      if (ref.read(prefsProvider).directoryViaProxy) {
-        final why = await _ensureEgress();
-        if (why != null) {
+      if (state.loading) return;
+      if (!force && state.all.isNotEmpty) return;
+
+      // 先上缓存（如果调用方还没 hydrate 过）。
+      await hydrateFromCache();
+
+      state = state.copyWith(
+        loading: true,
+        clearError: true,
+        progress: '正在拉取号码目录…',
+      );
+
+      try {
+        // 只有选了「目录走代理」才需要先备好出口 —— 直连不需要准备。
+        // 不能在 fetchAll 里做这件事：那里已经开始分页并发了。
+        if (ref.read(prefsProvider).directoryViaProxy) {
+          final why = await _ensureEgress();
+          if (why != null) {
+            state = state.copyWith(
+              loading: false,
+              error: state.all.isEmpty ? '目录代理不可用：$why' : null,
+              progress: '',
+              status: state.all.isEmpty ? '' : '代理不可用，先看缓存',
+            );
+            return;
+          }
+        }
+
+        final repo = ref.read(numbersRepositoryProvider);
+        final list = await repo.fetchAll(
+          onProgress: (loaded, page) {
+            state = state.copyWith(progress: '已加载 $loaded 个号（第 $page 页）');
+          },
+          // 每页先上屏：第一页通常 1 秒内回来，不必等 5 页全抓完。
+          onPage: (soFar) {
+            // 注意不能把 loading 置 false：fetchAll 还在跑，
+            // 置 false 会让顶部的进度条中途消失，看着像加载完了又没完。
+            state = state.copyWith(
+              all: soFar,
+              progress: '已加载 ${soFar.length} 个号，继续拉取中…',
+            );
+          },
+        );
+        if (list.isEmpty) {
+          // 空结果不要覆盖缓存：站点偶尔返回空页，别把好数据洗掉。
           state = state.copyWith(
             loading: false,
-            error: state.all.isEmpty ? '目录代理不可用：$why' : null,
+            error: state.all.isEmpty ? '目录是空的——站点结构可能变了' : null,
             progress: '',
-            status: state.all.isEmpty ? '' : '代理不可用，先看缓存',
           );
           return;
         }
-      }
-
-      final repo = ref.read(numbersRepositoryProvider);
-      final list = await repo.fetchAll(
-        onProgress: (loaded, page) {
-          state = state.copyWith(progress: '已加载 $loaded 个号（第 $page 页）');
-        },
-        // 每页先上屏：第一页通常 1 秒内回来，不必等 5 页全抓完。
-        onPage: (soFar) {
-          // 注意不能把 loading 置 false：fetchAll 还在跑，
-          // 置 false 会让顶部的进度条中途消失，看着像加载完了又没完。
-          state = state.copyWith(
-            all: soFar,
-            progress: '已加载 ${soFar.length} 个号，继续拉取中…',
-          );
-        },
-      );
-      if (list.isEmpty) {
-        // 空结果不要覆盖缓存：站点偶尔返回空页，别把好数据洗掉。
+        state = state.copyWith(
+          all: list,
+          loading: false,
+          progress: '',
+          status: '',
+          lastLoadedAt: DateTime.now(),
+          clearError: true,
+        );
+        // 写回缓存：下次启动就能秒开。失败只是下次慢一点，不拦流程。
+        unawaited(saveDirectoryCache(list));
+        logLine('目录加载完成：${list.length} 个号，${state.states.length} 个州');
+      } catch (e) {
+        // 有缓存时不要把错误糊到界面上——用户看着列表能用，
+        // 弹个「目录拉取失败」只会让人以为坏了。
+        final msg = state.all.isEmpty ? '目录拉取失败：$e' : null;
         state = state.copyWith(
           loading: false,
-          error: state.all.isEmpty ? '目录是空的——站点结构可能变了' : null,
+          error: msg,
           progress: '',
+          status: state.all.isEmpty ? '' : '最新数据没取到，先看缓存',
         );
-        return;
       }
-      state = state.copyWith(
-        all: list,
-        loading: false,
-        progress: '',
-        status: '',
-        lastLoadedAt: DateTime.now(),
-        clearError: true,
-      );
-      // 写回缓存：下次启动就能秒开。失败只是下次慢一点，不拦流程。
-      unawaited(saveDirectoryCache(list));
-      logLine('目录加载完成：${list.length} 个号，${state.states.length} 个州');
-    } catch (e) {
-      // 有缓存时不要把错误糊到界面上——用户看着列表能用，
-      // 弹个「目录拉取失败」只会让人以为坏了。
-      final msg = state.all.isEmpty ? '目录拉取失败：$e' : null;
-      state = state.copyWith(
-        loading: false,
-        error: msg,
-        progress: '',
-        status: state.all.isEmpty ? '' : '最新数据没取到，先看缓存',
-      );
+    } finally {
+      _inFlight = false;
     }
   }
 

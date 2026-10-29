@@ -18,9 +18,11 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:fus_inbox/core/proxy/proxy_engine_provider.dart';
 import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/core/prefs/storage_keys.dart';
 import 'package:fus_inbox/core/webview/http_headers.dart';
+import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/features/numbers/domain/first_seen.dart';
 
 /// 号码 → 收录时间。键用 E.164 纯数字（`14197797678`）。
@@ -132,7 +134,12 @@ final firstSeenStoreProvider =
 /// 全 App 一个填充器：两处同时跑会互相看不到对方的进度，
 /// 结果是对同一批号码重复发请求。
 final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
-  final f = FirstSeenFiller();
+  final f = FirstSeenFiller(
+    // 和号码目录**同一个**回调 —— 见 `numbersEgress` 的文档。
+    // 用裸的 `nativeEgressDirective` 会出事：它不看「目录走代理」这个
+    // 开关，用户没开也会走代理（行为不一致）。
+    egress: () => numbersEgress(ref),
+  );
   ref.onDispose(() {
     // 两个都要做：cancel 让循环尽快退出，dispose 关掉连接池。
     // 只 cancel 不 dispose 会泄漏 socket。
@@ -152,7 +159,27 @@ final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
 ///   2. **有间隔，但不等太久**。两次之间 120ms + 抖动。
 ///   3. **可中断**。用户切走或重进页面时旧任务要能停下，否则会一直跑到
 ///      队列末尾，白白多打几十个请求。
-class FirstSeenFiller() {
+/// 补齐收录时间。
+///
+/// ## 必须和号码目录走**同一条出口**
+///
+/// 这里原先自己 new 一个裸 `HttpClient`，从不设 `findProxy` ——
+/// 而 `dart:io` 不走 WebView 的 `ProxyController`，不挂 `findProxy`
+/// 就是**直连**。于是「号码目录走代理」这个开关只对目录主体生效，
+/// 补齐收录时间这条链路把 100+ 个详情页请求全交给**真实 IP**，
+/// 界面一个字都不说。
+///
+/// 用户打开那个开关的全部动机就是不拿真实 IP 打站点（配额按出口 IP
+/// 算），这条链路把它整个绕过去了。所以 [egress] 是**必填**的。
+class FirstSeenFiller({
+  /// 出口指令（`HttpClient.findProxy` 的返回值）。
+  ///
+  /// 和 `NumbersRepository.egress` 是**同一个**回调 —— 上层注入一次，
+  /// 两边共用。返回 null 表示「要代理但引擎还没起来」，这时抛异常
+  /// 让请求失败，绝不悄悄直连。
+  required this.egress,
+}) {
+  final String? Function() egress;
   bool _running = false;
   bool _cancelled = false;
 
@@ -161,10 +188,27 @@ class FirstSeenFiller() {
   /// 之前每个号都 new 一个 —— 105 个号就是 105 次 TLS 握手，
   /// 而握手实测要 1.5 秒以上，光握手就吃掉一百多秒。
   /// 复用一个客户端后走 keep-alive，第二个号开始几乎没有握手开销。
-  final HttpClient _http = HttpClient()
+  /// 延迟初始化：`findProxy` 要读 `this._findProxy`，而字段初始化器
+  /// 里读不到 `this` —— 只能等第一次用到时再建。
+  late final HttpClient _http = HttpClient()
     ..maxConnectionsPerHost = 2
     ..connectionTimeout = const Duration(seconds: 8)
-    ..idleTimeout = const Duration(seconds: 30);
+    ..idleTimeout = const Duration(seconds: 30)
+    // 和号码目录走同一条出口 —— 不挂这句就是直连（见类文档）。
+    ..findProxy = _findProxy;
+
+  /// 出口闸门。判据和 `NumbersRepository._findProxy` 完全一致：
+  /// 回调返回 null/空 就**抛**，不返回 `DIRECT`。
+  ///
+  /// 返回 `DIRECT` 的话请求会成功，但那是拿真实 IP 打站点 ——
+  /// 比失败更糟，因为没人会发现。
+  String _findProxy(Uri uri) {
+    final directive = egress();
+    if (directive == null || directive.isEmpty) {
+      throw StateError('出口没起来，已拒绝直连');
+    }
+    return directive;
+  }
 
   /// 关掉连接池。provider 销毁时调用。
   void dispose() => _http.close(force: true);
@@ -231,8 +275,35 @@ class FirstSeenFiller() {
 /// 抓单个号码详情页里的收录时间。
 ///
 /// 失败返回 null —— 收录时间只是附注，不能因为它拦住收件箱。
-Future<DateTime?> fetchFirstSeen(String e164, {HttpClient? client}) async {
-  final http = client ?? HttpClient();
+Future<DateTime?> fetchFirstSeen(
+  String e164, {
+  HttpClient? client,
+  String? Function()? egress,
+}) async {
+  /// 没有出口回调时的兜底：直连。
+  ///
+  /// **只给「不关心出口」的调用方用**（比如测试）。真正跑 App 时
+  /// 一定要传 `egress` —— 否则就是拿真实 IP 打站点。
+  String _direct(Uri uri) => 'DIRECT';
+
+  /// 把「无参出口回调」包成 `findProxy` 要的形状。
+  ///
+  /// 判据和 `NumbersRepository._findProxy` 完全一致：回调返回 null/空
+  /// 就**抛**，不返回 `DIRECT` —— 返回 DIRECT 的话请求会成功，但那是
+  /// 拿真实 IP 打站点，比失败更糟（没人会发现）。
+  String _gate(String? Function() hook, Uri uri) {
+    final directive = hook();
+    if (directive == null || directive.isEmpty) {
+      throw StateError('出口没起来，已拒绝直连');
+    }
+    return directive;
+  }
+
+  final hook = egress;
+  final http =
+      client ??
+      (HttpClient()
+        ..findProxy = hook == null ? _direct : (u) => _gate(hook, u));
   final own = client == null;
   try {
     final req = await http

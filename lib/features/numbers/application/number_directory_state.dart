@@ -94,7 +94,10 @@ class const NumberDirectoryState({
             return true;
           }
         }
-        return n.state.toLowerCase().contains(q);
+        // 用 `searchBlob` 而不是裸的 `state` —— 它里面带了
+        // `stateZh(state)`（中文州名）。原来只比英文原文，于是搜
+        // 「俄亥俄」一条都搜不到，界面还说「这个筛选下没有号码」。
+        return n.searchBlob.contains(q);
       });
     }
 
