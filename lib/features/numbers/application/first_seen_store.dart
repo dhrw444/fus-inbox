@@ -18,7 +18,6 @@ import 'dart:math';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-import 'package:fus_inbox/core/proxy/proxy_engine_provider.dart';
 import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/core/prefs/storage_keys.dart';
 import 'package:fus_inbox/core/webview/http_headers.dart';
@@ -284,14 +283,14 @@ Future<DateTime?> fetchFirstSeen(
   ///
   /// **只给「不关心出口」的调用方用**（比如测试）。真正跑 App 时
   /// 一定要传 `egress` —— 否则就是拿真实 IP 打站点。
-  String _direct(Uri uri) => 'DIRECT';
+  String directEgress(Uri uri) => 'DIRECT';
 
   /// 把「无参出口回调」包成 `findProxy` 要的形状。
   ///
   /// 判据和 `NumbersRepository._findProxy` 完全一致：回调返回 null/空
   /// 就**抛**，不返回 `DIRECT` —— 返回 DIRECT 的话请求会成功，但那是
   /// 拿真实 IP 打站点，比失败更糟（没人会发现）。
-  String _gate(String? Function() hook, Uri uri) {
+  String gateEgress(String? Function() hook, Uri uri) {
     final directive = hook();
     if (directive == null || directive.isEmpty) {
       throw StateError('出口没起来，已拒绝直连');
@@ -303,7 +302,7 @@ Future<DateTime?> fetchFirstSeen(
   final http =
       client ??
       (HttpClient()
-        ..findProxy = hook == null ? _direct : (u) => _gate(hook, u));
+        ..findProxy = hook == null ? directEgress : (u) => gateEgress(hook, u));
   final own = client == null;
   try {
     final req = await http

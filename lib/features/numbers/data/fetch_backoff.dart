@@ -34,7 +34,7 @@ library;
 /// （目录那条链路没有 UI）。
 ///
 /// 所以需要一个「明确不可重试」的标记：见到它立刻放弃，不进退避。
-abstract interface class UnretryableDirectoryError implements Exception {}
+abstract interface class const UnretryableDirectoryError() implements Exception;
 
 const directoryMaxAttempts = 3;
 
