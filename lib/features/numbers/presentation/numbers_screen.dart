@@ -7,6 +7,7 @@ library;
 
 import 'dart:async';
 
+import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/features/inbox/presentation/inbox_screen.dart';
 import 'package:fus_inbox/features/numbers/application/numbers_provider.dart';
 import 'package:fus_inbox/features/numbers/domain/available_number.dart';
@@ -41,42 +42,65 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   ///
   /// 只补缓存里没有的：已经有时间的号码直接跳过，不会重复请求。
   /// 首次启动会补一批（串行 + 间隔，不并发轰站点），之后就只剩新号。
+  /// 启动：先拉目录，目录到手后把还缺收录时间的号补齐。
+  ///
+  /// ## 整个包在 catch 里
+  ///
+  /// 这个方法是从 `unawaited(_boot())` 里跑的 —— 任何漏掉的异常都会
+  /// 直接从异步链里逃出去，在 Flutter 里表现为**闪退**（不是「红屏」，
+  /// 因为不是在 build 里）。
+  ///
+  /// 而且它内部有 `await`：`await` 之后页面可能已经销毁，那时再
+  /// `ref.read(...)` 会抛「ref used after dispose」。`mounted` 只能挡住
+  /// 一部分 —— 每个 await 之后都要重新判，漏一处就崩。
   Future<void> _boot() async {
-    final notifier = ref.read(numberDirectoryProvider.notifier);
+    try {
+      final notifier = ref.read(numberDirectoryProvider.notifier);
 
-    // 先读缓存：命中就立刻有列表可点，不用等网络。
-    // （load() 内部也会读，但那是在它自己的 await 链里，
-    //   这里先读一次是为了让「第一帧就有内容」尽早发生。）
-    await notifier.hydrateFromCache();
-    if (!mounted) return;
+      // 先读缓存：命中就立刻有列表可点，不用等网络。
+      await notifier.hydrateFromCache();
+      if (!mounted) return;
 
-    // 缓存到位后立刻开始补收录时间，和网络刷新并行。
-    //
-    // 之前是 `await load()` 之后才补 —— 而 load 要跑完 5 页（约 2 秒，
-    // 改之前是 10 秒），等于把补齐硬生生推迟到那之后。
-    // 现在两件事同时跑：网络在后台拿新数据，补齐用的是缓存里已有的号，
-    // 两者互不阻塞。
-    unawaited(_fillFirstSeen());
+      // 缓存到位后立刻开始补收录时间，和网络刷新并行。
+      //
+      // 之前是 `await load()` 之后才补 —— 而 load 要跑完 5 页（约 2 秒），
+      // 等于把补齐硬生生推迟到那之后。现在两件事同时跑：网络在后台拿新
+      // 数据，补齐用的是缓存里已有的号，两者互不阻塞。
+      unawaited(_fillFirstSeen());
 
-    // 网络刷新放到最后，不 await。
-    unawaited(notifier.load(force: true));
+      // 网络刷新放到最后，不 await。
+      unawaited(notifier.load(force: true));
+    } catch (e) {
+      logLine('目录启动失败: $e');
+    }
   }
 
   /// 补齐收录时间。已有缓存的不再请求。
+  /// 补齐收录时间。已有缓存的不再请求。
+  ///
+  /// 同 [_boot]：从 `unawaited` 里跑，必须自己兜住异常，否则闪退。
   Future<void> _fillFirstSeen() async {
-    final numbers = [
-      for (final n in ref.read(numberDirectoryProvider).all) n.number,
-    ];
-    if (numbers.isEmpty) return;
+    try {
+      final numbers = [
+        for (final n in ref.read(numberDirectoryProvider).all) n.number,
+      ];
+      if (numbers.isEmpty) return;
 
-    final store = ref.read(firstSeenStoreProvider.notifier);
+      final store = ref.read(firstSeenStoreProvider.notifier);
 
-    // 先对齐：只保留当前目录里还在的号。
-    await store.retainOnly(numbers.toSet());
-    if (!mounted) return;
+      // 先对齐：只保留当前目录里还在的号。
+      await store.retainOnly(numbers.toSet());
+      if (!mounted) return;
 
-    // 再补齐：缺的那些逐个抓，一条一条上屏。
-    await ref.read(firstSeenFillerProvider).fillMissing(store, numbers);
+      // 再补齐：缺的那些逐个抓，一条一条上屏。
+      //
+      // `ref.read` 放在 await **之前**取好 —— await 回来时页面可能已经
+      // 销毁，那时再 read 会抛「ref used after dispose」。
+      final filler = ref.read(firstSeenFillerProvider);
+      await filler.fillMissing(store, numbers);
+    } catch (e) {
+      logLine('补齐收录时间失败: $e');
+    }
   }
 
   /// 页面即将从树里拿掉：停掉收录时间补齐。

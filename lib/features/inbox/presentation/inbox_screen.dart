@@ -263,49 +263,61 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 生效；先 `loadUrl` 再装就没有意义了，那一屏的 navigator
   /// 已经被站点和 Turnstile 读过。
   Future<void> _startUp() async {
-    // 代理清单是异步从磁盘读的，读之前 pool/builtin 都是空的 —— 那和
-    // 「用户没配代理」长得一模一样。先等它读完再算计划，否则算出来的是
-    // 一条直连计划：几百条代理全被跳过，真实 IP 直接露给站点。
-    await ref.read(proxyProvider.notifier).ready;
-    if (!mounted) return;
-    // 3 秒兜底之后 `loaded` 仍可能是 false（读盘卡住）。那时 pool 是空的，
-    // 算出来的计划必然是直连 —— 拿真实 IP 去开号，比不开更糟。停下并说清。
-    if (!ref.read(proxyProvider).loaded) {
-      _store.fail('代理清单没读出来，已停下。请到设置里确认代理，或重新打开这个号。');
-      return;
-    }
-    _openPlan = _planForThisNumber();
-    // 等平台视图真正 attach。引擎是同步造出来的，但内核的控制器要等
-    // widget 挂进树、`onWebViewCreated` 回调回来才有 —— 在那之前
-    // `loadUrl` 会被丢掉，页面永远白屏。
-    await Future<void>.delayed(const Duration(milliseconds: 120));
-    // 代理必须最先设：垫片和第一个页面请求都会带流量出去，
-    // 晚一步就是真实 IP 先露一次。
+    // **整个包在 catch 里。**
     //
-    // 返回 null = 代理没设上 → **就此停下**，绝不能往下走到 `loadUrl`：
-    // 那会拿真实 IP 去撞站点（见 _applyProxyPlan）。
-    if (await _applyProxyPlan() == null) return;
-    // 垫片必须在**任何页面脚本之前**装上：站点自己的 reader.js 和
-    // Turnstile 一进来就会读 navigator，晚一步那一屏就已经被判定过了。
-    final shim = await buildBrowserShim();
-    if (shim.isEmpty) {
-      // 装不上就别硬塞：一个 uaFullVersion 为空的垫片，比没有垫片更像
-      // 一个被人改过的浏览器。这里只是记一笔，页面照常打开。
-      logLine('浏览器垫片没装上（UA 里解不出 Chrome 版本）');
-    } else {
-      _engine.injectOnDocumentStart(shim);
-      // 请求头那一路和垫片是**一对**：垫片管 JS 读到的 userAgentData，
-      // 这条管引擎真发出去的 Sec-CH-UA。只装一个就是「JS 说 A、
-      // 请求头说 B」。
-      unawaited(applyClientHints());
+    // 这个方法从 `unawaited(_startUp())` 里跑，任何漏掉的异常都会直接
+    // 从异步链逃出去 —— 在 Flutter 里表现为**闪退**。
+    //
+    // 而它内部有多次 `await`，之后还在用 `ref.read(...)`。`mounted`
+    // 只挡住了其中两处：await 回来时页面可能已经销毁，那时再 read 会抛
+    // 「ref used after dispose」。漏一处就崩，而且崩得毫无线索。
+    try {
+      // 代理清单是异步从磁盘读的，读之前 pool/builtin 都是空的 —— 那和
+      // 「用户没配代理」长得一模一样。先等它读完再算计划，否则算出来的是
+      // 一条直连计划：几百条代理全被跳过，真实 IP 直接露给站点。
+      await ref.read(proxyProvider.notifier).ready;
+      if (!mounted) return;
+      // 3 秒兜底之后 `loaded` 仍可能是 false（读盘卡住）。那时 pool 是空的，
+      // 算出来的计划必然是直连 —— 拿真实 IP 去开号，比不开更糟。停下并说清。
+      if (!ref.read(proxyProvider).loaded) {
+        _store.fail('代理清单没读出来，已停下。请到设置里确认代理，或重新打开这个号。');
+        return;
+      }
+      _openPlan = _planForThisNumber();
+      // 等平台视图真正 attach。引擎是同步造出来的，但内核的控制器要等
+      // widget 挂进树、`onWebViewCreated` 回调回来才有 —— 在那之前
+      // `loadUrl` 会被丢掉，页面永远白屏。
+      await Future<void>.delayed(const Duration(milliseconds: 120));
+      // 代理必须最先设：垫片和第一个页面请求都会带流量出去，
+      // 晚一步就是真实 IP 先露一次。
+      //
+      // 返回 null = 代理没设上 → **就此停下**，绝不能往下走到 `loadUrl`：
+      // 那会拿真实 IP 去撞站点（见 _applyProxyPlan）。
+      if (await _applyProxyPlan() == null) return;
+      // 垫片必须在**任何页面脚本之前**装上：站点自己的 reader.js 和
+      // Turnstile 一进来就会读 navigator，晚一步那一屏就已经被判定过了。
+      final shim = await buildBrowserShim();
+      if (shim.isEmpty) {
+        // 装不上就别硬塞：一个 uaFullVersion 为空的垫片，比没有垫片更像
+        // 一个被人改过的浏览器。这里只是记一笔，页面照常打开。
+        logLine('浏览器垫片没装上（UA 里解不出 Chrome 版本）');
+      } else {
+        _engine.injectOnDocumentStart(shim);
+        // 请求头那一路和垫片是**一对**：垫片管 JS 读到的 userAgentData，
+        // 这条管引擎真发出去的 Sec-CH-UA。只装一个就是「JS 说 A、
+        // 请求头说 B」。
+        unawaited(applyClientHints());
+      }
+      if (!mounted) return;
+      await _engine.loadUrl(widget.number.inboxUrl);
+      // 页面开始加载就挂上验证驱动器。站点大多会自己 pending → ready，
+      // 这一步不需要用户参与；但有的出口站点就是不给静默过，那时过了
+      // 余量还没 ready 就把页面弹出来让用户点一下（见 _pumpVerification）。
+      _beginVerifyRound();
+      _pumpVerification();
+    } catch (e) {
+      logLine('收件页启动失败: $e');
     }
-    if (!mounted) return;
-    await _engine.loadUrl(widget.number.inboxUrl);
-    // 页面开始加载就挂上验证驱动器。站点大多会自己 pending → ready，
-    // 这一步不需要用户参与；但有的出口站点就是不给静默过，那时过了
-    // 余量还没 ready 就把页面弹出来让用户点一下（见 _pumpVerification）。
-    _beginVerifyRound();
-    _pumpVerification();
   }
 
   /// 按账本决定这次用哪个代理、哪个身份。
