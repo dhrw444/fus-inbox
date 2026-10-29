@@ -118,17 +118,59 @@ class const LedgerPlanner({
     // 之前这里只查 bindings[current.id]，轮换过之后回头点老号必然
     // 落到新身份上 —— 就是「重新点进去不是之前那条 socks5 + 身份」。
     final owner = _bindingSeeing(numberId);
-    if (owner != null && owner.proxyId != current.id) {
-      final ownerProxy = candidates
-          .where((p) => p.id == owner.proxyId)
-          .firstOrNull;
-      if (ownerProxy != null) {
-        return OpenPlan(
-          action: OpenAction.restore,
-          proxy: ownerProxy,
-          binding: owner,
-          reason: '这个号是 ${ownerProxy.displayName} 上的身份看过的，切回去复用',
-        );
+    if (owner != null) {
+      // 这个号有归属身份。**要不要切回去，分两种情况** ——
+      // 原来只判 `owner.proxyId != current.id`，漏了第二种。
+      //
+      // 第一种：owner 就在当前出口上，而且当前绑定**就是** owner。
+      //   那就什么都不用做 —— 直接落到下面的 reuse 分支（它只保证 UA 一致）。
+      //   这是最常见的路径：同一个身份重开同一个号，站点 24 小时内放行。
+      //
+      // 第二种：owner 在别的出口上，**或者** owner 不是当前绑定
+      //   （浏览器此刻装的是另一台设备）。这两种都必须真的切回 owner ——
+      //   reuse 分支只保证「UA 和账本一致」，它**不会**把绑定换成 owner。
+      //   站点眼里这个号仍然算新访客：既吃一次额度，又更容易撞验证。
+      //
+      // 归属身份的全部价值就在「它看过这个号」：密钥和本地记录都在它身上。
+      // 换个身份再进来，那两条全丢。
+      // 同一个绑定用 `createdAtMs` 认（[IdentityBinding] 没有 id 字段，
+      // `_bindingSeeing` 也是按它挑最早的那个）。
+      final sameSlot =
+          owner.proxyId == current.id &&
+          existing != null &&
+          existing.createdAtMs == owner.createdAtMs;
+      if (!sameSlot) {
+        final ownerProxy = candidates
+            .where((p) => p.id == owner.proxyId)
+            .firstOrNull;
+        if (ownerProxy != null) {
+          return OpenPlan(
+            action: OpenAction.restore,
+            proxy: ownerProxy,
+            binding: owner,
+            reason: '这个号是 ${ownerProxy.displayName} 上的身份看过的，切回去复用',
+          );
+        }
+        // 那条出口不在候选里。这里要再分两种，**不能一把都 restore**：
+        //
+        //   - 出口还在池子里（只是这次候选把它剔了，比如检测暂时判死）：
+        //     切回那个身份 —— 它的密钥和「已读记录」都还在，站点认得它。
+        //     出口仍用当前这条（保证有网可走）。站点眼里「同一台设备换了条
+        //     线路」比「一台全新的设备」轻得多。
+        //
+        //   - 出口**已经被删了**（不在 pool 里）：别 restore。切回一个连出口都
+        //     不存在的身份没有意义 —— 账本里那条绑定再也走不了那个 IP，硬套它
+        //     的 UA 只会让「账本说 A、实际走 B」更乱。这种情况正常走当前出口的
+        //     身份（后面的分支会处理），让用户自己决定要不要加回那条代理。
+        final ownerInPool = pool.any((p) => p.id == owner.proxyId);
+        if (ownerInPool) {
+          return OpenPlan(
+            action: OpenAction.restore,
+            proxy: current,
+            binding: owner,
+            reason: '这个号是别的出口上的身份看过的，切回那个身份复用',
+          );
+        }
       }
     }
 
@@ -279,7 +321,25 @@ class const LedgerPlanner({
     if (partial != null) return partial;
     // 全满了。退回「下一条」，至少不会原地卡住 —— 真到这一步说明
     // 池子的额度整个用完了，该提醒用户加代理。
-    return pool[start % pool.length];
+    // **绝不能退回当前这一条。**
+    //
+    // 原来这里是 `pool[start % pool.length]` —— 池子全满时「退回下一条」，
+    // 可那一条可能恰好就是 `currentId`。于是 `plan` 里
+    // `nextProxy.id == current.id` 成立，退回 `reuse` 并宣称「没有别的
+    // 可用出口」—— 用户看到的就是「到了上限有时候不换代理」。
+    //
+    // 池子只有 3 条、每条上限 3 个号时**最容易走到这一步**：
+    // 3×3=9 个号之后整池全满，之后每次开新号都落在这个兜底里。
+    //
+    // 真正的答案取决于调用方要什么：
+    //   - `plan`：全满时应该如实说「池子用完了」，所以给回 current 让它
+    //     走 reuse 分支报出那句提示 —— **但那必须是真的全满，不是挑错**。
+    //     这里改成「在池里找一条不是 current 的」，找得到就给，找不到才
+    //     给 current。
+    //   - 这样 `plan` 的 `nextProxy.id == current.id` 就只会在「池里真的
+    //     只有这一条」时成立，那句话才是真话。
+    final fallback = pool.where((p) => p.id != currentId).firstOrNull;
+    return fallback ?? pool[start % pool.length];
   }
 
   /// `plan` 和 `ProxyNotifier.rotateToNext` 共用同一条挑选规则。

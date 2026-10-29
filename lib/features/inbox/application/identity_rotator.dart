@@ -27,6 +27,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:fus_inbox/core/log.dart';
+import 'package:fus_inbox/core/proxy/identity_binding.dart';
 import 'package:fus_inbox/core/proxy/proxy_engine_provider.dart';
 import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 // 带 as identity 前缀：本类自己的方法就叫 [rotateIdentity]，不加前缀的话
@@ -315,6 +316,33 @@ class IdentityRotator({
       // 立刻落盘。不存的话重启会回到设备真实机型，而站点那边的
       // reader 密钥还是这一对 —— 同一个身份换了台「设备」，比不换更扎眼。
       await persistCurrentIdentity();
+      // **新身份必须写进账本。**
+      //
+      // 不写的话账本里这条出口还是空的：下次 `plan()` 看到
+      // `bindings[current.id] == null`，就再 mint 一个新身份、再走一次 rotate
+      // —— 用户感受是「换了身份，但下次开号又换一遍」，而且界面上的额度
+      // 显示永远对不上实际在用的身份。
+      //
+      // `commitOpen` 原来只在「打开号码」那条路（inbox_screen）里调，换身份
+      // 这条完全没写账。这里补上，`numberId` 传空串表示「只是建了身份、还没
+      // 看号」—— `commit` 只在 numberId 非空时才往 openedNumbers 里加。
+      final proxyId = ref.read(proxyProvider).currentId;
+      if (proxyId.isNotEmpty) {
+        await ref
+            .read(proxyProvider.notifier)
+            .commitOpen(
+              proxyId,
+              '',
+              IdentityBinding(
+                proxyId: proxyId,
+                userAgent: fresh.userAgent,
+                model: fresh.model,
+                chromeMajor: fresh.chromeMajor,
+                openedNumbers: const [],
+                createdAtMs: DateTime.now().millisecondsSinceEpoch,
+              ),
+            );
+      }
 
       // 下一次加载完成时删密钥，然后重载。
       _wipeOnLoad = true;
