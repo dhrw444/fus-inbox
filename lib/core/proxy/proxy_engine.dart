@@ -127,7 +127,20 @@ class ProxyEngine() {
       // 退到系统分配。Windows 上仍然全程一致，只是不再是那个固定值。
       _bridge = await LocalProxyBridge.start();
     }
-    return _bridge!.port;
+    // **不能再写 `_bridge!`。**
+    //
+    // 两次 `start()` 都失败时 `_bridge` 仍是 null，而 `_bridge!` 会抛
+    // `Null check operator used on a null value` —— 本方法是
+    // `main()` 里 `await engine.ensureBridge()` 直接调的，
+    // **异常一路炸到 main，应用启动就崩**（用户看到的是「打开就闪退」）。
+    //
+    // 这里如实报一个能看懂的错误，让 `main` 的 try/catch 接住并显示
+    // 「启动失败：…」，而不是白屏闪退。
+    final b = _bridge;
+    if (b == null) {
+      throw StateError('本地代理桥起不来（端口被占或系统限制），无法启动');
+    }
+    return b.port;
   }
 
   /// 让 WebView 走 [config]。
