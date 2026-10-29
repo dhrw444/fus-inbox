@@ -50,9 +50,16 @@ class const ChallengeParams({
       sitekey.isNotEmpty && action.isNotEmpty && cdata.isNotEmpty;
 }
 
-/// 解析 `POST /sms-api/v1/session` 的响应体。
+/// 解析挑战参数。
 ///
-/// 成功（`reader_verification_required`）时返回参数；其它情况返回 null
+/// 认**两种**输入形状：
+///
+/// 1. 站点的原始响应体（`POST /sms-api/v1/session` 的 403）：
+///    `{error: 'reader_verification_required', sitekey, action, cdata}`
+/// 2. 注入脚本 `holdup` 帧里带的那一份：裸的
+///    `{sitekey, action, cdata}` —— **没有 `error` 键**。
+///
+/// 实际调用方拿到的永远是第二种。
 /// （配额、临时繁忙、格式不对 —— 那些不该走验证界面，各有各的处理）。
 ChallengeParams? parseChallengeParams(String body) {
   Object? decoded;
@@ -62,7 +69,15 @@ ChallengeParams? parseChallengeParams(String body) {
     return null;
   }
   if (decoded is! Map) return null;
-  if (decoded['error'] != 'reader_verification_required') return null;
+  // 有 `error` 键就必须是挑战那一条；没有就是裸参数。
+  //
+  // 注入脚本 `holdup` 帧里带的是**裸的** `{sitekey, action, cdata}`
+  // —— 没有 `error` 键。原来这里无条件要求 `error ==
+  // 'reader_verification_required'`，于是 `SiteHold.challenge` **恒为
+  // null**、覆盖层一次都渲染不出来。真机上表现为「验证界面只露出
+  // 网站页面，没有验证框」。
+  final error = decoded['error'];
+  if (error != null && error != 'reader_verification_required') return null;
   final sitekey = decoded['sitekey']?.toString() ?? '';
   final action = decoded['action']?.toString() ?? '';
   final cdata = decoded['cdata']?.toString() ?? '';

@@ -176,7 +176,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// [IdentityRotator] 的 `onLoadStarted`。
   void _beginPageRound() {
-    _beginVerifyRound();
+    // **不能 rearm。**
+    //
+    // 这里是 `onLoadStarted` —— 每次页面加载完都会调一次。原来是
+    // `_beginVerifyRound()`（默认 `rearm: true`），于是它把「这轮已经
+    // 弹过」的闸门**重新打开**：用户收起验证之后，页面只要重载一次
+    // （站点自己刷新、或者任何一次 loadUrl），闸门就开了，6 秒后
+    // 又弹回来 —— 用户看到的是「没验证就退出，之后还会再弹」。
+    //
+    // 闸门只该由**真的拿到消息**来解开（那条路径在 `_pumpVerification`
+    // 里：消息到了就 cancel 并清 hold），不该由「页面加载完」解开。
+    _beginVerifyRound(rearm: false);
     _pumpVerification();
   }
 
@@ -589,6 +599,21 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         timer.cancel();
         return;
       }
+      // **自动弹层开着时，不要在页面里跑任何 JS。**
+      //
+      // 用户要求：跳转过去之后不许自己刷新、不许自己乱动。
+      // 而下面那段每 900ms 都会 `evaluateJavascript` 读一次
+      // `FUSReader.status()` —— 对用户来说那就是页面一直在动。
+      //
+      // 弹层开着时唯一还需要盯的是 `cf_clearance`（它一出现就说明
+      // 验证真过了，可以自动收层）。那件事读的是**原生 cookie 库**，
+      // 不碰页面，所以单独走一条最短路径。
+      if (_challenge.open) {
+        if (_challenge.watchingForAutoPass) {
+          await _autoConfirmIfPassed();
+        }
+        return;
+      }
       String phase = '';
       try {
         // 必须走 evaluateJavascript：WebEngine.runJavaScript 返回
@@ -614,6 +639,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               // 页面藏着一句话说明不了任何问题 —— 放出来让用户自己看
               // 一眼、必要时点一下重试。之前这里只留一条日志，用户
               // 既看不到失败原因也做不了任何事。
+              // 验证已经明确失败了（Cloudflare 报错也走这条），这时候页面藏着
+              // 一句话说明不了任何问题 —— 放出来让用户自己看一眼、必要时点一下
+              // 重试。只留一条日志的话，用户既看不到失败原因也做不了任何事。
               if (!_challenge.open && !_round.autoPopped) {
                 _openChallenge(auto: true);
               }
