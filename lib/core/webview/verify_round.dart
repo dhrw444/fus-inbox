@@ -58,6 +58,43 @@ class VerifyRound {
   /// 6 秒后又弹回来，等于没给他选。
   bool autoPopped = false;
 
+  /// 验证界面是否正在显示。
+  ///
+  /// 和 [auto] 必须一起变 —— 原来是两个独立字段，能写出
+  /// `open=false, auto=true`（没开却是自动弹的）这种无意义组合，
+  /// 代码里为此写过好几处三连判。现在「自动弹」这个词只在
+  /// [showAuto] / [showManual] 里定义：`auto` 为真必然意味着 `open` 为真。
+  bool open = false;
+
+  /// 这次是**自动弹**的（站点不放行）还是用户自己点的。
+  ///
+  /// 两者的呈现故意不一样，见 `inbox_screen` 的 `build`：
+  /// - 自动弹 → 盯着 `cf_clearance`，它一出现就自动收层
+  /// - 手动点 → 不自动收（用户可能只是想看看网页）
+  bool auto = false;
+
+  /// 只有这种情况才需要盯着 `cf_clearance` 自动收层。
+  bool get watchingForAutoPass => open && auto;
+
+  /// 自动弹：显示验证界面。
+  void showAuto() {
+    open = true;
+    auto = true;
+  }
+
+  /// 用户自己点开：显示站点页面。
+  void showManual() {
+    open = true;
+    auto = false;
+  }
+
+  /// 收起验证界面。全 App 只有这一个「收起」入口 —— 漏清某个字段
+  /// 这种 bug 就不可能发生。
+  void close() {
+    open = false;
+    auto = false;
+  }
+
   /// 起算点。null 表示还没开始。
   DateTime? get start => _start;
 

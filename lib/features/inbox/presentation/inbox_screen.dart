@@ -27,8 +27,6 @@ import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/features/inbox/application/identity_rotator.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
-import 'package:fus_inbox/features/inbox/domain/challenge_ui.dart';
-import 'package:fus_inbox/features/inbox/domain/challenge_overlay.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_search_state.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_app_bar.dart';
@@ -73,15 +71,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// 两个来源：用户点「自己过验证」主动要看；或者自动路径判定
   /// 「这个出口静默过不去」，到点自己弹出来（见 [_pumpVerification]）。
-  /// 验证弹层状态。`open` 和 `auto` 必须一起变，所以收成一个对象 ——
-  /// 见 `challenge_ui.dart` 的文件头。
-  ChallengeUi _challenge = ChallengeUi.closed;
-
-  /// 这次弹层已经画过哪一组挑战参数。
-  ///
-  /// `onChanged` 每收到一帧都会调 [_renderChallengeOverlay]，不去重的话
-  /// 会反复销毁重建 Turnstile —— 用户正在点的那个组件一直闪，点不到。
-  String _renderedChallenge = '';
 
   /// 搜索框展开了没有。
   /// 搜索状态。三个值必须一起变，所以收成一个不可变对象 ——
@@ -142,19 +131,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         setState(() {});
         // 状态一变就重新判一次「是不是被拒了」。可重入闸在控制器里。
         _rotator.maybeAutoRotate();
-
-        // 挑战参数到了就补画一次覆盖层。
-        //
-        // 自动弹出的那一刻 `hold.challenge` 往往还是空的 —— 站点要
-        // 先发出那次被拦的 `POST /sms-api/v1/session`，参数才跟着
-        // `holdup` 帧回来。所以不能只在弹出时画一次。
-        //
-        // **这里补、不是轮询里补**：`onChanged` 是站点推送触发的，
-        // 参数只到一次，所以只会画一次。放轮询里的话每 900ms 重画，
-        // 用户正在点的 Turnstile 会被反复销毁重建 —— 那就成了「自己乱动」。
-        if (_challenge.open && _challenge.auto) {
-          unawaited(_renderChallengeOverlay());
-        }
       },
     );
     _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
@@ -469,7 +445,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 时重臂。在这一响上白白耗掉，这个会话剩下的时间就再没有兜底
     // 提示了 —— 弹层一收起、还是卡着，用户什么提示都等不到。
     // 所以看不见就别消耗：重臂一轮，等弹层收起 / hold 解除后的下一响。
-    if (_challenge.open || st.hold != null) {
+    if (_round.open || st.hold != null) {
       _armWatchdog();
       return;
     }
@@ -607,7 +583,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 原因就是他过验证的那段时间状态机自杀了。
       //
       // 弹层开着 = 用户正在亲手处理，这段时间不该计时淘汰他。
-      if (_round.timedOut && !_challenge.open) {
+      if (_round.timedOut && !_round.open) {
         timer.cancel();
         _store.note('站点验证超时，已停止等待。');
         return;
@@ -627,8 +603,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // 弹层开着时唯一还需要盯的是 `cf_clearance`（它一出现就说明
       // 验证真过了，可以自动收层）。那件事读的是**原生 cookie 库**，
       // 不碰页面，所以单独走一条最短路径。
-      if (_challenge.open) {
-        if (_challenge.watchingForAutoPass) {
+      if (_round.open) {
+        if (_round.watchingForAutoPass) {
           await _autoConfirmIfPassed();
         }
         return;
@@ -661,7 +637,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               // 验证已经明确失败了（Cloudflare 报错也走这条），这时候页面藏着
               // 一句话说明不了任何问题 —— 放出来让用户自己看一眼、必要时点一下
               // 重试。只留一条日志的话，用户既看不到失败原因也做不了任何事。
-              if (!_challenge.open && !_round.autoPopped) {
+              if (!_round.open && !_round.autoPopped) {
                 _openChallenge(auto: true);
               }
               return;
@@ -705,14 +681,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       //
       // 能在几秒里自己过的出口根本走不到这一步，所以「弹出来的
       // 必定是需要点一下的那种」。
-      if (!_challenge.open && _round.shouldAutoPop) {
+      if (!_round.open && _round.shouldAutoPop) {
         _store.note('这个出口卡住了，已把页面放出来让你点一下。');
         _openChallenge(auto: true);
       }
 
       // 自动弹层开着 → 盯着 cf_clearance，它一出现就自动收层继续。
       // （用户自己点开的那个弹层不自动收：他可能只是想顺便看看网页。）
-      if (_challenge.watchingForAutoPass) {
+      if (_round.watchingForAutoPass) {
         unawaited(_autoConfirmIfPassed());
       }
     });
@@ -763,7 +739,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       final value = cookies['cf_clearance'];
       if (value == null || value.isEmpty) return;
       // 读 cookie 是异步的，回来时前提可能已经变了（用户点了收起 / 页面走了）。
-      if (!mounted || !_challenge.watchingForAutoPass) return;
+      if (!mounted || !_round.watchingForAutoPass) return;
       rememberClearance(value);
       _store.note('验证通过，继续加载。');
       // **不能直接在这里调 `_confirmChallengeDone`**：这个方法本身是从
@@ -792,35 +768,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       if (value != null && value.isNotEmpty) rememberClearance(value);
     } catch (_) {
       // 读不到就算了，收件箱本身已经能用了。
-    }
-  }
-
-  /// 在收件页里盖一层「只含验证框」的覆盖层。
-  ///
-  /// 见 `challenge_overlay.dart` 的文件头：另开页面那条路在安卓 WebView 上
-  /// 走不通（`loadData` 的 origin 是 null，fetch 跨域、crypto.subtle 抛）。
-  /// 收件页本身是站点源，所以在这里盖一层最可靠。
-  Future<void> _renderChallengeOverlay() async {
-    // 同一组参数只画一次 —— 见 [_renderedChallenge]。
-    final params = _store.state.hold?.challenge;
-    if (params == null || !params.complete) {
-      // 还没拿到参数（站点可能还没发出那次被拦的请求）。
-      // 不硬等：露出收件页让用户自己看，总比一片空白强。
-      return;
-    }
-    final key = params.sitekey + params.action + params.cdata;
-    if (key == _renderedChallenge) return;
-    try {
-      await _engine.runJavaScript(
-        challengeOverlayScript(
-          sitekey: params.sitekey,
-          action: params.action,
-          cdata: params.cdata,
-        ),
-      );
-      _renderedChallenge = key;
-    } catch (e) {
-      logLine('渲染验证框失败：$e');
     }
   }
 
@@ -858,41 +805,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // `rearm` 传 false —— 闸门要保持关着，否则收起之后 6 秒又自动弹回来。
     _round.begin(rearm: false);
     setState(() {
-      _challenge = auto ? ChallengeUi.autoShown : ChallengeUi.manualShown;
+      if (auto) {
+        _round.showAuto();
+      } else {
+        _round.showManual();
+      }
     });
-    // **只有自动弹的才换成「只含验证框」的页面。**
-    //
-    // 自动弹的场景是「站点卡住了，用户只需要点一下那个复选框」——
-    // 这时候他不需要看网站，屏幕上只放验证框最干净。
-    //
-    // 用户**自己点**的那个入口相反：他可能就是想看看网页、或者想自己在
-    // 站点界面上做别的事（比如换个号码试试）。那种情况把页面换成验证框
-    // 等于剥夺了他本来要的东西，所以照旧露出收件页。
-    if (auto) {
-      // **自动弹：在收件页自己里渲染一个验证框**，不另开页面。
-      //
-      // 另开页面那条路（`loadData` 装一段 HTML）真机上走不通：
-      // 安卓 WebView 给 `loadData` 生成的文档的 origin 是
-      // `null`，页面里 `fetch('/sms-api/v1/session')` 跨域被拦、
-      // `crypto.subtle` 直接抛 —— 卡在「正在准备验证…」。
-      //
-      // 收件页本身就是站点源：有 cookie、有 `crypto.subtle`、
-      // 站点自己的 `turnstile` loader 也已经加载好了。所以把
-      // `SiteHold.challenge` 那三个参数（sitekey / action / cdata）交给它，
-      // 在页面上盖一层只含验证框的覆盖层 —— 屏幕上看不到网站内容。
-      unawaited(_renderChallengeOverlay());
-    }
-    // 内核版本太低时，Turnstile 根本过不去 —— 必须当场说出来，
-    // 否则用户只会一直重试（真机踩过：114 的 WebView 永远转不完）。
     if (reload) {
-      // **手动点必须 loadUrl 回收件页，不能 reload。**
+      // 重载一次让站点重新发起验证。
       //
-      // 自动弹那次已经在收件页上盖了验证框覆盖层。这时候 reload 重载的是
-      // **当前文档**，覆盖层会跟着重画 —— 用户点「自己过验证」想看的网页
-      // 根本没出来。
-      //
-      // 手动点这个入口的全部意义就是「我要看网站页面、自己在上面过验证」，
-      // 所以一律回到收件页。
+      // 用 `loadUrl` 而不是 `reload`：`reload` 重载的是**当前文档**，
+      // 而当前文档不一定还是收件页（用户可能在站点内部跳转了几层）。
+      // `loadUrl` 一律回到收件页 —— 这个入口的意义就是「我要看网站
+      // 页面、自己在上面过验证」。
       unawaited(_engine.loadUrl(widget.number.inboxUrl));
     } else if (_verifyPoll == null) {
       // 真没在跑才启动（比如页面刚加载完、还没走到 _pumpVerification）。
@@ -909,10 +834,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 算的话第一次 tick 就超窗口，当场判超时。
   void _confirmChallengeDone() {
     _verifyPoll?.cancel();
-    setState(() {
-      _challenge = ChallengeUi.closed;
-      _renderedChallenge = '';
-    });
+    setState(_round.close);
     // **闸门保持关着（`rearm: false`）。**
     //
     // 这里原来是 `_beginVerifyRound()`，默认 `rearm: true` —— 于是刚点完
@@ -933,10 +855,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 刚说了不想过，6 秒后又自动弹回来等于没给他选。
   void _closeChallenge() {
     _verifyPoll?.cancel();
-    setState(() {
-      _challenge = ChallengeUi.closed;
-      _renderedChallenge = '';
-    });
+    setState(_round.close);
     _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。
     _pumpVerification();
@@ -1034,16 +953,16 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 之前没有这道拦截，返回键会直接 pop 掉整个 InboxScreen 回到
     // 号码列表，用户还得重新点进来、重新走一遍加载和验证。
     return PopScope<Object?>(
-      canPop: !_challenge.open,
+      canPop: !_round.open,
       onPopInvokedWithResult: (didPop, result) {
         if (didPop) return;
-        if (_challenge.open) _closeChallenge();
+        if (_round.open) _closeChallenge();
       },
       child: Scaffold(
         // 验证态**不挂收件页的 AppBar**：那一刻用户不在收件箱里，他在做
         // 站点要求的一个动作。顶栏换成 [ChallengeHeader]（见下面的 Stack），
         // 说清「现在在干什么、怎么退出去」。
-        appBar: _challenge.open
+        appBar: _round.open
             ? null
             : InboxAppBar(
                 number: widget.number,
@@ -1110,7 +1029,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             // 布局只能靠 WebView 自己（站点页面），Flutter 这边改不了。
             Positioned.fill(
               child: Offstage(
-                offstage: !_challenge.open,
+                offstage: !_round.open,
                 child: ColoredBox(
                   // 引擎自己看不见背景，给个深色免得加载瞬间闪白。
                   color: const Color(0xFF10131A),
@@ -1120,21 +1039,21 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             ),
 
             // 独立验证界面的标题栏，顶到 SafeArea 上沿。
-            if (_challenge.open)
+            if (_round.open)
               Positioned(
                 top: 0,
                 left: 0,
                 right: 0,
                 child: ChallengeHeader(
                   theme: theme,
-                  auto: _challenge.auto,
+                  auto: _round.auto,
                   onClose: _closeChallenge,
                 ),
               ),
 
             // 用户自己过验证时的底栏。叠在引擎上方、贴底，不遮住
             // 复选框区域（实测复选框在视口 y≈600，底栏只占最下面一条）。
-            if (_challenge.open)
+            if (_round.open)
               ChallengeBar(
                 theme: theme,
                 onClose: _closeChallenge,
