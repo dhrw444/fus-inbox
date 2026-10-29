@@ -822,20 +822,17 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _showChallenge = true;
       _challengeAuto = auto;
     });
-    // **把验证页装进 WebView**，而不是露出收件页。
+    // **只有自动弹的才换成「只含验证框」的页面。**
     //
-    // 收件页是正常的网站页面 —— 露出来用户看到的是整个站点，验证框只是
-    // 里面的一小块（站点用 `reader.js` 动态渲染它）。Han1meViewer 那边看着
-    // 「只有一个验证弹窗」，是因为它拦的是**页面请求**、Cloudflare 直接回了
-    // 挑战页；本站被拦的是 API，返回 JSON 不是挑战页，照搬不了。
+    // 自动弹的场景是「站点卡住了，用户只需要点一下那个复选框」——
+    // 这时候他不需要看网站，屏幕上只放验证框最干净。
     //
-    // 所以自己渲染：页面里先 `POST /sms-api/v1/session` 拿
-    // sitekey/action/cdata（站点那 403 的 body 里就带着），再
-    // `turnstile.render()`。屏幕上就只有那个验证框。
-    //
-    // `baseUrl` 必须是站点源 —— 否则页面里拉的 `reader.js` 被 CORS 拦掉，
-    // 而且站点脚本明写「要 `window.isSecureContext`」。
-    unawaited(_loadChallengePage());
+    // 用户**自己点**的那个入口相反：他可能就是想看看网页、或者想自己在
+    // 站点界面上做别的事（比如换个号码试试）。那种情况把页面换成验证框
+    // 等于剥夺了他本来要的东西，所以照旧露出收件页。
+    if (auto) {
+      unawaited(_loadChallengePage());
+    }
     // 内核版本太低时，Turnstile 根本过不去 —— 必须当场说出来，
     // 否则用户只会一直重试（真机踩过：114 的 WebView 永远转不完）。
     if (reload) {
@@ -861,7 +858,16 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       _showChallenge = false;
       _challengeAuto = false;
     });
-    _beginVerifyRound();
+    // **闸门保持关着（`rearm: false`）。**
+    //
+    // 这里原来是 `_beginVerifyRound()`，默认 `rearm: true` —— 于是刚点完
+    // 「验证好了」，闸门解开，`_pumpVerification` 再等 6 秒又满足
+    // `shouldAutoPop`，验证页立刻又弹回来。用户的实际感受是「验证完还会
+    // 再弹，而且永远弹不完」。
+    //
+    // 只有**真的拿到消息**才该解开闸门（那条路径在 `_pumpVerification`
+    // 里：消息到了就 cancel 并清 hold），不是靠「用户点了确认」。
+    _beginVerifyRound(rearm: false);
     unawaited(_rescan());
     _pumpVerification();
   }
