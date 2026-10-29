@@ -162,7 +162,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 都要走这一步 —— 上一轮的拒绝信号必须从状态里消失，否则 `hold`
   /// 还在，状态一变控制器就又会触发一次轮换。
   void _discardPage() {
-    _verifyPoll?.cancel();
+    _stopVerifyPoll();
     _store.reset();
     _armWatchdog();
   }
@@ -221,7 +221,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void dispose() {
     _watchdog?.cancel();
     _loadMoreWatchdog?.cancel();
-    _verifyPoll?.cancel();
+    _stopVerifyPoll();
     _searchController.dispose();
     // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
     _store.detach();
@@ -539,6 +539,20 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 立刻又弹回来，等于没得选。所以那条路径传 `rearm: false`。
   void _beginVerifyRound({bool rearm = true}) => _round.begin(rearm: rearm);
 
+  /// 停掉验证轮询。**所有**停止路径都必须走这里。
+  ///
+  /// 关键是**把字段置 null**。原来各条自杀路径只写 `timer.cancel()`，
+  /// 字段仍指向那个已取消的 Timer —— 于是 [_openChallenge] 里那句
+  /// `else if (_verifyPoll == null)` 恒为假：轮询已经死了，它还认为
+  /// 「正在跑」，于是不重启。
+  ///
+  /// 后果：页面等超时/收到消息/验证报错之后轮询自杀 → 用户点「自己过
+  /// 验证」→ 不重启 → `cf_clearance` 到手也没人读，自动收层全死。
+  void _stopVerifyPoll() {
+    _stopVerifyPoll();
+    _verifyPoll = null;
+  }
+
   /// 驱动器：让站点自己把验证走完。
   ///
   /// ## 实测结论（不要再凭猜想改）
@@ -562,14 +576,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 真失败时（category/errorCode 有值，Cloudflare 报错也走这条）
   /// 一样把页面放出来，用户至少能看到失败原因、能自己点一下重试。
   void _pumpVerification() {
-    _verifyPoll?.cancel();
+    _stopVerifyPoll();
     // 起算点只在没有的时候才落 —— 重复调用接着算，不归零。
     _round.arm();
     _verifyPoll = Timer.periodic(const Duration(milliseconds: 900), (
       timer,
     ) async {
       if (!mounted) {
-        timer.cancel();
+        _stopVerifyPoll();
         return;
       }
       // 用真实流逝时间，不是累加 900ms —— 定时器被系统挂起时
@@ -584,14 +598,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       //
       // 弹层开着 = 用户正在亲手处理，这段时间不该计时淘汰他。
       if (_round.timedOut && !_round.open) {
-        timer.cancel();
+        _stopVerifyPoll();
         _store.note('站点验证超时，已停止等待。');
         return;
       }
 
       // 已经拿到消息就不用再管验证状态。
       if (_store.state.messages.isNotEmpty) {
-        timer.cancel();
+        _stopVerifyPoll();
         return;
       }
       // **自动弹层开着时，不要在页面里跑任何 JS。**
@@ -626,7 +640,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             final category = obj['category']?.toString() ?? '';
             final message = obj['message']?.toString() ?? '';
             if (phase == 'error') {
-              timer.cancel();
+              _stopVerifyPoll();
               _store.note(
                 message.isNotEmpty ? '站点验证失败：$message' : '站点验证失败（$category）',
               );
@@ -833,7 +847,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 起算点要重置 —— 用户可能在人机验证上耗了一分钟以上，接着旧起算点
   /// 算的话第一次 tick 就超窗口，当场判超时。
   void _confirmChallengeDone() {
-    _verifyPoll?.cancel();
+    _stopVerifyPoll();
     setState(_round.close);
     // **闸门保持关着（`rearm: false`）。**
     //
@@ -854,7 +868,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 起算点同样重置（免得旧轮次已经超窗口），但**不解开闸门** —— 用户
   /// 刚说了不想过，6 秒后又自动弹回来等于没给他选。
   void _closeChallenge() {
-    _verifyPoll?.cancel();
+    _stopVerifyPoll();
     setState(_round.close);
     _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。

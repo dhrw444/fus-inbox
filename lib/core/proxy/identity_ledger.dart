@@ -119,7 +119,14 @@ class IdentityLedger {
     if (numberId.isNotEmpty) _owners[numberId] = proxyId;
     final base = _bindings[proxyId] ?? binding;
     final nums = [...base.openedNumbers];
-    if (!nums.contains(numberId)) nums.add(numberId);
+    // **空 id 不记。**
+    //
+    // 换身份那条路（`_rotateIdentityBody`）调 `commitOpen(proxyId, '', ...)`
+    // —— 意思是「只建了身份，还没看号」。`''` 若进了 `openedNumbers`，
+    // 它**白占一个额度**（`used = openedNumbers.length`），用户 3 个号变 2 个。
+    //
+    // 这不是假想：每点一次「换浏览器身份」就多占一个，连着点两次额度就没了。
+    if (numberId.isNotEmpty && !nums.contains(numberId)) nums.add(numberId);
     _bindings[proxyId] = IdentityBinding(
       proxyId: proxyId,
       userAgent: binding.userAgent,

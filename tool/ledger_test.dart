@@ -856,6 +856,45 @@ void main() {
     eq(round.ownerOf('keep'), p.proxy.id, '归属表存盘后能读回来');
   }
 
+  // ---------- 21. 空 numberId 不占额度 ----------
+  //
+  // 换身份那条路调 `commitOpen(proxyId, '', binding)`（表示「只建了身份、
+  // 还没看号」）。空串若进了 `openedNumbers`，它**白占一个额度** ——
+  // `used = openedNumbers.length`，3 个号变 2 个。
+  {
+    final led = IdentityLedger(maxPerIdentity: 3);
+    final a = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'first',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(a.proxy.id, 'first', a.binding);
+    eq(led.usedFor(a.proxy.id), 1, '看了 1 个号就记 1 个');
+
+    // 连续两次换身份（空 id）
+    led.commit(a.proxy.id, '', a.binding);
+    led.commit(a.proxy.id, '', a.binding);
+    eq(led.usedFor(a.proxy.id), 1, '空 id 换身份不该占额度');
+
+    // 额度还在：还能再看 2 个
+    for (final n in ['second', 'third']) {
+      final r = led.plan(
+        pool: pool,
+        currentProxyId: pool[0].id,
+        numberId: n,
+        mintUserAgent: mintUa,
+        mintModel: mintModel,
+        mintChromeMajor: mintChrome,
+      );
+      eq(r.proxy.id, pool[0].id, '$n 该用同一个出口');
+      led.commit(r.proxy.id, n, r.binding);
+    }
+    eq(led.usedFor(a.proxy.id), 3, '三个号刚好用满');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }
