@@ -27,7 +27,6 @@ import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/core/webview/verify_round.dart';
 import 'package:fus_inbox/features/inbox/application/identity_rotator.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
-import 'package:fus_inbox/features/inbox/domain/challenge_focus.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_app_bar.dart';
 import 'package:fus_inbox/features/inbox/presentation/widgets/inbox_attachments.dart';
@@ -96,16 +95,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 「自动判验证过了」的检查在跑没有 —— 防止上一轮还没读完 cookie 就再起一轮。
   bool _autoConfirming = false;
-
-  /// 底部那条 [ChallengeBar] 占的高度（含 SafeArea 的粗略估计）。
-  ///
-  /// 只用来给「聚焦到验证框」留出余量 —— 留多了顶多上面空一点，
-  /// 留少了复选框会被提示栏压住，那是真的点不到。所以宁可估大。
-  static const _challengeBarInset = 88.0;
-
-  /// 验证框在页面里的位置（CSS 像素）。自动弹层时用来算放大/平移。
-  /// null = 还没量到（或量不到）→ 回落到显示整页。
-  Rect? _challengeRect;
 
   /// 搜索输入框的控制器。归本页持有 —— 关闭搜索时要清空它。
   final _searchController = TextEditingController();
@@ -710,6 +699,25 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     if (_autoConfirming) return;
     _autoConfirming = true;
     try {
+      // 先看 DOM 上还有没有挑战标记。参照 Han1meViewer
+      // （CloudflareActivity.kt）的三条判据：页面加载完、挑战标记都不在、
+      // cookie 里有 cf_clearance。这里做前两条 —— 标记还在就说明挑战页
+      // 还挂着，哪怕 cookie 已经下发也不能收（可能是上一次留下的）。
+      //
+      // 三个标记是 Cloudflare 挑战页自己的 id，不是猜的：
+      // `#challenge-form`（要填的表单）、`#challenge-success-text`（成功文案
+      // 还在渲染）、`#challenge-error-text`（失败重试）。
+      final stillChallenging = await _engine.evaluateJavascript(
+        'var h = document.head ? document.head.innerHTML : "";'
+        'var b = document.body ? document.body.innerHTML : "";'
+        'var s = h + b;'
+        's.indexOf("#challenge-form") >= 0'
+        ' || s.indexOf("#challenge-success-text") >= 0'
+        ' || s.indexOf("#challenge-error-text") >= 0'
+        ' ? "1" : "0";',
+      );
+      if ('$stillChallenging'.contains('1')) return;
+
       final cookies = await _engine.readCookies(widget.number.inboxUrl);
       final value = cookies['cf_clearance'];
       if (value == null || value.isEmpty) return;
@@ -743,62 +751,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       if (value != null && value.isNotEmpty) rememberClearance(value);
     } catch (_) {
       // 读不到就算了，收件箱本身已经能用了。
-    }
-  }
-
-  /// 量一次验证框在页面里的位置。量到就记下来，自动弹层时只放大显示它。
-  ///
-  /// **要试几次**：注入脚本比页面渲染快，第一次量往往撞上「还没布局」——
-  /// 那时 `getBoundingClientRect()` 全是 0，JS 侧会返回 null。
-  /// 每 400ms 试一次，最多 6 次（约 2.4 秒）就放弃，回落到显示整页。
-  ///
-  /// 放弃不是失败：用户至少还能像以前那样看整页、点验证框。宁可多显示，
-  /// 也不能因为认不出框就让他没地方点。
-  Future<void> _measureChallenge() async {
-    // 15 × 600ms ≈ 9 秒。原来只有 6 × 400ms ≈ 2.4 秒 —— Turnstile 是站点
-    // 用 `turnstile.render()` 动态渲染的（还要先拉到 Cloudflare 的脚本），
-    // 2.4 秒经常不够，量不到就回落成「显示整页」，正是用户看到的那个现象。
-    for (var i = 0; i < 15; i++) {
-      // 每次循环都重新确认前提：用户可能已经点了「收起」，
-      // 或者站点自己过了验证把弹层收了。
-      if (!mounted || !_showChallenge || !_challengeAuto) return;
-      final rect = await _readChallengeRect();
-      if (rect != null) {
-        if (!mounted || !_showChallenge) return;
-        setState(() => _challengeRect = rect);
-        return;
-      }
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-    }
-  }
-
-  /// 问注入脚本「验证框在哪儿」。拿不到（没有框 / 还没布局）返回 null。
-  Future<Rect?> _readChallengeRect() async {
-    try {
-      // 让 JS 侧 `JSON.stringify` 一下：`evaluateJavascript` 对对象字面量
-      // 的返回形态各平台不一致（有 Map、有 String），自己序列化最稳。
-      // 那种「拿不到就回空串」的写法也是刻意的 —— `null` 在某些内核上
-      // 会变成字符串 `"null"`，回空串判起来只有一个分支。
-      final raw = await _engine.evaluateJavascript(
-        'window.__fusInbox && window.__fusInbox.challengeRect '
-        '? JSON.stringify(window.__fusInbox.challengeRect()) : ""',
-      );
-      Object? decoded = raw;
-      if (raw is String) {
-        if (raw.isEmpty || raw == 'null') return null;
-        decoded = jsonDecode(raw);
-      }
-      if (decoded is! Map) return null;
-      final x = (decoded['x'] as num?)?.toDouble();
-      final y = (decoded['y'] as num?)?.toDouble();
-      final w = (decoded['w'] as num?)?.toDouble();
-      final h = (decoded['h'] as num?)?.toDouble();
-      if (x == null || y == null || w == null || h == null) return null;
-      if (w <= 0 || h <= 0) return null;
-      return Rect.fromLTWH(x, y, w, h);
-    } catch (_) {
-      // 页面还没就绪时 `evaluateJavascript` 会抛，这是正常时序，不是错误。
-      return null;
     }
   }
 
@@ -838,12 +790,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     setState(() {
       _showChallenge = true;
       _challengeAuto = auto;
-      // 上一轮的框位置不能留着：换了一轮，页面可能整个变了。
-      if (auto) _challengeRect = null;
     });
-    // 自动弹层：去量那个复选框在哪儿，量到了就只放大显示它。
-    // 用户自己点的（auto=false）**不量**，保持整页 —— 他想顺便看看网页。
-    if (auto) unawaited(_measureChallenge());
     if (reload) {
       // 页面可能停在旧状态，重载一次让站点重新发起验证。
       // 重载会走 onPageFinished → 注入脚本，然后轮询自己会发现新状态。
@@ -865,9 +812,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _verifyPoll?.cancel();
     setState(() {
       _showChallenge = false;
-      // 弹层收了，聚焦状态一并清掉 —— 下次自动弹时重新量。
       _challengeAuto = false;
-      _challengeRect = null;
     });
     _beginVerifyRound();
     unawaited(_rescan());
@@ -882,9 +827,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _verifyPoll?.cancel();
     setState(() {
       _showChallenge = false;
-      // 弹层收了，聚焦状态一并清掉 —— 下次自动弹时重新量。
       _challengeAuto = false;
-      _challengeRect = null;
     });
     _beginVerifyRound(rearm: false);
     // 收起之后继续盯状态，站点可能自己就 ready 了。
@@ -1048,61 +991,24 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
             // 用 Offstage 而不是缩到 1×1：布局照常跑完整尺寸，原生
             // WebView 拿到真实视口，媒体查询、懒加载、IntersectionObserver
             // 都按正常手机尺寸算；跳过绘制与命中测试，不占合成层。
+            //
+            // **整页显示，不做任何裁剪/缩放。** 这一条是真机证伪之后改的：
+            // 之前为了「只放大验证框」，在它外面套了 ClipRect + Transform，
+            // 用 [focusOnChallenge] 算缩放和平移。结果真机上是一片空白 +
+            // 底下露出背景色 —— 因为 `Transform` 对**平台视图**不生效：
+            // 原生 WebView 不是 Flutter 绘制的纹理，布局被缩了、渲染照旧，
+            // 内容直接被推出可见区域。
+            //
+            // 参照 Han1meViewer（CloudflareScreen.kt）：它的验证页就是
+            // `AndroidView` + `fillMaxSize()`，一个变换都没有。要改页面内部
+            // 布局只能靠 WebView 自己（站点页面），Flutter 这边改不了。
             Positioned.fill(
               child: Offstage(
                 offstage: !_showChallenge,
                 child: ColoredBox(
                   // 引擎自己看不见背景，给个深色免得加载瞬间闪白。
                   color: const Color(0xFF10131A),
-                  // 自动弹层且量到了验证框时，只把那块放大显示（见
-                  // [focusOnChallenge]）。量不到就照旧显示整页。
-                  child: LayoutBuilder(
-                    builder: (context, box) {
-                      final rect = _challengeRect;
-                      if (!_challengeAuto || rect == null) {
-                        return _engine.buildView();
-                      }
-                      // 把 `Rect` / `Size` 拆成裸数字传进去：那个纯逻辑
-                      // 文件刻意不 import `dart:ui`，否则单测跑不了。
-                      final focus = focusOnChallenge(
-                        viewportWidth: box.maxWidth,
-                        viewportHeight: box.maxHeight,
-                        rectLeft: rect.left,
-                        rectTop: rect.top,
-                        rectWidth: rect.width,
-                        rectHeight: rect.height,
-                        // 底部提示栏别压住复选框。
-                        bottomInset: _challengeBarInset,
-                      );
-                      if (focus == null) return _engine.buildView();
-                      return ClipRect(
-                        child: Transform(
-                          // 直接写矩阵：`Matrix4.translate` / `.scale` 在
-                          // 新版 vector_math 里是废弃 API，而 CI 跑
-                          // `--fatal-infos`，用一次就挂。
-                          transform: Matrix4(
-                            focus.scale,
-                            0,
-                            0,
-                            0, //
-                            0,
-                            focus.scale,
-                            0,
-                            0, //
-                            0,
-                            0,
-                            1,
-                            0, //
-                            focus.dx,
-                            focus.dy,
-                            0,
-                            1,
-                          ),
-                          child: _engine.buildView(),
-                        ),
-                      );
-                    },
-                  ),
+                  child: _engine.buildView(),
                 ),
               ),
             ),

@@ -29,7 +29,6 @@
 import 'dart:io';
 
 import 'can_rotate_test.dart' as canRotate;
-import 'challenge_focus_test.dart' as challFocus;
 import 'findproxy_failclosed_test.dart' as findproxy;
 import 'inbox_search_test.dart' as inboxSearch;
 import 'first_seen_test.dart' as firstSeen;
@@ -63,7 +62,6 @@ void main() {
     '目录排序稳定性': sort.main,
     '收录时间解析': firstSeen.main,
     '收件箱搜索': inboxSearch.main,
-    '验证框聚焦几何': challFocus.main,
     'findProxy 兜底': findproxy.main,
     'ready 超时语义': ready.main,
     '代理失败必须停': leak.main,

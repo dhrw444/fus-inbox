@@ -30,8 +30,15 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 /// 造一套内核参数。[userAgent] 由引擎现推（见 `browser_identity.dart`）。
 InAppWebViewSettings engineSettings(String userAgent) => InAppWebViewSettings(
   userAgent: userAgent,
-  // 唯一偏离默认值的一条：这一项默认是 **false**，而导航闸门要生效就必须
+  // 这一项默认是 **false**，而导航闸门要生效就必须
   // 打开它 —— 关着的话站点内的重定向会直接跑掉，第三方页面一旦被引进来
   // 就能往 JS 通道里塞数据（`onNavigationRequest` 形同虚设）。
   useShouldOverrideUrlLoading: true,
+  // Turnstile 有模式会**开新窗口**（先开隐藏窗再回填结果）。这一项默认
+  // `false`，关着时那些窗口被静默拒掉，挑战永远转不完 —— 界面上表现为
+  // 「一直转圈，或者一片空白」。
+  //
+  // 参照 Han1meViewer（CloudflareActivity.kt）：它的验证页显式设了
+  // `javaScriptCanOpenWindowsAutomatically = true`。
+  javaScriptCanOpenWindowsAutomatically: true,
 );
