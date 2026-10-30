@@ -65,12 +65,18 @@ class ProxyState {
   /// 现在直接问 [IdentityLedger.nextUsableProxy]：「按换出口的规则，
   /// 下一条是不是还是我自己？」是就是没得换。规则只有一处定义，
   /// 不可能再对不上。
+  ///
+  /// **必须和 [pickRotation] 的「目标不能是当前那条」对齐**：
+  /// `pickRotation` 现在把 `currentId` 从候选里剔掉，剔完为空就返回
+  /// null（宁可什么都不做，也不在同一 IP 上换身份）。这里照同一套：
+  /// 剔完为空 = 没得换。
   bool get canRotate {
     final usable = all.where((p) => !isUnusable(p.id)).toList();
     // 和 pickRotation 一样：全判死也不剔，全池当候选。
     final candidates = usable.isNotEmpty ? usable : all;
-    if (candidates.isEmpty) return false;
-    return ledger.nextUsableProxy(candidates, currentId)?.id != currentId;
+    final others = candidates.where((p) => p.id != currentId).toList();
+    if (others.isEmpty) return false;
+    return ledger.nextUsableProxy(others, currentId)?.id != currentId;
   }
 
   /// 这条代理是不是被检测判死了。

@@ -137,8 +137,23 @@ RotationChoice? pickRotation({
   final usable = all.where((p) => !unusable.contains(p.id)).toList();
   final candidates = usable.isNotEmpty ? usable : all;
 
-  final next =
-      ledger.nextUsableProxy(candidates, currentId) ?? candidates.first;
+  // 目标出口**必须不是当前那一条**。
+  //
+  // `nextUsableProxy` 在「候选里没有别的可用出口」时会退回到当前那条
+  // （`identity_plan.dart:339` 的 `fallback ?? pool[start % pool.length]`，
+  // 池里只有一条时更是直接 `return pool.first`）。于是原来的
+  // `?? candidates.first` 会把当前出口又选回来，而下面那行 `clear`
+  // 只看「目标出口上有没有可沿用的身份」，不看「目标是不是正在用的那条」。
+  // 合起来就是：`rotateToNext()` 返回非 null、`currentId` 写成同一个 id、
+  // 并且清掉那个出口的身份 —— **在同一个 IP 上重置浏览器身份**，
+  // 这比不换更可疑（站点注释反复警告过这一点）。
+  //
+  // 真的没有别的出口时返回 null：调用方据此告诉用户「池里只有这一条，
+  // 加一条代理才能真正换出口」。宁可什么都不做，也不要假换。
+  final others = candidates.where((p) => p.id != currentId).toList();
+  if (others.isEmpty) return null;
+
+  final next = ledger.nextUsableProxy(others, currentId) ?? others.first;
 
   final bound = ledger.forProxy(next.id);
   final clear = bound == null || bound.used >= ledger.maxPerIdentity;

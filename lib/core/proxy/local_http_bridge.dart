@@ -108,9 +108,15 @@ class LocalProxyBridge._(this._server, this._upstream) {
   /// 换出口。只影响**之后建立**的连接；已经在传的隧道不动
   /// （中途换掉会把正在收的短信截断）。
   ///
-  /// `null` = 直连。同一条代理（id 相同）重复设不算切换，不累加计数。
+  /// `null` = 直连。
+  ///
+  /// 判等**必须比完整配置，不能只比 id**。`ProxyConfig.id` 只由
+  /// `scheme://host:port` 拼成（不含凭据），所以同一个 id 可以对应
+  /// 「改了密码」或「同一商家换了出口 IP」两种情形。只比 id 的话
+  /// 这两种切换都会被静默吞掉 —— 桥继续打旧出口，而界面已经显示
+  /// 新出口了。换号场景下那就是「以为换了 IP，其实没有」。
   void setUpstream(ProxyConfig? next) {
-    if (identical(next, _upstream) || next?.id == _upstream?.id) return;
+    if (next == _upstream) return;
     _upstream = next;
     _switches++;
   }

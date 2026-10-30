@@ -140,6 +140,23 @@ class const ProxyConfig({
       label: (json['label'] as String?) ?? '',
     );
   }
+
+  /// 值相等：**必须覆盖凭据**。
+  ///
+  /// 桥的 `setUpstream` 用它判断「上游真的换了没有」。只比 `id`
+  /// （= `scheme://host:port`，刻意不含凭据）会把「同一出口换了密码」
+  /// 和「同一商家换了出口 IP」都判成「没换」，静默继续走旧出口。
+  @override
+  bool operator ==(Object other) =>
+      other is ProxyConfig &&
+      other.scheme == scheme &&
+      other.host == host &&
+      other.port == port &&
+      other.username == username &&
+      other.password == password;
+
+  @override
+  int get hashCode => Object.hash(scheme, host, port, username, password);
 }
 
 /// 各协议默认端口。`direct` 没有端口，给 0 让上层一眼看出「这不是地址」。
