@@ -172,23 +172,18 @@ class ProxyEngine() {
       return out;
     }
 
-    // HTTP/HTTPS 代理：Android 可以原生直通；Windows 走不了桥
-    // （桥只做 SOCKS5 和直连两种上游），如实标出来而不是假装成功。
-    if (!config.needsBridge) {
-      final ok = await _native.apply(host: config.host, port: config.port);
-      final out = ActiveProxy(
-        config: config,
-        bridgePort: 0,
-        ok: ok,
-        detail: ok
-            ? '${config.displayName}（直通）'
-            : await _failDetail(config, '设置失败'),
-      );
-      _active = out;
-      return out;
-    }
-
-    // SOCKS5：桥常驻，上游换成它。
+    // HTTP / HTTPS / SOCKS5 上游：一律经本地桥。
+    //
+    // 这里原来是两条分支：SOCKS5 走桥，http/https 走「原生直通」。
+    // 那条直通分支在 Windows 上是**假成功** —— `WindowsNativeProxy.apply`
+    // 无条件返回 true（webview2 包没有 ProxyController 实现，
+    // `@SupportedPlatforms` 里没有 Windows），而 WebView2 的
+    // `--proxy-server` 在启动期就写死指向桥。合起来的结果是：
+    // 界面显示「已启用」，WebView 流量进桥、桥没有上游、桥直连，
+    // **从真实 IP 出去**。静默的 IP 泄漏，比明确报错糟得多。
+    //
+    // 桥现在支持 HTTP CONNECT（`http_proxy_tunnel.dart`），两种上游
+    // 都能走桥，不再需要那条直通分支。
     try {
       final port = await ensureBridge();
       _bridge!.setUpstream(config);

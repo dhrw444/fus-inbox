@@ -52,8 +52,15 @@ String? nativeEgressDirective(ActiveProxy? active) {
   if (active == null) return null;
   final config = active.config;
   if (config.isDirectProxy) return 'DIRECT';
-  // SOCKS5：桥已经起来了，Dart 侧指向它，出口由桥的上游决定。
-  if (active.bridgePort != 0) return 'PROXY 127.0.0.1:${active.bridgePort}';
-  // HTTP/HTTPS 代理：WebView 直通，Dart 也直通同一个地址。
-  return 'PROXY ${config.host}:${config.port}';
+  // 没有桥 = 没有出口。**必须返回 null 让请求失败。**
+  //
+  // 这里原来在 `bridgePort == 0` 时返回 `PROXY config.host:config.port`，
+  // 那个值可能是 SOCKS5 端口 —— `findProxy` 不支持 SOCKS5（Dart SDK
+  // 硬限制，本文件第 49 行自己写着），于是这条指令要么直接不通，
+  // 要么在某些实现下退化成直连。两种情况都不是用户想要的。
+  //
+  // 上层（`NumbersRepository._findProxy`）拿到 null 会抛异常让请求失败，
+  // 那才是「代理不可用」该有的表现。
+  if (active.bridgePort == 0) return null;
+  return 'PROXY 127.0.0.1:${active.bridgePort}';
 }

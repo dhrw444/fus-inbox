@@ -52,17 +52,20 @@ export 'package:fus_inbox/features/numbers/data/fetch_backoff.dart';
 ///
 /// ## 判据
 ///
-/// - 要桥的（SOCKS5）：目录的出口就是那条本地桥，`bridgePort == 0`
-///   说明桥没起来 → 不可用。
-/// - 不用桥的（HTTP/HTTPS 代理）：目录自己指向那个 HTTP 代理，
-///   原生那步成不成都不影响它 → 可用。
+/// - 任何代理：目录的出口都是那条本地桥，`bridgePort == 0` 说明桥没起来
+///   → 不可用。
+///
+/// 以前分两档：SOCKS5 要桥、HTTP/HTTPS「目录自己指向那个 HTTP 代理」。
+/// 后者不成立 —— `dart:io` 的 `findProxy` 只能给 HTTP 代理地址，
+/// 而 HTTP 代理端口上跑的是桥，桥的上游才是用户配的那条。所以两者
+/// 都只能靠 `bridgePort` 判。留旧判据的话，桥起不来时目录会照样
+/// 往外打，而 WebView 那边已经走不通了。
 bool directoryEgressUsable(ActiveProxy? active) {
   if (active == null) return false;
   // 直连不算：用户要的是代理，搭直连的顺风车等于悄悄泄漏真实 IP。
   if (active.config.isDirectProxy) return false;
-  // SOCKS5：目录的出口是本地桥，桥没起来就没有出口。
-  if (active.config.needsBridge) return active.bridgePort != 0;
-  // HTTP/HTTPS 代理：目录直接指向它，跟原生覆盖成不成功无关。
+  // 没起桥 = 没有出口。这一条对所有代理类型都成立。
+  if (active.bridgePort == 0) return false;
   return true;
 }
 

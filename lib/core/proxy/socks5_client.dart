@@ -94,15 +94,21 @@ class SocksTunnel._(this._socket, this._reader, this._replay) {
   }
 
   /// 写数据给目标服务器。
+  ///
+  /// 对端已关时 `add` 会抛 —— 让它抛出去，由桥的 catch 变成 502。
+  /// 静默吞掉的后果是客户端永远等不到响应（见 [flush]）。
   void write(List<int> data) => _socket.add(data);
 
-  Future<void> flush() async {
-    try {
-      await _socket.flush();
-    } catch (_) {
-      // 连接可能已经被对端关掉了，flush 失败不该往上抛。
-    }
-  }
+  /// 把已写入的数据推出去。
+  ///
+  /// **不吞异常。** 旧实现 `catch (_) {}` 让这个 await 永不以失败告终，
+  /// 于是「报文已交给出口」在隧道出口下不可能失败：对端已经死了的时候，
+  /// 客户端既不收到 502、也等不到响应，一直挂到自己的超时。
+  ///
+  /// 同一个 bug 在直连出口（`SocketPipe.flush`）会正常抛 → 502，
+  /// 在隧道出口却静默挂死 —— 两条出口对外行为完全不同，最难查的一种。
+  /// 抛出去让桥统一处理：回过 200 的隧道只能断开，没回过的写 502。
+  Future<void> flush() => _socket.flush();
 
   void close() {
     unawaited(_reader.close());

@@ -58,6 +58,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:fus_inbox/core/proxy/bridge_io.dart';
+import 'package:fus_inbox/core/proxy/http_proxy_tunnel.dart';
 import 'package:fus_inbox/core/proxy/bridge_requests.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
 import 'package:fus_inbox/core/proxy/socket_reader.dart';
@@ -127,7 +128,16 @@ class LocalProxyBridge._(this._server, this._upstream) {
         await Socket.connect(host, port, timeout: _connectTimeout),
       );
     }
-    return TunnelPipe(await SocksTunnel.open(up, host, port));
+    // 上游是 SOCKS5 → SOCKS5 隧道；是 HTTP/HTTPS → CONNECT 隧道。
+    //
+    // 原来这里只有 SOCKS5 一条路，http/https 上游根本没有实现，
+    // `proxy_engine` 因此走「原生直通」分支 —— 在 Windows 上那条分支
+    // 是假的（`WindowsNativeProxy.apply` 恒 true），流量从真实 IP 出去
+    // 而界面报成功。桥支持 CONNECT 之后，http/https 也能走桥了。
+    if (up.needsBridge) {
+      return TunnelPipe(await SocksTunnel.open(up, host, port));
+    }
+    return HttpTunnelPipe(await HttpProxyTunnel.open(up, host, port));
   }
 
   Future<void> stop() async {
@@ -138,6 +148,13 @@ class LocalProxyBridge._(this._server, this._upstream) {
     client.setOption(SocketOption.tcpNoDelay, true);
     final head = SocketReader(client);
     BridgePipe? pipe;
+    // 已经给客户端回过状态行没有。**决定 catch 里能不能再写 502。**
+    //
+    // CONNECT 的 200 一旦 flush 出去，客户端就把这条连接当成隧道了
+    // （浏览器立刻开始 TLS 握手）。此时再往里写 `HTTP/1.1 502 ...`
+    // 是明文塞进 TLS 流里，客户端表现为协议错误 —— 比直接断开更难查。
+    // 旧代码没有这个标记，catch 无条件写 502，正是这个情形。
+    var responded = false;
 
     try {
       final raw = await head.readUntil(crlfCrlf, timeout: _headTimeout);
@@ -183,6 +200,7 @@ class LocalProxyBridge._(this._server, this._upstream) {
           'Proxy-Agent: fus-bridge\r\n\r\n',
         );
         await client.flush();
+        responded = true;
       } else {
         // 绝对 URI 的明文 HTTP：拆出口 + 重写报文都在那边做，
         // 这里只管连上、把重写完的报文发出去。
@@ -200,6 +218,12 @@ class LocalProxyBridge._(this._server, this._upstream) {
 
       await _pump(client, head, pipe);
     } catch (e) {
+      // 已经回过 200 的隧道里不能再写 502（见 `responded` 的注释）。
+      // 那种情况下只能断开 —— 客户端会看到隧道中断，至少那是诚实的。
+      if (responded) {
+        client.destroy();
+        return;
+      }
       // 失败要把话说清楚：502 比「连接被重置」有用得多。
       try {
         await sendHttpStatus(client, 'HTTP/1.1', 502, '上游代理连接失败：$e');

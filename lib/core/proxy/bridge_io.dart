@@ -1,11 +1,11 @@
-/// 桥的字节通道抽象：一条到目标的双向管道，两种实现。
+/// 桥的字节通道抽象：一条到目标的双向管道，三种实现。
 ///
 /// 和桥本体（`local_http_bridge.dart`）分开，是因为两者职责不同：那边是
 /// **协议**（CONNECT 怎么处理、上游怎么热切换），这边是**字节搬运**
-/// （裸 socket 长什么样、SOCKS5 隧道长什么样）。搬运这层没有代理知识，
-/// 也不该有。
+/// （裸 socket 长什么样、SOCKS5 隧道长什么样、HTTP CONNECT 隧道长什么样）。
+/// 搬运这层没有代理知识，也不该有。
 ///
-/// 桥不关心通道是裸 socket 还是 SOCKS5 隧道 —— 有了这层，双向转发那段
+/// 桥不关心通道是裸 socket 还是某种隧道 —— 有了这层，双向转发那段
 /// 只写一遍。
 library;
 
@@ -13,6 +13,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:fus_inbox/core/proxy/http_proxy_tunnel.dart';
 import 'package:fus_inbox/core/proxy/socks5_client.dart';
 
 /// 一条到目标的双向字节通道。
@@ -49,9 +50,29 @@ final class const SocketPipe(this._s) implements BridgePipe {
   void close() => _s.destroy();
 }
 
-/// 走代理：一条已握手完成的 SOCKS5 隧道。
+/// 走 SOCKS5：一条已握手完成的隧道。
 final class const TunnelPipe(this._t) implements BridgePipe {
   final SocksTunnel _t;
+
+  @override
+  Stream<Uint8List> get incoming => _t.incoming;
+
+  @override
+  void write(List<int> data) => _t.write(data);
+
+  @override
+  Future<void> flush() => _t.flush();
+
+  @override
+  void close() => _t.close();
+}
+
+/// 走 HTTP/HTTPS 代理：一条已建立 CONNECT 隧道的连接。
+///
+/// Windows 上没法给 WebView2 设原生代理，所以 http/https 上游也只能
+/// 经桥 —— 没有这条通道，「Windows 必须走桥」就没有实现基础。
+final class const HttpTunnelPipe(this._t) implements BridgePipe {
+  final HttpProxyTunnel _t;
 
   @override
   Stream<Uint8List> get incoming => _t.incoming;
