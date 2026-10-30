@@ -3,8 +3,10 @@
 /// ## 判据来源（全部实测，不是推断）
 ///
 /// 站点自己把会话状态暴露在 `window.FUSReader.status()`：
-/// `{phase, category, errorCode, message}`，`phase` 只有四个值
-/// `idle / pending / ready / error`（`reader.js:7,13-16,69,92,134-147`）。
+/// `{phase, category, errorCode, message}`。**站点侧** `phase` 只有四个值
+/// `idle / pending / ready / error` —— 对 `reader.js` 里所有 `setState('...')`
+/// 做去重只有这四个（`reader.js:7,13-16,69,92,134-147`）。本枚举多一个
+/// [ReaderPhase.unknown]，表示「还没读到」，不是站点给的值。
 /// 站点在 `ready` 时同时派发 `fus:reader-ready`，在开始摆人机验证时派发
 /// `fus:reader-check`（`reader.js:103`）。
 ///

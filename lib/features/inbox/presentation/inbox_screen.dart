@@ -238,8 +238,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 这里是 `onLoadStarted` —— 每次页面加载完都会调一次。原来是
     // `_beginVerifyRound()`（默认 `rearm: true`），于是它把「这轮已经
     // 弹过」的闸门**重新打开**：用户收起验证之后，页面只要重载一次
-    // （站点自己刷新、或者任何一次 loadUrl），闸门就开了，6 秒后
-    // 又弹回来 —— 用户看到的是「没验证就退出，之后还会再弹」。
+    // （站点自己刷新、或者任何一次 loadUrl），闸门就开了，下一次
+    // `fus:reader-check` 一到又弹回来 —— 用户看到的是「没验证就退出，
+    // 之后还会再弹」。
     //
     // 闸门只该由**真的拿到消息**来解开（那条路径在 `_pumpVerification`
     // 里：消息到了就 cancel 并清 hold），不该由「页面加载完」解开。
@@ -624,8 +625,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 在页面上耗了超过窗口时长，一回来轮询第一次 tick 就判超时自杀，
   /// 明明刚说「我过了」反而当场放弃。
   ///
-  /// 但闸门不能一律解开：点「收起」是明确表示不想过，解开就会在 6 秒后
-  /// 立刻又弹回来，等于没得选。所以那条路径传 `rearm: false`。
+  /// 但闸门不能一律解开：点「收起」是明确表示不想过，解开就会在下一次
+  /// `fus:reader-check` 一到立刻又弹回来，等于没得选。所以那条路径传
+  /// `rearm: false`。
   void _beginVerifyRound({bool rearm = true, bool keepPhase = false}) =>
       _round.begin(rearm: rearm, resetPhase: !keepPhase);
 
@@ -657,11 +659,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 主路径是静默：轮询 `FUSReader.status()`，等它自己到 ready。
   /// 大多数出口 4 秒内就过了，全程不需要用户参与。
   ///
-  /// 但**有的出口站点不给静默过**，那时页面里会真的摆一个
-  /// 「Verify you are human」复选框，只有人点得到（跨域 shadow DOM，
-  /// JS 摸不着）。所以静默等过自动弹出阈值还没 ready，
-  /// 就把页面弹出来让用户点一下 —— 这也是「只弹需要点的那种」：
-  /// 能在 4 秒里自己过的出口根本走不到这一步。
+  /// 但**有的出口站点不给静默过**，那时站点自己会派 `fus:reader-check`
+  /// 并摆一个「Verify you are human」复选框 —— 那个组件在跨域 shadow DOM
+  /// 里，JS 摸不着，只有人点得到。判据就是那个事件本身，不是计时：
+  /// 收到它才弹页面让用户点一下。能在几秒里自己过的出口根本派不出这个
+  /// 事件，也就永远走不到这一步。
   ///
   /// 真失败时（category/errorCode 有值，Cloudflare 报错也走这条）
   /// 一样把页面放出来，用户至少能看到失败原因、能自己点一下重试。
@@ -872,9 +874,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // **闸门保持关着（`rearm: false`）。**
     //
     // 这里原来是 `_beginVerifyRound()`，默认 `rearm: true` —— 于是刚点完
-    // 「验证好了」，闸门解开，`_pumpVerification` 再等 6 秒又满足
-    // `shouldAutoPop`，验证页立刻又弹回来。用户的实际感受是「验证完还会
-    // 再弹，而且永远弹不完」。
+    // 「验证好了」，闸门解开，`_pumpVerification` 下一次读到
+    // `shouldAutoPop` 就满足，验证页立刻又弹回来。用户的实际感受是
+    // 「验证完还会再弹，而且永远弹不完」。
     //
     // 只有**真的拿到消息**才该解开闸门（那条路径在 `_pumpVerification`
     // 里：消息到了就 cancel 并清 hold），不是靠「用户点了确认」。
@@ -888,7 +890,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 用户说先不弄了：收起页面，但继续盯状态。
   ///
   /// 起算点同样重置（免得旧轮次已经超窗口），但**不解开闸门** —— 用户
-  /// 刚说了不想过，6 秒后又自动弹回来等于没给他选。
+  /// 刚说了不想过，下一次 `fus:reader-check` 又自动弹回来等于没给他选。
   void _closeChallenge() {
     _stopVerifyPoll();
     setState(_round.close);
