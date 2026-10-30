@@ -80,9 +80,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 见 `inbox_search_state.dart` 的文件头。
   InboxSearch _search = InboxSearch.closed;
 
-  /// 「自动判验证过了」的检查在跑没有 —— 防止上一轮还没读完 cookie 就再起一轮。
-  bool _autoConfirming = false;
-
   /// 搜索输入框的控制器。归本页持有 —— 关闭搜索时要清空它。
   final _searchController = TextEditingController();
 
@@ -175,6 +172,18 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         }
       },
     );
+    _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
+      _store.fail('注入脚本读不到：$e');
+      return '';
+    });
+    // **必须先建引擎，再建轮换器。**
+    //
+    // `_engine` 是 `late final`。旧顺序是先建 `_rotator`（它把
+    // `engine: _engine` 作为构造参数传进去），后 `_engine = _buildEngine()`——
+    // 读取一个还没赋值的 `late final` 当场抛 `LateInitializationError`，
+    // 也就是「一打开收件箱就闪退」。`dart analyze` 看不见这种错，
+    // 它只在运行时炸。
+    _engine = _buildEngine();
     _rotator = IdentityRotator(
       ref: ref,
       store: _store,
@@ -185,11 +194,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       onLoadStarted: _beginPageRound,
       toast: _toast,
     );
-    _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
-      _store.fail('注入脚本读不到：$e');
-      return '';
-    });
-    _engine = _buildEngine();
     // 轮换控制器。两个回调是**屏幕这一侧的义务**：那三个计时器
     // （看门狗 / 验证轮询）归本页持有，控制器不许碰。
     // 两条都要等：垫片得在页面任何脚本之前装好，WebView 实例也得
@@ -206,6 +210,22 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void _discardPage() {
     _stopVerifyPoll();
     _store.reset();
+    // 翻页游标属于「这一页」，跟着作废。
+    //
+    // 不清的话，上一个号已经翻到最旧（JS 侧 `exhausted = true`），
+    // 换号之后「加载更早」第一行就返回 false —— 按钮还在，点了没反应。
+    // 游标也要清：拿旧号的 event_id 查新号只会拿到空页。
+    unawaited(
+      _engine
+          .evaluateJavascript(
+            'window.__fusInbox && window.__fusInbox.resetPaging && '
+            'window.__fusInbox.resetPaging();',
+          )
+          .catchError((Object e) {
+            logLine('重置翻页状态失败: $e');
+            return null;
+          }),
+    );
     _armWatchdog();
   }
 
@@ -606,7 +626,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   ///
   /// 但闸门不能一律解开：点「收起」是明确表示不想过，解开就会在 6 秒后
   /// 立刻又弹回来，等于没得选。所以那条路径传 `rearm: false`。
-  void _beginVerifyRound({bool rearm = true}) => _round.begin(rearm: rearm);
+  void _beginVerifyRound({bool rearm = true, bool keepPhase = false}) =>
+      _round.begin(rearm: rearm, resetPhase: !keepPhase);
 
   /// 停掉验证轮询。**所有**停止路径都必须走这里。
   ///
@@ -618,7 +639,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 后果：页面等超时/收到消息/验证报错之后轮询自杀 → 用户点「自己过
   /// 验证」→ 不重启 → `cf_clearance` 到手也没人读，自动收层全死。
   void _stopVerifyPoll() {
-    _stopVerifyPoll();
+    _verifyPoll?.cancel();
     _verifyPoll = null;
   }
 
@@ -655,17 +676,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         _stopVerifyPoll();
         return;
       }
-      // 用真实流逝时间，不是累加 900ms —— 定时器被系统挂起时
-      // 累加值会落后于真实时间，真实时间才代表用户等了多久。
-      _round.refresh();
       // 超时只在**弹层没开**的时候算。
       //
-      // 窗口是 90 秒，而用户在站点页面上点复选框、等 Cloudflare 转圈，
-      // 很容易超过 90 秒 —— 那时候把轮询停掉，等于「你正在过验证，
-      // 但 App 已经不看了」。用户过完回来发现界面还是老样子，
-      // 原因就是他过验证的那段时间状态机自杀了。
-      //
-      // 弹层开着 = 用户正在亲手处理，这段时间不该计时淘汰他。
+      // 用户在站点页面上点复选框时，App 不该计时淘汰他：弹层开着 =
+      // 用户正在亲手处理。站点自己的验证组件超时是 180 秒
+      // （`reader.js:110`），本状态机的窗口与它对齐。
       if (_round.timedOut && !_round.open) {
         _stopVerifyPoll();
         _store.note('站点验证超时，已停止等待。');
@@ -677,191 +692,113 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         _stopVerifyPoll();
         return;
       }
-      // **自动弹层开着时，不要在页面里跑任何 JS。**
+
+      // 读站点自己的会话状态。
       //
-      // 用户要求：跳转过去之后不许自己刷新、不许自己乱动。
-      // 而下面那段每 900ms 都会 `evaluateJavascript` 读一次
-      // `FUSReader.status()` —— 对用户来说那就是页面一直在动。
+      // 唯一判据来源：`window.FUSReader.status()`，站点在 `reader.js:175`
+      // 冻结导出它。返回 `{phase, category, errorCode, message}`。
       //
-      // 弹层开着时唯一还需要盯的是 `cf_clearance`（它一出现就说明
-      // 验证真过了，可以自动收层）。那件事读的是**原生 cookie 库**，
-      // 不碰页面，所以单独走一条最短路径。
-      if (_round.open) {
-        if (_round.watchingForAutoPass) {
-          await _autoConfirmIfPassed();
-        }
-        return;
-      }
-      String phase = '';
-      try {
-        // 必须走 evaluateJavascript：WebEngine.runJavaScript 返回
-        // Future<void>，拿不到值（`_loadMore` 那边的注释也记着这点）。
-        final raw = (await _engine.evaluateJavascript(
-          '(window.FUSReader && window.FUSReader.status)'
-          ' ? JSON.stringify(window.FUSReader.status()) : ""',
-        )).toString();
-        if (raw.isNotEmpty && raw != '""') {
-          // runJavaScript 返回的是 JSON 字符串里的字符串，剥两层引号。
-          final decoded = jsonDecode(raw) as String;
-          if (decoded.isNotEmpty) {
-            final obj = jsonDecode(decoded) as Map<String, dynamic>;
-            phase = obj['phase']?.toString() ?? '';
-            final category = obj['category']?.toString() ?? '';
-            final message = obj['message']?.toString() ?? '';
-            if (phase == 'error') {
-              _stopVerifyPoll();
-              _store.note(
-                message.isNotEmpty ? '站点验证失败：$message' : '站点验证失败（$category）',
-              );
-              // 验证已经明确失败了（Cloudflare 报错也是走这条），这时候
-              // 页面藏着一句话说明不了任何问题 —— 放出来让用户自己看
-              // 一眼、必要时点一下重试。之前这里只留一条日志，用户
-              // 既看不到失败原因也做不了任何事。
-              // **弹层已经开着时也要让用户看见原因。**
-              //
-              // 原来只在 `!_round.open` 时才做什么 —— 于是手动弹层（用户自己点
-              // 「自己过验证」）期间站点报验证失败，他什么提示都看不到：状态栏
-              // 被站点页面盖住，弹层里又没有失败文案。
-              //
-              // 现在弹层开着时，把失败原因写进底栏那条提示（`ChallengeBar`），
-              // 那是弹层里唯一可见的文本位。
-              if (_round.open) {
-                _store.note(
-                  message.isNotEmpty ? '站点验证失败：$message' : '站点验证失败（$category）',
-                );
-              } else if (!_round.autoPopped) {
-                _openChallenge(auto: true);
-              }
-              return;
-            }
+      // **弹层开着时也照读**。旧实现为了「跳过去之后页面别乱动」而跳过
+      // 这一步，代价是弹层期间 App 完全不知道站点过没过 —— 用户点完
+      // 只能干等超时。读一个只返回对象的函数不会让页面动，页面在动是
+      // 站点自己的 `live.js` 在拉消息，和这次读取无关。
+      final status = await _readReaderStatus();
+      if (status != null) {
+        // 站点是否真的摆了人机验证 —— 只认它自己派的 `fus:reader-check`。
+        // 注入脚本把它落到 `window.__fusHumanCheckSeen`。
+        if (status.humanCheckSeen) _round.markHumanCheck();
+
+        final next = readerPhaseOf(status.phase);
+        final changed = _round.updatePhase(next);
+
+        if (next == ReaderPhase.error) {
+          // 站点明确失败。把原因写进底栏（`ChallengeBar` 是弹层里唯一
+          // 可见的文本位），并按需放页面出来让用户重试。
+          final msg = status.message.isNotEmpty
+              ? status.message
+              : (status.errorCode.isNotEmpty
+                  ? status.errorCode
+                  : status.category);
+          _store.note(msg.isNotEmpty ? '站点验证失败：$msg' : '站点验证失败。');
+          if (!_round.open && !_round.autoPopped) {
+            _openChallenge(auto: true);
           }
+          // 站点自己在 `recover()` 里会重试（30 秒一次，`reader.js:172`），
+          // 所以这里不自杀：让它继续盯，站点恢复后 phase 会变回 ready。
+          return;
         }
-      } catch (e) {
-        // 页面还在加载、没有 FUSReader，属正常，继续等。
-      }
 
-      if (phase == 'ready') {
-        // 这里**不能** cancel。
-        //
-        // ready 只说明 FUSReader 的会话建好了，不代表站点肯把消息给你：
-        // 号码是新开的、IP 刚被限流、或者页面上还压着一个没点的人机
-        // 验证，都会出现「ready 了但消息一直不来」。之前这里直接
-        // timer.cancel() + return，轮询当场自杀 —— 于是永远走不到下面
-        // 那个自动弹出，用户只看到状态栏一直转圈，等多久都不弹验证。
-        //
-        // 现在继续盯：消息到了上面那条会自己 cancel，没到就靠下面的
-        // 「等太久」把页面放出来。
-        if (_round.markReady()) {
-          // 会话好了，让站点自己去拉消息。
+        if (changed && next == ReaderPhase.ready) {
+          // 会话好了。让注入脚本重扫一次已渲染的内容。
           unawaited(_rescan());
-          // 顺手把 Cloudflare 通行证搬到原生 HTTP。
-          //
-          // 号码目录和收录时间走 dart:io HttpClient，**不共享 WebView 的
-          // cookie 库**。不搬，那两条链路每次都裸奔着被单独挑战 ——
-          // 这正是「同一个 App 里一条链路有通行证、一条没有」的来源。
-          // cf_clearance 是 HttpOnly，JS 的 document.cookie 永远读不到，
-          // 只有原生 getCookie 拿得到。
-          unawaited(_syncClearance());
+        }
+
+        // 自动弹的层，站点一 ready 就自动收。
+        if (_round.shouldAutoClose) {
+          _store.note('站点已放行，继续加载。');
+          unawaited(Future<void>.microtask(_confirmChallengeDone));
+          return;
         }
       }
 
-      // 等太久还没消息 → 把页面放出来让用户点一下。
+      // 站点真的摆了人机验证，且还没弹过 → 放出来让用户点一下。
       //
-      // 走到这里说明：站点要么在等人机验证（页面里正摆着一个真的
-      // 「Verify you are human」复选框），要么会话好了但一直不给消息。
-      // 两种情况用户能做的事是一样的 —— 把页面亮出来，他点一下就行。
-      //
-      // 能在几秒里自己过的出口根本走不到这一步，所以「弹出来的
-      // 必定是需要点一下的那种」。
-      if (!_round.open && _round.shouldAutoPop) {
-        _store.note('这个出口卡住了，已把页面放出来让你点一下。');
+      // 判据只有 `humanCheckSeen`，它由注入脚本挂的 `fus:reader-check`
+      // 监听置位（站点在 `reader.js:103` 派发）。**不再靠计时推断** ——
+      // 旧实现「等满 6 秒就弹」，站点只是慢的时候会无端弹层。
+      if (_round.shouldAutoPop) {
+        _store.note('站点要人点一下，已把页面放出来。');
         _openChallenge(auto: true);
-      }
-
-      // 自动弹层开着 → 盯着 cf_clearance，它一出现就自动收层继续。
-      // （用户自己点开的那个弹层不自动收：他可能只是想顺便看看网页。）
-      if (_round.watchingForAutoPass) {
-        unawaited(_autoConfirmIfPassed());
       }
     });
   }
 
-  /// 自动弹层时盯着 `cf_clearance`：一出现就说明人机验证真的过了，
-  /// 立刻收层继续，不用用户再去点「验证好了」。
+  /// 读站点会话状态。读不到（页面没加载完、注入脚本没跑）返回 null。
   ///
-  /// ## 判据只认这一个 cookie，不认 DOM 猜
-  ///
-  /// 「挑战容器消失了」「页面里出现消息节点了」这类 DOM 信号在导航栏、
-  /// 广告、骨架屏上都成立 —— 项目里为此误判过一整轮。而 `cf_clearance`
-  /// 是 Cloudflare **只在真的放行之后**才下发的凭证，且它是 HttpOnly，
-  /// 页面的 JS 根本读不到，只有原生 cookie 接口拿得到。
-  ///
-  /// 这条思路和站点的做法一致：Han1meViewer 那边判通过也是
-  /// 「页面加载完 + 挑战标记都不在 + cookie 里有 cf_clearance」三条同时成立，
-  /// 而其中决定性的那条就是最后这个 cookie。
-  Future<void> _autoConfirmIfPassed() async {
-    if (_autoConfirming) return;
-    _autoConfirming = true;
+  /// `evaluateJavascript` 的返回值各平台形状不一（JSON 串 / 已解析对象 /
+  /// null），所以统一走一次 `JSON.stringify` 再自己解，避免依赖平台差异。
+  Future<_ReaderStatus?> _readReaderStatus() async {
     try {
-      // 先看 DOM 上还有没有挑战标记。参照 Han1meViewer
-      // （CloudflareActivity.kt）的三条判据：页面加载完、挑战标记都不在、
-      // cookie 里有 cf_clearance。这里做前两条 —— 标记还在就说明挑战页
-      // 还挂着，哪怕 cookie 已经下发也不能收（可能是上一次留下的）。
-      //
-      // 三个标记是 Cloudflare 挑战页自己的 id，不是猜的：
-      // `id="challenge-form"`（要填的表单）、`id="challenge-success-text"`（成功文案
-      // 还在渲染）、`id="challenge-error-text"`（失败重试）。
-      final stillChallenging = await _engine.evaluateJavascript(
-        'var h = document.head ? document.head.innerHTML : "";'
-        'var b = document.body ? document.body.innerHTML : "";'
-        'var s = h + b;'
-        // **查 id="..."，不是查 #...。**
-        //
-        // innerHTML 里是 id="challenge-form"，根本没有 # 号。原来查的是
-        // indexOf("#challenge-form")，恒为假 —— 于是「挑战标记还在就别收层」
-        // 这道闸形同不存在。
-        'var a = s.indexOf("id=\\"challenge-form\\"") >= 0;'
-        'var b2 = s.indexOf("id=\\"challenge-success-text\\"") >= 0;'
-        'var c2 = s.indexOf("id=\\"challenge-error-text\\"") >= 0;'
-        '(a || b2 || c2) ? "1" : "0";',
+      final raw = await _engine.evaluateJavascript(
+        '(function(){'
+        '  try{'
+        '    if(!window.FUSReader || !window.FUSReader.status) return "";'
+        '    var s = window.FUSReader.status();'
+        '    return JSON.stringify({'
+        '      phase: String(s.phase || ""),'
+        '      category: String(s.category || ""),'
+        '      errorCode: String(s.errorCode || ""),'
+        '      message: String(s.message || ""),'
+        '      humanCheckSeen: window.__fusHumanCheckSeen === true'
+        '    });'
+        '  }catch(e){ return ""; }'
+        '})()',
       );
-      if ('$stillChallenging'.contains('1')) return;
-
-      final cookies = await _engine.readCookies(widget.number.inboxUrl);
-      final value = cookies['cf_clearance'];
-      if (value == null || value.isEmpty) return;
-      // 读 cookie 是异步的，回来时前提可能已经变了（用户点了收起 / 页面走了）。
-      if (!mounted || !_round.watchingForAutoPass) return;
-      rememberClearance(value);
-      _store.note('验证通过，继续加载。');
-      // **不能直接在这里调 `_confirmChallengeDone`**：这个方法本身是从
-      // `_verifyPoll` 的 Timer 回调里被调起来的，而 `_confirmChallengeDone`
-      // 第一句就是 `_verifyPoll?.cancel()` —— 在正在执行的回调里取消自己
-      // 属于竞态（旧回调可能还没 await 回来，新一轮就已经起了）。
-      //
-      // 推迟到当前微任务队列之后再做：那时这一轮回调已经完整返回，
-      // 取消 + 重启就是干净的一次状态切换。
-      unawaited(Future<void>.microtask(_confirmChallengeDone));
+      if (raw == null) return null;
+      final text = raw.toString();
+      if (text.isEmpty || text == '""' || text == 'null') return null;
+      // 有的平台把结果再包一层 JSON 字符串，剥到出现 `{` 为止。
+      var body = text;
+      for (var i = 0; i < 2 && !body.startsWith('{'); i++) {
+        final decoded = jsonDecode(body);
+        if (decoded is! String) break;
+        body = decoded;
+      }
+      if (!body.startsWith('{')) return null;
+      final map = jsonDecode(body) as Map<String, dynamic>;
+      return _ReaderStatus(
+        phase: map['phase']?.toString() ?? '',
+        category: map['category']?.toString() ?? '',
+        errorCode: map['errorCode']?.toString() ?? '',
+        message: map['message']?.toString() ?? '',
+        humanCheckSeen: map['humanCheckSeen'] == true,
+      );
     } catch (_) {
-      // 页面正在导航时读 cookie 会抛，那是正常时序，下一轮再试。
-    } finally {
-      _autoConfirming = false;
+      // 页面正在导航时执行 JS 会抛，那是正常时序，下一轮再试。
+      return null;
     }
   }
 
-  /// 把 WebView cookie 库里的 cf_clearance 搬到原生 HTTP 的请求头。
-  ///
-  /// 只在拿到值的时候写。没拿到就保持原样 —— 发一个空的 cf_clearance
-  /// 等于明确告诉站点「我试过但没拿到」，比不发更糟。
-  Future<void> _syncClearance() async {
-    try {
-      final cookies = await _engine.readCookies(widget.number.inboxUrl);
-      final value = cookies['cf_clearance'];
-      if (value != null && value.isNotEmpty) rememberClearance(value);
-    } catch (_) {
-      // 读不到就算了，收件箱本身已经能用了。
-    }
-  }
 
   /// 把站点页面亮出来，让用户自己在上面过验证。
   ///
@@ -892,10 +829,16 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     // 不管是谁弹的（用户点的还是到点自动弹的），都算「这次加载弹过了」，
     // 免得收起之后又被自动弹回来。
     _round.markPopped();
-    // 起算点归零：可能已经耗过一会儿（自动弹出就是等满 6 秒才弹的）。
-    // 不归零的话，用户一进来就已经「用了 6 秒」，90 秒窗口只剩 84 秒。
-    // `rearm` 传 false —— 闸门要保持关着，否则收起之后 6 秒又自动弹回来。
-    _round.begin(rearm: false);
+    // **不要在这里调 `_round.begin`。**
+    //
+    // `begin()` 会把 `phase` 和 `humanCheckSeen` 一起清掉 —— 而弹层的
+    // 触发条件恰恰是 `humanCheckSeen`，收层的触发条件恰恰是
+    // `phase == ready`。清掉之后 `shouldAutoClose` 永远为假，用户点完
+    // 验证只能干等超时。
+    //
+    // 起算点归位改由 [_confirmChallengeDone] / [_closeChallenge] 做：
+    // 那两条路径是「用户已经处理完」，重置窗口才有意义。弹出这一刻
+    // 窗口应该继续算（站点的人机验证本来就在倒计时）。
     setState(() {
       if (auto) {
         _round.showAuto();
@@ -936,7 +879,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     //
     // 只有**真的拿到消息**才该解开闸门（那条路径在 `_pumpVerification`
     // 里：消息到了就 cancel 并清 hold），不是靠「用户点了确认」。
-    _beginVerifyRound(rearm: false);
+    // 保留站点相位：`phase == ready` 是自动收层与「真的放行了」的唯一
+    // 证据，用户点完按钮回来时它就是刚拿到的结论，不能清。
+    _beginVerifyRound(rearm: false, keepPhase: true);
     unawaited(_rescan());
     _pumpVerification();
   }
@@ -948,7 +893,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void _closeChallenge() {
     _stopVerifyPoll();
     setState(_round.close);
-    _beginVerifyRound(rearm: false);
+    // 收起也保留相位：站点可能已经 ready 了，清掉会让下一轮重新从
+    // unknown 开始等，白等一个轮询周期。
+    _beginVerifyRound(rearm: false, keepPhase: true);
     // 收起之后继续盯状态，站点可能自己就 ready 了。
     _pumpVerification();
   }
@@ -1157,4 +1104,24 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       ),
     );
   }
+}
+
+/// 站点 `window.FUSReader.status()` 的一次快照。
+///
+/// 字段与 `reader.js:14` 的 `uiState` 一一对应：
+/// `Object.freeze({phase, category, errorCode, message})`。
+class const _ReaderStatus({
+  required this.phase,
+  required this.category,
+  required this.errorCode,
+  required this.message,
+  required this.humanCheckSeen,
+}) {
+  final String phase;
+  final String category;
+  final String errorCode;
+  final String message;
+
+  /// 站点真的摆了人机验证。来源是 `fus:reader-check` 事件。
+  final bool humanCheckSeen;
 }

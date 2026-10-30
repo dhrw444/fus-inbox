@@ -60,6 +60,12 @@
   // 追加完立刻被 slice(0,60) 砍掉——等于翻页功能从来没生效过。
   // 240 = 10 页（每页 24），够用且每次推送的 JSON 仍在几十 KB 量级。
   var MAX_MESSAGES = 240;
+  // 已知最旧那条的 event_id。**单独存，不从 messages 里算。**
+  //
+  // messages 会被裁到 MAX_MESSAGES（`merge()` 尾部切掉最旧的），
+  // 从被裁过的数组里取最小值会随着裁剪漂移 —— 翻了十几页之后
+  // 游标会突然往前跳，用户看到重复的一页。
+  var oldestLoaded = null;
 
   function post(obj) {
     try {
@@ -182,11 +188,17 @@
     var sender = str(m.sender || m.from || '');
     var received = str(m.received_at || m.receivedAt || m.time || '');
     var receiver = str(m.receiver || '');
-    var id = str(m.event_id || m.id || m.eventId || '');
+    var rawId = m.event_id != null ? m.event_id : (m.id != null ? m.id : m.eventId);
+    var id = str(rawId);
     if (!content && !code) return null;
     if (!id) id = (receiver + '|' + received + '|' + content).slice(0, 120);
+    // `eventId` 单独留一份数字形态：翻页游标要的是整数 event_id，
+    // 不是字符串 id。站点给的就是递增整数（`live.js:887` 直接拿它当
+    // `before`），丢了它就只能靠时间猜，猜不对。
+    var numericId = Number(rawId);
     return {
       id: id,
+      eventId: (isFinite(numericId) && numericId > 0) ? numericId : 0,
       sender: sender,
       text: content,
       code: code,
@@ -213,6 +225,10 @@
       var old = byId[n.id];
       byId[n.id] = {
         id: n.id,
+        // eventId 必须一路带着 —— 它是翻页游标（`live.js:887`）。
+        // 重建对象时漏掉它，`oldestCursor()` 就永远是空的，翻页直接
+        // 走 `no_cursor` 分支，用户看到「站点没给翻页游标」。
+        eventId: n.eventId || (old && old.eventId) || 0,
         sender: n.sender || (old && old.sender) || '',
         text: n.text || (old && old.text) || '',
         code: n.code || (old && old.code) || '',
@@ -227,6 +243,7 @@
     // 而且每一次推送都要把整个数组序列化过通道，不裁会越推越慢。
     if (out.length > MAX_MESSAGES) out = out.slice(0, MAX_MESSAGES);
     messages = out;
+    noteCursor(list);
   }
 
   // ---- 抄页面自己的接口响应 ----
@@ -520,8 +537,14 @@
       var when = t ? (t.getAttribute('datetime') || t.textContent || '').trim() : '';
 
       if (!text && !code) continue;
+      // 站点卡片上带 `data-event-id`（`live.js:480` 用它做去重键），
+      // 那正是翻页游标要的那个整数。DOM 扫到的条目也必须带上它，
+      // 否则「首屏靠 DOM、翻页靠接口」时游标会算不出来。
+      var evRaw = c.getAttribute('data-event-id') || '';
+      var evNum = Number(evRaw);
       found.push({
-        id: c.getAttribute('data-event-id') || '',
+        id: evRaw,
+        eventId: (isFinite(evNum) && evNum > 0) ? evNum : 0,
         sender: sender,
         text: text,
         code: code,
@@ -552,20 +575,36 @@
   // 用户滑到底才拉一页，既省请求也让首屏更快。
   var loadingMore = false;
   var exhausted = false;   // 站点明确说没有更早的了
-  var pageSize = 0;        // 首屏条数，用来判断「这页是不是最后一页」
+  var pageSize = 0;        // 首屏条数（仅用于日志，不再决定是否到底）
+
+
+  // 翻页游标 = **本页最后一条的 `event_id`**（整数）。
+  //
+  // 站点自己的实现是 `live.js:887`：
+  //   const before = direction === 'older' ? items.at(-1)?.event_id : ...
+  // 请求形如 `/sms-api/v1/inbox?id=<32hex>&before=<整数>`，
+  // 响应里的 `has_more`（布尔）决定还有没有更早的（`live.js:894`）。
+  //
+  // 旧实现拿 ISO 时间串当游标，方向就错了 —— 站点那个参数是 event_id
+  // 整数，`Number.isSafeInteger` 校验过（`live.js:150`）。传时间串的
+  // 请求要么被拒、要么被当成 0（等于「从头再来」），所以翻页从来没成功过。
+  //
+  // 取 `event_id` 的最小值而不是数组最后一条：merge() 对新到的实时消息
+  // 是追加，数组顺序不保证新→旧。按数值取最小，与顺序无关。
+  function noteCursor(list) {
+    for (var i = 0; i < list.length; i++) {
+      var e = Number(list[i] && list[i].eventId);
+      if (!isFinite(e) || e <= 0) continue;
+      if (oldestLoaded === null || e < oldestLoaded) oldestLoaded = e;
+    }
+  }
 
   function oldestCursor() {
-    // 不能直接取最后一条：merge() 对新到的实时消息是「追加到末尾」，
-    // 数组顺序并不保证新→旧（Dart 侧会按时间重排，但这里是 JS 自己的数组）。
-    // 取所有时间里最小的那个，与顺序无关，永远安全。
-    // ISO 8601 字符串可以直接字典序比较。
-    var min = '';
-    for (var i = 0; i < messages.length; i++) {
-      var t = messages[i] && messages[i].time;
-      if (!t) continue;
-      if (!min || t < min) min = t;
-    }
-    return min;
+    // 先兜一次底：`oldestLoaded` 可能因为「首屏是 DOM 扫到的」而没被
+    // `noteCursor` 填上（DOM 路径不带 event_id 时就是这种情况），
+    // 这时再从当前数组里找一次。
+    if (oldestLoaded === null) noteCursor(messages);
+    return oldestLoaded;
   }
 
   // ---- 号码 id 捕获 ----
@@ -628,7 +667,7 @@
     status('正在加载更早的消息…');
 
     var url = '/sms-api/v1/inbox?id=' + encodeURIComponent(numId) +
-              '&before=' + encodeURIComponent(cursor);
+              '&before=' + String(cursor);
 
     // 必须走站点自己的签名入口。
     //
@@ -657,10 +696,18 @@
           post({ type: 'moreEnd', empty: true });
           return;
         }
-        // 「一页给不满就到底」的基准必须是接口实际返回的条数。
-        // 之前用 messages.length（含 DOM 扫到的条目）当基准，
-        // DOM 抓到 60 条时，接口返回 24 < 60 会被误判为最后一页。
-        if (!pageSize) pageSize = raw.length;
+        // 到底没到底，只认站点给的 `has_more`。
+        //
+        // 站点自己在 `live.js:894` 校验这个字段：
+        //   if(!batch || !Array.isArray(batch.items) || typeof batch.has_more !== 'boolean') throw
+        // 也就是说它是接口契约的一部分，不是可以猜的。
+        //
+        // 旧实现按「一页给不满就到底」（raw.length < pageSize）判断 —— 那是
+        // 猜：站点每页条数会随设备变（`live.js:69` 手机 20 / 桌面 50），
+        // 服务端也可能少给，两种都和「没有更早的」无关。
+        if (typeof json.has_more === 'boolean') {
+          exhausted = !json.has_more;
+        }
 
         var norms = [];
         for (var i = 0; i < raw.length; i++) {
@@ -675,8 +722,6 @@
         var before = messages.length;
         merge(norms);
         var added = messages.length - before;
-        // 一页给不满 = 到底了，别再让用户空拉。
-        if (raw.length < pageSize) exhausted = true;
         status(added > 0 ? '又加载了 ' + added + ' 条' : '没有更早的消息了');
         post({ type: 'moreDone', added: added, exhausted: exhausted });
         pushMessages('more');
@@ -737,6 +782,19 @@
 
   window.__fusInbox = {
     rescan: function () { domScan(); pushMessages('rescan'); },
+    // 换号 / 换身份 / 重载页面时清掉翻页游标。
+    //
+    // 不清的话：上一个号已经翻到「最旧」（`exhausted = true`），
+    // 换号之后 `loadMore()` 第一行 `if (exhausted) return false`
+    // 直接返回，新号的「加载更早」永远按不动 —— 而用户看到的是
+    // 按钮还在、点了没反应。游标同理，不清就会拿旧号的 event_id
+    // 去查新号，站点返回空页。
+    resetPaging: function () {
+      exhausted = false;
+      loadingMore = false;
+      oldestLoaded = null;
+      pageSize = 0;
+    },
     digest: digest,
     dump: function () { return JSON.stringify(messages); },
     loadMore: loadMore,
@@ -747,6 +805,21 @@
 
   // ---- 启动 ----
   function boot() {
+    // 站点自己派发的验证事件，是「站点真的在等人点」的唯一证据。
+    //
+    // `reader.js:103` 在开始摆人机验证时 dispatch `fus:reader-check`，
+    // 在会话建好时 dispatch `fus:reader-ready`。监听它们，把信号落到
+    // `window.__fusHumanCheckSeen` —— Dart 侧轮询时读这一个布尔值，
+    // 替代旧实现「等满 6 秒就弹」的计时推断。
+    try {
+      document.addEventListener('fus:reader-check', function () {
+        window.__fusHumanCheckSeen = true;
+      });
+      document.addEventListener('fus:reader-ready', function () {
+        window.__fusReaderReadyAt = Date.now();
+      });
+    } catch (e) {}
+
     status('抓取层已就绪');
 
     // 自适应扫描节奏 —— 之前是固定 [1200,3000,6000,10000] 敲四次，

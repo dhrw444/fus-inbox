@@ -1,80 +1,158 @@
-/// 一轮「等站点验证通过」的状态机。
+/// 一轮「等站点放行」的状态机。纯逻辑，不碰 Timer / WebView / UI。
 ///
-/// 纯逻辑：不碰 Timer、不碰 WebView、不碰 UI。之所以单独抽出来，是因为
-/// 之前这套判断埋在 `_pumpVerification` 的定时器回调里，本地没有 Flutter
-/// SDK，一行都跑不了 —— 只能靠读代码「看着对」。而这套判断恰好出过两次
-/// 真错（ready 后轮询自杀、起算点被反复重置），都是读代码读不出来的。
+/// ## 判据来源（全部实测，不是推断）
 ///
-/// 抽出来之后 [VerifyRound] 可以直接 import 进 tool/ 下的测试跑。
+/// 站点自己把会话状态暴露在 `window.FUSReader.status()`：
+/// `{phase, category, errorCode, message}`，`phase` 只有四个值
+/// `idle / pending / ready / error`（`reader.js:7,13-16,69,92,134-147`）。
+/// 站点在 `ready` 时同时派发 `fus:reader-ready`，在开始摆人机验证时派发
+/// `fus:reader-check`（`reader.js:103`）。
+///
+/// 所以「过了」这件事只有一种可靠证据：**站点自己说 ready**。
+///
+/// ## 为什么不看 `cf_clearance`
+///
+/// 旧实现在这里盯 `cf_clearance` cookie 判通过。**站点根本不下发它** ——
+/// 对站点三个脚本 `live.js / reader.js / site.js` 做字面检索，`cf_clearance`
+/// 与 `cf-chl` 均 0 命中；对收件页与目录页做 `curl -D -`，响应头里没有任何
+/// `Set-Cookie`。盯一个永不存在的值，等价于「自动收层永不发生」。
+///
+/// ## 为什么不看 DOM 上的挑战标记
+///
+/// 旧实现还查 `id="challenge-form" / challenge-success-text /
+/// challenge-error-text`。这三个 id 同样是 Cloudflare 通用挑战页的标记，
+/// 站点用自己的 Turnstile 组件，脚本里 0 命中。而且这组判据的方向是反的：
+/// 它用来「确认可以收层」，真正该问的是「站点有没有在等人」。
 library;
 
+/// 站点会话相位。和 `reader.js` 的 `uiState.phase` 一一对应。
+enum ReaderPhase() {
+  /// 还没读到（页面没加载完、注入脚本没跑）。
+  unknown,
+
+  /// 空闲，没有进行中的会话动作。
+  idle,
+
+  /// 站点正在建立会话（可能正在摆人机验证）。
+  pending,
+
+  /// 会话可用。**这就是「放行」的唯一证据。**
+  ready,
+
+  /// 明确失败。`category` / `errorCode` 在站点那边有值。
+  error,
+}
+
+/// 把站点回的 `phase` 字符串转成枚举。认不出的当 [ReaderPhase.unknown]。
+ReaderPhase readerPhaseOf(String raw) {
+  return switch (raw) {
+    'idle' => ReaderPhase.idle,
+    'pending' => ReaderPhase.pending,
+    'ready' => ReaderPhase.ready,
+    'error' => ReaderPhase.error,
+    _ => ReaderPhase.unknown,
+  };
+}
+
 class VerifyRound {
-  // 带初始化列表 + 非 this 参数（`clock` 要 ?? DateTime.now），
-  // 主构造器表达不了 —— 同 ProxyState / IdentityLedger 的处理。
+  /// 带初始化列表，主构造器表达不了 `clock ?? DateTime.now`。
   // ignore: use_primary_constructors
   VerifyRound({
-    this.autoChallengeAfter = const Duration(seconds: 6),
-    this.window = const Duration(seconds: 90),
+    this.window = const Duration(seconds: 180),
     DateTime Function()? clock,
   }) : _clock = clock ?? DateTime.now;
 
-  /// 静默等这么久还没 ready，就把页面放出来让用户点。
+  /// 最多等这么久。
   ///
-  /// 实测从加载到 ready 大约 4 秒，全程 `iframes: 0` —— 主路径是静默。
-  /// 能在几秒里自己过的出口走不到这一步，所以「弹出来的必定是需要点
-  /// 一下的那种」。
-  final Duration autoChallengeAfter;
-
-  /// 最多等这么久。超过就认栽，停止等待。
+  /// 站点自己的人机验证组件超时是 **180 秒**（`reader.js:110`），
+  /// 而 `recover()` 的重试间隔是 30 秒（`reader.js:172`）。
+  /// 窗口比站点短，就会出现「用户还在站点的验证框上，App 已经放弃了」。
   final Duration window;
 
   final DateTime Function() _clock;
 
   DateTime? _start;
 
-  /// 这一轮已经等了多久。用真实时间算，不是累加定时器 tick ——
-  /// 定时器会被系统挂起（切后台、Doze），挂起期间 tick 不来，
-  /// 累加值就落后于真实时间。
+  /// 站点当前相位。派生自每次轮询读到的 `FUSReader.status()`。
+  ReaderPhase phase = ReaderPhase.unknown;
+
+  /// 站点是否真的摆了人机验证。
   ///
-  /// **派生值，不是存的字段。** 以前它是 `Duration elapsed`，只在
-  /// [refresh] 里被赋值，于是 [timedOut] / [shouldAutoPop] 读到的是
-  /// **上一次 refresh 时的快照** —— 任何一处调用方忘了先 refresh，
-  /// 超时和自动弹出就永远不触发（表现是卡在验证页等到底）。
-  /// 判定依赖「调用顺序」是这类状态机最容易长出来的暗礁。
-  ///
-  /// 现在读一次算一次，`refresh()` 退化成「顺手返回它」（调用点不用改）。
+  /// 只有一个来源：注入脚本在页面里挂 `fus:reader-check` 的监听
+  /// （`reader.js:103` 派发它）。**不靠计时推断** —— 旧实现「等满 6 秒
+  /// 就弹」会在站点只是慢的时候无端弹层。
+  bool humanCheckSeen = false;
+
+  /// 这一轮已经自动弹过了。收起后不再重复弹，否则用户一收就又弹回来。
+  bool autoPopped = false;
+
+  /// 验证界面是否正在显示。
+  bool open = false;
+
+  /// 这次是自动弹的（站点要人点）还是用户自己点的。
+  bool auto = false;
+
+  /// 已经等了多久。用真实时间算，不累加定时器 tick —— 定时器会被系统挂起。
   Duration get elapsed {
     final s = _start;
     if (s == null) return Duration.zero;
     return _clock().difference(s);
   }
 
-  /// 站点报过 ready 了吗。
+  DateTime? get start => _start;
+
+  /// 等太久了。
+  bool get timedOut => elapsed > window;
+
+  /// 该不该自动弹层。
   ///
-  /// 只在第一次 ready 时做一次重扫 / 搬通行证，不每 900ms 重复做。
-  bool readySeen = false;
+  /// 条件只有一个：**站点真的摆了人机验证**，且这轮没弹过、当前没开。
+  /// 站点自己能静默过的出口永远走不到这里 —— 这正是「只弹需要点的那种」。
+  bool get shouldAutoPop => !autoPopped && !open && humanCheckSeen;
 
-  /// 这一轮已经自动弹过了。弹出之后不再重复弹，否则用户一收起，
-  /// 6 秒后又弹回来，等于没给他选。
-  bool autoPopped = false;
-
-  /// 验证界面是否正在显示。
+  /// 该不该自动收层。
   ///
-  /// 和 [auto] 必须一起变 —— 原来是两个独立字段，能写出
-  /// `open=false, auto=true`（没开却是自动弹的）这种无意义组合，
-  /// 代码里为此写过好几处三连判。现在「自动弹」这个词只在
-  /// [showAuto] / [showManual] 里定义：`auto` 为真必然意味着 `open` 为真。
-  bool open = false;
+  /// 站点说 ready = 会话已建立，站点的 `live.js` 会接着自己拉消息。
+  /// 只对自动弹的层生效；用户手动点开的不自动收（他可能只是想看看网页）。
+  bool get shouldAutoClose => open && auto && phase == ReaderPhase.ready;
 
-  /// 这次是**自动弹**的（站点不放行）还是用户自己点的。
+  /// 开始新一轮：起算点归位。
   ///
-  /// 两者的呈现故意不一样，见 `inbox_screen` 的 `build`：
-  /// - 自动弹 → 盯着 `cf_clearance`，它一出现就自动收层
-  /// - 手动点 → 不自动收（用户可能只是想看看网页）
-  bool auto = false;
+  /// [rearm] 决定要不要把「这轮已经弹过」的闸门也解开。
+  /// 用户在验证页上点了按钮之后必须重置起算点（他可能耗了一分钟以上，
+  /// 接着旧起算点算的话第一次 tick 就超窗口）。但「收起」是明确表示不想过，
+  /// 解开闸门会在下一次 `humanCheckSeen` 时立刻又弹回来，等于没得选，
+  /// 所以那条路径传 `rearm: false`。
+  ///
+  /// [resetPhase] 决定要不要把站点相位和人机验证标记一起清掉。默认清 ——
+  /// 「换号 / 换身份 / 换出口 / 重载」之后上一个页面的一切都作废了。
+  /// 但**用户点完按钮回来的那两条路径必须传 false**：`phase == ready`
+  /// 正是自动收层的唯一判据，清掉就等于把刚拿到的结论扔了。
+  void begin({bool rearm = true, bool resetPhase = true}) {
+    _start = _clock();
+    if (resetPhase) {
+      phase = ReaderPhase.unknown;
+      humanCheckSeen = false;
+    }
+    if (rearm) autoPopped = false;
+  }
 
-  /// 只有这种情况才需要盯着 `cf_clearance` 自动收层。
-  bool get watchingForAutoPass => open && auto;
+  /// 落起算点，但如果已经有就不动。
+  ///
+  /// 换号、换身份、重载等多条路径都会调到；每次都重设会让「等满窗口」永远凑不满。
+  void arm() {
+    _start ??= _clock();
+  }
+
+  /// 更新站点相位。返回 true 表示相位**变了**（调用方据此只做一次副作用）。
+  bool updatePhase(ReaderPhase next) {
+    if (next == ReaderPhase.unknown || next == phase) return false;
+    phase = next;
+    return true;
+  }
+
+  /// 站点开始摆人机验证了。
+  void markHumanCheck() => humanCheckSeen = true;
 
   /// 自动弹：显示验证界面。
   void showAuto() {
@@ -88,65 +166,11 @@ class VerifyRound {
     auto = false;
   }
 
-  /// 收起验证界面。全 App 只有这一个「收起」入口 —— 漏清某个字段
-  /// 这种 bug 就不可能发生。
+  /// 收起。全 App 只有这一个收起入口。
   void close() {
     open = false;
     auto = false;
   }
-
-  /// 起算点。null 表示还没开始。
-  DateTime? get start => _start;
-
-  /// 开始新一轮：起算点归位。
-  ///
-  /// [rearm] 决定要不要把「这轮已经弹过」的闸门也解开。
-  ///
-  /// 用户在验证页上点了按钮（过了 / 收起）之后必须重置起算点 ——
-  /// 他可能在人机验证上耗了一分钟以上，接着旧起算点算的话第一次
-  /// tick 就超 [window]，当场判超时，明明刚说「我过了」反而放弃。
-  ///
-  /// 但闸门不能一律解开：点「收起」是明确表示不想过，解开就会在
-  /// [autoChallengeAfter] 之后立刻又弹回来，等于没得选。所以那条
-  /// 路径传 `rearm: false`。
-  void begin({bool rearm = true}) {
-    _start = _clock();
-    readySeen = false;
-    if (rearm) autoPopped = false;
-  }
-
-  /// 落起算点，但如果已经有就不动。
-  ///
-  /// [_pumpVerification] 会被换号、换身份、重载等多条路径调到，每次都
-  /// 重设起算点会让「等满 [autoChallengeAfter]」永远凑不满。
-  void arm() {
-    _start ??= _clock();
-  }
-
-  /// 刷新 [elapsed]。每个 tick 调一次。
-  /// 保留这个入口只为兼容调用点（每个 tick 调一次）—— [elapsed] 现在
-  /// 自己就是真值，这里没有「刷新」可做。
-  Duration refresh() => elapsed;
-
-  /// 等太久，该停了。
-  bool get timedOut => elapsed > window;
-
-  /// 第一次 ready 时返回 true，之后一直 false。
-  ///
-  /// ready 只说明 FUSReader 的会话建好了，**不代表**站点肯把消息给你 ——
-  /// 新开的号、刚被限流的 IP、页面上还压着没点的人机验证，都会「ready
-  /// 了但消息一直不来」。所以这里不负责结束等待，只负责「第一次」。
-  bool markReady() {
-    if (readySeen) return false;
-    readySeen = true;
-    return true;
-  }
-
-  /// 该不该自动弹出。
-  ///
-  /// 调用方还要自己 AND 一个 `!_showChallenge`（那是 UI 状态，不在
-  /// 这个对象里）。这里只管「等够了、且这轮还没弹过」。
-  bool get shouldAutoPop => !autoPopped && elapsed >= autoChallengeAfter;
 
   /// 记下已经弹过。
   void markPopped() => autoPopped = true;
