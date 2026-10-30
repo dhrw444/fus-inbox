@@ -717,8 +717,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           final msg = status.message.isNotEmpty
               ? status.message
               : (status.errorCode.isNotEmpty
-                  ? status.errorCode
-                  : status.category);
+                    ? status.errorCode
+                    : status.category);
           _store.note(msg.isNotEmpty ? '站点验证失败：$msg' : '站点验证失败。');
           if (!_round.open && !_round.autoPopped) {
             _openChallenge(auto: true);
@@ -798,7 +798,6 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       return null;
     }
   }
-
 
   /// 把站点页面亮出来，让用户自己在上面过验证。
   ///

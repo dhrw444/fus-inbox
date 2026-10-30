@@ -14,12 +14,8 @@ ActiveProxy _active(
   ProxyConfig config, {
   required int bridgePort,
   bool ok = true,
-}) => ActiveProxy(
-  config: config,
-  bridgePort: bridgePort,
-  ok: ok,
-  detail: 'test',
-);
+}) =>
+    ActiveProxy(config: config, bridgePort: bridgePort, ok: ok, detail: 'test');
 
 void main() {
   group('nativeEgressDirective', () {

@@ -5,8 +5,12 @@ import 'package:fus_inbox/core/proxy/proxy_pool_ops.dart';
 import 'package:fus_inbox/core/proxy/proxy_probe.dart';
 import 'package:fus_inbox/core/proxy/proxy_state.dart';
 
-ProxyConfig mk(String host) =>
-    ProxyConfig(id: 'socks5://$host:1081', scheme: ProxyScheme.socks5, host: host, port: 1081);
+ProxyConfig mk(String host) => ProxyConfig(
+  id: 'socks5://$host:1081',
+  scheme: ProxyScheme.socks5,
+  host: host,
+  port: 1081,
+);
 
 /// 一个在 [p] 上已经看满 [used] 个号的账本。
 IdentityLedger filled(ProxyConfig p, {int used = 3}) => IdentityLedger(
@@ -91,7 +95,11 @@ void main() {
     test('有另一条 → 可以轮换', () {
       final a = mk('1.1.1.1');
       final b = mk('2.2.2.2');
-      final state = ProxyState(pool: [a, b], currentId: a.id, ledger: filled(a));
+      final state = ProxyState(
+        pool: [a, b],
+        currentId: a.id,
+        ledger: filled(a),
+      );
       expect(state.canRotate, isTrue);
     });
   });

@@ -21,7 +21,6 @@ import 'package:fus_inbox/core/proxy/socket_reader.dart';
 
 /// 一条已建立 CONNECT 隧道的 HTTP 代理连接。
 class HttpProxyTunnel._(this._socket, this._reader, this._replay) {
-
   final Socket _socket;
   final SocketReader _reader;
 
@@ -86,10 +85,12 @@ class HttpProxyTunnel._(this._socket, this._reader, this._replay) {
     socket.add(utf8.encode(head.toString()));
     await socket.flush();
 
-    final response = await reader.readUntil(
-      const [0x0D, 0x0A, 0x0D, 0x0A],
-      timeout: timeout,
-    );
+    final response = await reader.readUntil(const [
+      0x0D,
+      0x0A,
+      0x0D,
+      0x0A,
+    ], timeout: timeout);
     if (response == null) {
       throw const HttpProxyException('HTTP 代理没有返回 CONNECT 响应');
     }
@@ -144,7 +145,10 @@ class HttpProxyTunnel._(this._socket, this._reader, this._replay) {
     _socket.destroy();
   }
 
-  static Stream<Uint8List> _prepend(Uint8List head, Stream<Uint8List> rest) async* {
+  static Stream<Uint8List> _prepend(
+    Uint8List head,
+    Stream<Uint8List> rest,
+  ) async* {
     yield head;
     yield* rest;
   }
