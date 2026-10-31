@@ -46,10 +46,7 @@ enum RotationAction() {
 }
 
 /// 判定结果。
-class const RotationDecision({
-  required this.action,
-  this.note = '',
-}) {
+class const RotationDecision({required this.action, this.note = ''}) {
   final RotationAction action;
 
   /// 要写进状态栏的话。空串表示不用说话。

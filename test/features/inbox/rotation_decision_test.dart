@@ -2,11 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
 import 'package:fus_inbox/features/inbox/domain/rotation_decision.dart';
 
-SiteHold hold(SiteHoldKind kind) => SiteHold(
-  kind: kind,
-  title: '',
-  message: '',
-);
+SiteHold hold(SiteHoldKind kind) =>
+    SiteHold(kind: kind, title: '', message: '');
 
 /// 一次判定的默认输入：开关开着、池子里有别的出口、还没连换过。
 RotationDecision decide({
