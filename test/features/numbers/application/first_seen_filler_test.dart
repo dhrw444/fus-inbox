@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -74,7 +73,7 @@ void main() {
     final store = await freshStore(container());
     final filler = FirstSeenFiller(egress: () => 'DIRECT', baseUrl: base);
     final numbers = [for (var i = 0; i < 12; i++) '141900000${10 + i}'];
-    final added = await filler.fillMissing(store, numbers);
+    await filler.fillMissing(store, numbers);
     expect(paths.length, 12);
     // 12 个号、6 路并发 → 峰值应该是 6（受 worker 数限制）。
     expect(maxInFlight, greaterThan(1), reason: '并发改动必须真的并发，否则这次优化等于没做');
