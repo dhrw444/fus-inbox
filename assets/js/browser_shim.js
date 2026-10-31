@@ -292,4 +292,34 @@
       });
     } catch (e) {}
   }
+
+  // ---- 页面可见性：恒报「前台可见」 ----
+  //
+  // 宿主把这个 WebView 放在 `Offstage` 里，被判定隐藏时 Flutter 引擎会把
+  // 原生视图置 `View.GONE`，Chromium 随之把 WebContents 标成 HIDDEN，页面
+  // 拿到 `document.hidden === true`。
+  //
+  // 站点据此**主动停工**：SSE 不连、会话不刷新、消息不拉、验证组件一挂上
+  // 就 `cancellation('background')` 中止，连 `recover()` 都在第一行返回。
+  // 于是每次把 WebView 放出来，站点都是从零冷启动一遍。
+  //
+  // 覆写之后站点始终认为自己在前台。`visibilitychange` 不会再派发，但站点
+  // 挂它只用于 suspend/resume，恒 visible 正好等于永不 suspend。
+  function forceVisible(key, value) {
+    var get = function () { return value; };
+    try {
+      Object.defineProperty(Document.prototype, key, {
+        get: get, configurable: true
+      });
+    } catch (e) {
+      try {
+        Object.defineProperty(document, key, { get: get, configurable: true });
+      } catch (e2) {}
+    }
+  }
+  forceVisible('hidden', false);
+  forceVisible('visibilityState', 'visible');
+  // 站点也读 `document.webkitHidden`（老写法），一并盖掉。
+  forceVisible('webkitHidden', false);
+  forceVisible('webkitVisibilityState', 'visible');
 })();
