@@ -36,8 +36,7 @@ import 'package:fus_inbox/core/webview/browser_identity.dart' as identity;
 import 'package:fus_inbox/core/webview/http_headers.dart';
 import 'package:fus_inbox/core/webview/native_capabilities.dart';
 import 'package:fus_inbox/features/inbox/application/inbox_provider.dart';
-import 'package:fus_inbox/features/inbox/domain/identity_rotation_policy.dart';
-import 'package:fus_inbox/features/inbox/domain/inbox_message.dart';
+import 'package:fus_inbox/features/inbox/domain/rotation_decision.dart';
 import 'package:fus_inbox/platform/web_engine.dart';
 
 /// 换出口 / 换身份的控制器。
@@ -89,19 +88,6 @@ class IdentityRotator({
   ///
   /// 屏幕在 `onPageFinished` 里用 [takeWipeOnLoad] 问一次，问完就清。
   bool _wipeOnLoad = false;
-
-  /// 自动换身份的节流器。
-  ///
-  /// 一被限制就重置是错的做法：每次重置在站点眼里都是一个全新的
-  /// 首次访客，连续重置等于「同一个 IP 一分钟来了十个新访客」，
-  /// 比单个爬虫更显眼，还白耗 Turnstile 验证次数。
-  ///
-  /// **必须是 static（进程级）**：以前它是实例字段，而 InboxScreen 每点
-  /// 一个号就 push 一个新实例（numbers_screen / saved_screen 都走
-  /// MaterialPageRoute）—— 于是「配额触发后返回列表、再点下一个号」这条
-  /// 最常见的动作把冷却直接清零，可以无限速地连烧身份和出口。上面那段
-  /// 注释想防的事，本来就被这个实例作用域漏掉了。
-  static final _rotationPolicy = IdentityRotationPolicy();
 
   /// 正在换出口/换身份。见 [maybeAutoRotate] —— 换的过程中会写状态，
   /// 状态一变又回调进来，没有这个闸门会自激。
@@ -238,8 +224,19 @@ class IdentityRotator({
     if (_rotating) return;
     final hold = store.state.hold;
     final status = store.state.status;
-    // 没有任何拒绝信号就不动。
-    if (hold == null && !status.contains('reader_verification')) {
+
+    // 判定本身在 `domain/rotation_decision.dart`（纯函数，能直接测）。
+    // 这里只负责把决定落到动作上。
+    final decision = decideRotation(
+      hold: hold,
+      status: status,
+      autoRotate: ref.read(proxyProvider).autoRotate,
+      egressAvailable: ref.read(proxyProvider).canRotate,
+      consecutiveRotations: _consecutiveRotations,
+      maxConsecutiveRotations: _maxConsecutiveRotations,
+    );
+
+    if (decision.action == RotationAction.nothing) {
       // 状态干净了 —— 这一轮真的摆脱了拒绝。
       //
       // 必须在这里归零：否则换满 [_maxConsecutiveRotations] 次之后
@@ -248,63 +245,26 @@ class IdentityRotator({
       return;
     }
 
-    // 配额和挑战都是 **IP 级** 的，换浏览器身份解决不了 ——
-    // 实测：同一个 IP 上清空 localStorage / IndexedDB / cookie（等于换
-    // 全新身份）之后，第 4 个号依然是 New inboxes are on pause。
-    //
-    // 但「换 IP」是 App 自己能做的事：代理池里还有别的出口就直接
-    // 换下一条，连身份一起重置（只换一样站点都还认得出是同一个人）。
-    // 池子空或只剩一条时才退化成让用户自己换 IP。
-    // 连续换了很多次还是被拒 —— 停手。
-    //
-    // 这不是「再试一次就好」：站点要么在维护、要么按别的东西在拒
-    // （不是 IP 也不是身份）。继续换只会把池子烧穿、让界面一直转圈。
-    if (_consecutiveRotations >= _maxConsecutiveRotations) {
-      store.note(
-        '已经连换 $_maxConsecutiveRotations 次还是被拒，先停下。'
-        '换个网络、或过一会儿再试。',
-      );
+    if (decision.action == RotationAction.waitOnly) {
+      if (decision.note.isNotEmpty) store.note(decision.note);
       return;
     }
 
-    if (hold?.kind == SiteHoldKind.quota ||
-        hold?.kind == SiteHoldKind.challenge) {
-      if (!ref.read(proxyProvider).autoRotate) return;
-      final now = DateTime.now();
-      final last = _lastProxyRotate;
-      if (last != null && now.difference(last) < _proxyRotateCooldown) return;
-      // 池子里真没得换就**不许 discard**：[_rotateToNextProxy] 内部那个
-      // 同款检查在 `_rotateIdentityBody` → `onPageDiscarded()` 之后才到，
-      // 而 discard 会 `store.reset()` 清掉 hold —— 配额卡片整个消失，
-      // 提示只剩骨架屏头部一行小字。用户点了「换 IP 后重置浏览器」，
-      // 页面反而从一张说得清状况的卡片变成一张空白骨架。先判后动。
-      if (!ref.read(proxyProvider).canRotate) {
-        store.note('代理池里没有别的出口可换，需要你换个网络再点重置。');
-        return;
-      }
-      // **计数和冷却时间戳都不在这里加。**
-      //
-      // 原来加在这里，也就是「还没真正换」之前 —— 而 `_rotateToNextProxy`
-      // 里 `apply(next)` 可能失败（新出口握手失败）就直接 return，
-      // 什么都没换，计数却已经 +1、45 秒冷却也已经起算。
-      //
-      // 后果：自动换出口失败一次，接下来 45 秒内**连手动重载都不再触发**
-      // 自动换 —— 页面停在旧会话上，用户只有一行状态字可看。
-      //
-      // 现在挪到真正换成功之后（见 `_rotateToNextProxy` / `_rotateIdentityBody`）。
-      unawaited(_rotateToNextProxy());
-      return;
-    }
-
-    // 已经在这个身份上换过一次还没缓过来，就别连着换。
+    // 只剩 rotateEgress：配额那一档，且开关开着、池子里还有别的出口。
     final now = DateTime.now();
-    final (ok, why) = _rotationPolicy.canRotate(now);
-    if (!ok) {
-      store.note(why);
-      return;
-    }
-    _rotationPolicy.record(now);
-    unawaited(rotateIdentity());
+    final last = _lastProxyRotate;
+    if (last != null && now.difference(last) < _proxyRotateCooldown) return;
+    // **计数和冷却时间戳都不在这里加。**
+    //
+    // 原来加在这里，也就是「还没真正换」之前 —— 而 `_rotateToNextProxy`
+    // 里 `apply(next)` 可能失败（新出口握手失败）就直接 return，
+    // 什么都没换，计数却已经 +1、45 秒冷却也已经起算。
+    //
+    // 后果：自动换出口失败一次，接下来 45 秒内**连手动重载都不再触发**
+    // 自动换 —— 页面停在旧会话上，用户只有一行状态字可看。
+    //
+    // 现在挪到真正换成功之后（见 `_rotateToNextProxy` / `_rotateIdentityBody`）。
+    unawaited(_rotateToNextProxy());
   }
 
   /// 换下一条代理 + 重置浏览器身份。

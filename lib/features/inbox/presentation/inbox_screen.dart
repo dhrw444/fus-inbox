@@ -38,6 +38,13 @@ import 'package:fus_inbox/platform/web_engine_factory.dart';
 import 'package:material_ui/material_ui.dart';
 
 const _kInjectAsset = 'assets/js/fus_inbox.js';
+
+/// 站点验证信号的**文档起始**监听器。见 `assets/js/reader_signal.js`。
+///
+/// 单独一份、单独注入，因为它必须在站点自己派发 `fus:reader-check`
+/// **之前**就挂好 —— 那个事件发生在主文档加载期间（`reader.js:103`），
+/// 而 `_kInjectAsset` 要等 `onPageStarted` / `onPageFinished` 才装得上。
+const _kSignalAsset = 'assets/js/reader_signal.js';
 const _kChannel = 'FusInbox';
 
 /// 允许引擎停留的主机。
@@ -61,6 +68,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   late final InboxStore _store;
 
   late final Future<String> _scriptFuture;
+  late final Future<String> _signalFuture;
   Timer? _watchdog;
 
   /// 看门狗这一响被「看不见」吞掉了，等可见时重新武装。见 [_onWatchdog]。
@@ -174,6 +182,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     );
     _scriptFuture = rootBundle.loadString(_kInjectAsset).catchError((Object e) {
       _store.fail('注入脚本读不到：$e');
+      return '';
+    });
+    // 信号监听器读不到时**不 fail 整个页面**：它只影响「自动弹层快不快」，
+    // 不影响能不能收到消息。站点自己的 `recover()` 还会在 30 秒后再派一次
+    // 事件，那时 `fus_inbox.js` 那份监听已经在位了。
+    _signalFuture = rootBundle.loadString(_kSignalAsset).catchError((Object e) {
+      logLine('验证信号脚本读不到：$e');
       return '';
     });
     // **必须先建引擎，再建轮换器。**
@@ -356,6 +371,19 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         // 请求头说 B」。
         unawaited(applyClientHints());
       }
+      // 验证信号的监听器也要抢在**站点任何脚本之前** —— 比垫片还早都不为过。
+      //
+      // 站点在 `establish()` 里用新密钥 POST `/sms-api/v1/session`，拿到
+      // `403 reader_verification_required` 之后 `challenge()` 第一行
+      // （`reader.js:103`）就派发 `fus:reader-check`。那一整串发生在主文档
+      // 加载期间，而 `fus_inbox.js` 要等 `onPageStarted` 才用
+      // `runJavaScript` 注入 —— 事件早派完了，监听器收不到。
+      //
+      // 收不到的后果：`__fusHumanCheckSeen` 一直是 false → `shouldAutoPop`
+      // 永远不成立 → 用户只能干等站点 30 秒一次的 `recover()` 重试
+      // （`reader.js:172`）再派一次，弹层才「过一大会」冒出来。
+      final signal = await _signalFuture;
+      if (signal.isNotEmpty) _engine.injectOnDocumentStart(signal);
       if (!mounted) return;
       await _engine.loadUrl(widget.number.inboxUrl);
       // 页面开始加载就挂上验证驱动器。站点大多会自己 pending → ready，
