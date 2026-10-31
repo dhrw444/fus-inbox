@@ -14,6 +14,7 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/core/proxy/identity_ledger.dart';
 import 'package:fus_inbox/core/proxy/probe_session.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
@@ -51,14 +52,26 @@ class ProxyNotifier() extends Notifier<ProxyState> {
         currentId: data.currentId,
         ledger: data.ledger,
         autoRotate: data.autoRotate,
+        loaded: true,
       );
-    } catch (_) {
-      // 读不出来就用默认值，别让启动挂在这。
+    } catch (e) {
+      // **读失败时绝不能置 `loaded = true`。**
+      //
+      // 以前这里是「读不出来就用默认值」，`finally` 里照样把 `loaded`
+      // 置真。而默认值的 `pool` 是空的 —— 上层看到「已读完 + 空池」，
+      // 判成「用户没配代理」，产出一条**直连**计划，拿真实 IP 去开号。
+      //
+      // 空串 `currentId` 还有第二层坑：账本里空串的含义是「直连」，
+      // 不是「没读到」。读盘失败后按直连开号，站点那边是一个全新的
+      // 身份 —— 重新验证一遍，额度也白吃。
+      //
+      // 保持 `loaded == false`，`_startUp` 那句检查就会拦下来并说
+      // 「代理清单没读出来，已停下」；`_persist` 也不会拿空池覆盖用户
+      // 磁盘上的真实清单。宁可停下，也不静默漏 IP。
+      logLine('代理清单读不出来：$e');
     } finally {
-      // 无论成败都要置位。读失败时池子确实是空的，那和「还没读」是两件事：
-      // 前者该让上层去走直连（并明确告诉用户），后者必须继续等。
-      state = state.copyWith(loaded: true);
-      // 等待方当场醒来。只 complete 一次 —— Completer 重复 complete 会抛。
+      // `ready` 必须完成（成功失败都完成），否则 `_persist` 和 `_startUp`
+      // 会一直挂在那个 Completer 上。
       if (!_ready.isCompleted) _ready.complete();
     }
   }

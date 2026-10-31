@@ -103,9 +103,25 @@ class const ProxyStore() {
       pool: list,
       builtin: builtin,
       excludedBuiltin: excluded,
-      currentId: current.isNotEmpty && all.any((e) => e.id == current)
+      // **空串是「直连」，是合法选择，不能校正掉。**
+      //
+      // 以前这里把空串和「记的那条被删了」当成同一种情况，一律落到
+      // `all.firstOrNull.id`。后果是重启后 currentId 从「直连」变成
+      // 「内置清单第一条代理」，而身份账本里绑的是 `''`（见
+      // `identity_binding.dart` 的 `directProxy()`，proxyId 就是空串）——
+      // `plan()` 拿第一条代理去查 `bindings[第一条]`，查不到，判成
+      // 「这条出口上还没有身份」→ rotate → `clearSiteData()` → 站点
+      // IndexedDB 里那对 reader 密钥被删 → 站点重新要一遍人机验证。
+      //
+      // 用户感受：验证完退出 App，重开同一个号，又要验证一次，而且很慢。
+      //
+      // 非空值才走「不在池里就校正」那条路 —— 那条是给「用户删掉了
+      // 正在用的代理」准备的，空串不适用。
+      currentId: current.isEmpty
           ? current
-          : (all.firstOrNull?.id ?? ''),
+          : (all.any((e) => e.id == current)
+                ? current
+                : (all.firstOrNull?.id ?? '')),
       ledger: ledger,
       autoRotate: auto,
     );

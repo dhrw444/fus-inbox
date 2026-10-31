@@ -73,6 +73,29 @@ class const LedgerPlanner({required this.bindings, required this.owners}) {
     final usable = pool.where((p) => !unusable.contains(p.id)).toList();
     final candidates = usable.isNotEmpty ? usable : pool;
 
+    // **空串 = 直连，是一个明确选择，不是「找不到」。**
+    //
+    // 以前这里直接 `?? candidates.firstOrNull`，空串被当成「没指定」，
+    // 于是落到池里第一条 —— 用户明明选了直连，重启后变成走代理，
+    // 而账本里绑的是 `''`，`bindings[current.id]` 查不到，判成 rotate →
+    // 清站点数据 → 密钥没了 → 重新验证一遍。见 `proxy_store.dart`
+    // 里 `currentId` 那段。
+    if (currentProxyId.isEmpty) {
+      final binding = _mint(
+        '',
+        mintUserAgent: mintUserAgent,
+        mintModel: mintModel,
+        mintChromeMajor: mintChromeMajor,
+      );
+      final existing = bindings[''];
+      return OpenPlan(
+        action: existing == null ? OpenAction.rotate : OpenAction.reuse,
+        proxy: directProxy(),
+        binding: existing ?? binding,
+        reason: existing == null ? '直连上还没有身份，绑一个新的' : '直连，复用已有身份',
+      );
+    }
+
     final current =
         candidates.where((p) => p.id == currentProxyId).firstOrNull ??
         candidates.firstOrNull;

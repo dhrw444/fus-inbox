@@ -46,7 +46,16 @@ void main() {
       mintChromeMajor: mintChrome,
     );
     ok(plan.proxy.isDirectProxy, '空池走直连');
-    eq(plan.action, OpenAction.reuse, '空池不轮换');
+    // 期望从 `reuse` 改成 `rotate`，理由：
+    //
+    // 旧行为是「空池分支无条件 `_mint` 一个新身份 + reuse」—— 每次开号
+    // 都造一台新设备。UA 每次都变，站点眼里每次都是全新访客，每次都要
+    // 重新验证。而 `commitOpen` 又会把那个新身份写进 `bindings['']`，
+    // 下一条记录把上一条顶掉 —— 账本里永远只有「刚造的那台」。
+    //
+    // 现在空串统一走直连分支：账本里有直连身份就 reuse，没有才 rotate。
+    // 第一次必须是 rotate —— 那时确实没有身份可复用。
+    eq(plan.action, OpenAction.rotate, '空池首次开号该建身份');
   }
 
   // ---------- 2. 一个新代理第一次用 ----------
@@ -832,6 +841,41 @@ void main() {
       led.commit(r.proxy.id, n, r.binding);
     }
     eq(led.usedFor(a.proxy.id), 3, '三个号都记在同一条出口');
+  }
+
+  // ---------- 直连是合法选择，不能被「校正」掉 ----------
+  //
+  // 账本里 `proxyId == ''` 就是直连（见 `identity_binding.dart` 的
+  // `directProxy()`）。重启后读盘若把它当「记的那条代理被删了」而校正成
+  // 池里第一条，`plan()` 就会拿第一条出口去查 `bindings[第一条]` ——
+  // 查不到 → rotate → `clearSiteData()` → 站点 IndexedDB 里那对 reader
+  // 密钥被删 → 重新验证一遍。用户感受是「验证完退出重开，又要验证」。
+  {
+    final led = IdentityLedger();
+    // 先在直连上建一个身份，并记下它看过号。
+    final first = led.plan(
+      pool: pool,
+      currentProxyId: '',
+      numberId: 'direct-1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(first.proxy.id, '', '空 currentId 该给直连，不该落到池里第一条');
+    eq(first.action, OpenAction.rotate, '直连上没身份时该建一个');
+    led.commit('', 'direct-1', first.binding);
+
+    // 模拟「重启后重新打开同一个号」：账本完好，currentId 仍是空串。
+    final again = led.plan(
+      pool: pool,
+      currentProxyId: '',
+      numberId: 'direct-1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(again.proxy.id, '', '重启后仍走直连');
+    eq(again.action, OpenAction.reuse, '重启后重开同一个号不该再清数据');
   }
 
   print('\n$pass passed, $fail failed');
