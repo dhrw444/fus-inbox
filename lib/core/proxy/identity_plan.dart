@@ -21,11 +21,7 @@ import 'package:fus_inbox/core/proxy/identity_binding.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
 
 /// 账本的决策器。纯逻辑，不碰磁盘不碰网络。
-class const LedgerPlanner({
-  required this.bindings,
-  required this.owners,
-  required this.maxPerIdentity,
-}) {
+class const LedgerPlanner({required this.bindings, required this.owners}) {
   /// 账本里的绑定表：代理 id -> 那个出口上绑着的身份。
   final Map<String, IdentityBinding> bindings;
 
@@ -34,9 +30,6 @@ class const LedgerPlanner({
   /// 有它就不用扫 `bindings` 猜「谁看过这个号」了 —— 猜法在一个号挂在
   /// 多个绑定上时必然不准。
   final Map<String, String> owners;
-
-  /// 一个身份最多看几个号。
-  final int maxPerIdentity;
 
   /// 在某条出口上铸造一个全新身份：UA / 型号 / Chrome 版本都现造，
   /// 看过的号从零数起。mint 回调由调用方注入，决策器不管熵从哪来。
@@ -183,13 +176,21 @@ class const LedgerPlanner({
       );
     }
 
-    // 有绑定但还没满 → 复用。
-    if (existing != null && existing.used < maxPerIdentity) {
+    // 有绑定 → 一直复用。
+    //
+    // **这里不数「已经看了几个号」。** 本地没有额度上限：站点从不告诉你
+    // 上限是几、已用几（`SITE.md:157`：没有任何配额头、没有计数字段），
+    // 自己猜一个数字只会把站点还愿意给的额度白白扔掉 —— 多换一次出口
+    // 就是多烧一个身份、多一次「同一个人换线路」的信号。
+    //
+    // 什么时候该换由站点说：`429 X-Fair-Use: pause`（新号额度）或
+    // `403 challenge`。那条路径在 `IdentityRotator._maybeAutoRotateBody`。
+    if (existing != null) {
       return OpenPlan(
         action: OpenAction.reuse,
         proxy: current,
         binding: existing,
-        reason: '当前身份已用 ${existing.used}/$maxPerIdentity 个号',
+        reason: '复用当前出口的身份（已看 ${existing.used} 个号，站点没拒就继续）',
       );
     }
 
@@ -201,101 +202,30 @@ class const LedgerPlanner({
     // 分支做的正是这两件事。标成 reuse 会被当成「什么都不用做」放过去，
     // 结果是账本记下新设备、页面还挂着上一条出口的旧身份和旧密钥：
     // 既没换成新设备，新出口又白吃一次「同一个人换条线路」的信号。
-    if (existing == null) {
-      final binding = _mint(
-        current.id,
-        mintUserAgent: mintUserAgent,
-        mintModel: mintModel,
-        mintChromeMajor: mintChromeMajor,
-      );
-      return OpenPlan(
-        action: OpenAction.rotate,
-        proxy: current,
-        binding: binding,
-        reason: '新代理，绑定新身份',
-      );
-    }
-
-    // 满了 → 换代理。
-    //
-    // 身份怎么来，看目标出口上有没有旧绑定：
-    //   - 没有 → 造一个新的（新出口 + 新身份，最干净）
-    //   - 有 → **复用那个**，不造新的
-    //
-    // 第二条很关键。_nextProxy 优先挑没绑过的出口，但池子用旧之后会
-    // 落到「绑过、还有余额」的出口上。那种出口上已经有一台设备了，
-    // 再 mint 一个就等于同一个 IP 上冒出第二台 —— 站点眼里这是最扎眼
-    // 的信号。复用它自己的身份，账本才是「一个代理一个身份」。
-    final nextProxy = _nextProxy(candidates, current.id);
-
-    // 候选里已经没有**别的**出口了。
-    //
-    // 两个来源：只配了一条代理（`_nextProxy` 开头的 `pool.length == 1`），
-    // 或者整池用满后回落到 `pool[start % pool.length]` 正好又是当前这条。
-    //
-    // 这时**绝不能返回 rotate**，两个理由都致命：
-    //
-    //   1. rotate 会让 `_applyProxyPlan` 走 `clearBrowsingData()` + 造新身份，
-    //      而出口 IP 一个都没变 —— 正是本文件开头说的「同一个 IP 上冒出
-    //      第二台」，站点眼里最扎眼的信号。
-    //   2. reason 还会宣称「换代理 X」，可 X 就是当前这一条。用户在界面上
-    //      看到「换到新出口」，实际什么都没换，只是额度又少一个。
-    //
-    // 触发面比「用户只配一条」大得多：候选是 `usable.isNotEmpty ? usable : pool`，
-    // 用户点一次「全部检测」，只要这批公共代理里只剩一条通的，候选就变成 1，
-    // 之后每个第 4 个号都在这个烂 IP 上换一台「新设备」。
-    //
-    // 如实退回 reuse：不换身份、不清数据，把真正的问题说出来。
-    if (nextProxy.id == current.id) {
-      return OpenPlan(
-        action: OpenAction.reuse,
-        proxy: current,
-        binding: existing,
-        reason:
-            '当前出口已用满 $maxPerIdentity 个号，但没有别的可用出口 —— '
-            '去设置里加代理，或换个网络再开',
-      );
-    }
-
-    final carried = bindings[nextProxy.id];
-    if (carried != null && carried.used < maxPerIdentity) {
-      return OpenPlan(
-        action: OpenAction.rotate,
-        proxy: nextProxy,
-        binding: carried,
-        reason:
-            '当前出口已用满 $maxPerIdentity 个号，换到 ${nextProxy.displayName}'
-            '（那边还有 ${maxPerIdentity - carried.used} 个额度）',
-      );
-    }
     final binding = _mint(
-      nextProxy.id,
+      current.id,
       mintUserAgent: mintUserAgent,
       mintModel: mintModel,
       mintChromeMajor: mintChromeMajor,
     );
     return OpenPlan(
       action: OpenAction.rotate,
-      proxy: nextProxy,
+      proxy: current,
       binding: binding,
-      reason: nextProxy.isDirectProxy
-          ? '已用满 $maxPerIdentity 个号，换身份（没有别的代理了，走直连）'
-          : '已用满 $maxPerIdentity 个号，换代理 ${nextProxy.displayName} + 换身份',
+      reason: '这条出口上还没有身份，绑一个新的',
     );
   }
 
-  /// 池里下一条**还能用的**代理。
+  /// 池里下一条代理（换出口时用）。
   ///
-  /// 之前这里只是 `pool[(idx + 1) % pool.length]` —— 纯粹的 +1，压根
-  /// 没检查下一条是不是也已经用满。可界面在满的代理上写着「下次会跳过」，
-  /// 那是句谎话：真轮到它时照样被选中，照样在那个烧掉的出口上造一个新
-  /// 身份，白耗一次轮转；而且站点那边这个 IP 早被盯上了，很容易直接
-  /// 弹 CF 验证 —— 就是「有的时候会 cf 验证错误」的来源之一。
+  /// 之前这里只是 `pool[(idx + 1) % pool.length]` —— 纯粹的 +1，不看
+  /// 下一条是不是已经绑过身份。落到一条绑过的出口上又造新身份，等于
+  /// 同一个 IP 上冒出第二台设备，站点眼里最扎眼；那个 IP 上更容易
+  /// 直接弹 CF 验证 —— 就是「有的时候会 cf 验证错误」的来源之一。
   ///
   /// 挑的顺序是两轮，不能反：
   ///   1) 没绑过身份的出口 —— 在上面开一个新身份，正是「一代理一身份」
-  ///   2) 绑过、但还有余额的出口 —— 接着用它的身份往下数
-  /// 两轮都空（整池都满了）才退回「下一条」。
+  ///   2) 绑过的出口 —— 复用它已有的身份，不造新的
   ///
   /// 之所以优先找没绑过的：落在一条已经绑过的出口上又造新身份，等于
   /// 同一个 IP 上出现两台设备；而只认没绑过的又会在池子用旧之后无路
@@ -314,37 +244,27 @@ class const LedgerPlanner({
       if (p.id == currentId) continue;
       final b = bindings[p.id];
       if (b == null) return p;
-      if (b.used < maxPerIdentity) partial ??= p;
+      partial ??= p;
     }
     if (partial != null) return partial;
-    // 全满了。退回「下一条」，至少不会原地卡住 —— 真到这一步说明
-    // 池子的额度整个用完了，该提醒用户加代理。
+    // 池里每一条别的出口都已经绑了身份 —— 也照样得给一条。
     // **绝不能退回当前这一条。**
     //
-    // 原来这里是 `pool[start % pool.length]` —— 池子全满时「退回下一条」，
-    // 可那一条可能恰好就是 `currentId`。于是 `plan` 里
-    // `nextProxy.id == current.id` 成立，退回 `reuse` 并宣称「没有别的
-    // 可用出口」—— 用户看到的就是「到了上限有时候不换代理」。
+    // 原来这里是 `pool[start % pool.length]`，可那一条可能恰好就是
+    // `currentId`：调用方拿到「还是我自己」，就会以为没得换，
+    // 从而什么都不做 —— 用户看到的就是「被拒了却一直不换出口」。
     //
-    // 池子只有 3 条、每条上限 3 个号时**最容易走到这一步**：
-    // 3×3=9 个号之后整池全满，之后每次开新号都落在这个兜底里。
-    //
-    // 真正的答案取决于调用方要什么：
-    //   - `plan`：全满时应该如实说「池子用完了」，所以给回 current 让它
-    //     走 reuse 分支报出那句提示 —— **但那必须是真的全满，不是挑错**。
-    //     这里改成「在池里找一条不是 current 的」，找得到就给，找不到才
-    //     给 current。
-    //   - 这样 `plan` 的 `nextProxy.id == current.id` 就只会在「池里真的
-    //     只有这一条」时成立，那句话才是真话。
+    // 这里改成「在池里找一条不是 current 的」，找得到就给，找不到
+    // 才给 current。这样调用方判「是不是我自己」时，结论才是真的。
     final fallback = pool.where((p) => p.id != currentId).firstOrNull;
     return fallback ?? pool[start % pool.length];
   }
 
-  /// `plan` 和 `ProxyNotifier.rotateToNext` 共用同一条挑选规则。
+  /// 换出口时的挑选规则（`ProxyNotifier.rotateToNext` 走这条）。
   ///
-  /// 两条路径必须一致：`plan` 管「开新号时当前出口满了」，`rotateToNext`
-  /// 管「站点报限额时自动换」。之前只修了前者，后者还是纯 +1 —— 于是
-  /// 恰恰在最需要跳过的场合（出口刚被限额烧掉）又落回一条用满的出口。
+  /// 和 [plan] 共用 [_nextProxy]，所以「优先没绑过的、其次绑过的」
+  /// 两轮顺序只有一处定义 —— 以前是两处各写一遍，改一处忘另一处
+  /// 就会在最需要跳过的场合落回一条烧掉的出口。
   ProxyConfig? nextUsableProxy(List<ProxyConfig> pool, String currentId) {
     if (pool.isEmpty) return null;
     return _nextProxy(pool, currentId);

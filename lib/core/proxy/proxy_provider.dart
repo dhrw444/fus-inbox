@@ -168,7 +168,7 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     // `proxyId` 为空 = 这次走的是直连。**不能拿空串去覆盖用户选的那条**：
     // 冷启动首开（或池子读失败）时 `commitOpen('')` 会把 currentId 写成
     // 空串并落盘，设置页于是拿 `ProxyState.current` 的兜底（`all.firstOrNull`）
-    // 把「直连」那笔账挂到**另一条代理**名下，显示「这个出口已看 1/3 个号」。
+    // 把「直连」那笔账挂到**另一条代理**名下，显示「这个出口已看 N 个号」。
     if (proxyId.isNotEmpty && state.currentId != proxyId) {
       state = state.copyWith(currentId: proxyId);
     }

@@ -9,7 +9,11 @@ import 'package:fus_inbox/core/proxy/proxy_probe.dart';
 import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 import 'package:material_ui/material_ui.dart';
 
-/// 当前出口 + 额度状态。
+/// 当前出口 + 已看号数。
+///
+/// **不显示「已用 X / 上限」** —— 本地没有额度上限，判据是站点自己说
+/// 「不给新的了」（见 `IdentityLedger` 文件头）。写一个分母出来就是在
+/// 编一个站点从没告诉过我们的数字。
 class const ProxyStatusCard({required this.state, super.key})
     extends StatelessWidget {
   /// 整份代理状态（当前出口 + 账本）。
@@ -20,7 +24,6 @@ class const ProxyStatusCard({required this.state, super.key})
     final theme = Theme.of(context);
     final ledger = state.ledger;
     final usedNow = ledger.usedFor(state.currentId);
-    final full = usedNow >= ledger.maxPerIdentity;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
@@ -41,12 +44,9 @@ class const ProxyStatusCard({required this.state, super.key})
           ),
           const SizedBox(height: 4),
           Text(
-            '这个出口已看 $usedNow / '
-            '${ledger.maxPerIdentity} 个号',
+            '这个出口已看 $usedNow 个号',
             style: theme.textTheme.bodySmall?.copyWith(
-              color: full
-                  ? theme.colorScheme.error
-                  : theme.colorScheme.onSurfaceVariant,
+              color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
         ],
@@ -61,19 +61,16 @@ class const ProxyRow({
   required this.proxy,
   required this.active,
   required this.used,
-  required this.maxPer,
   required this.probe,
   required this.onUse,
   required this.onRemove,
 }) extends StatelessWidget {
   final ProxyConfig proxy;
   final bool active;
-  final int used;
 
-  /// 一个身份能看几个号。从账本读，**不要**写死 —— 界面上写死过一版，
-  /// 磁盘上存过别的值时两边立刻矛盾：界面显示「已用 1/3」而决策器每开一个
-  /// 号都轮换。完整来龙去脉见 `IdentityLedger.maxPerIdentity` 的注释。
-  final int maxPer;
+  /// 这个出口上看过几个号。只用来报数，**不是**额度分母 ——
+  /// 本地不限号（见 `IdentityLedger` 文件头）。
+  final int used;
 
   /// 连通性检测结果。没检测过就是 null，副标题只报用量。
   final ProxyProbeResult? probe;
@@ -83,7 +80,6 @@ class const ProxyRow({
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final full = used >= maxPer;
 
     // 副标题：先报检测结果，再说用量。没检测过就只说用量。
     final parts = <String>[];
@@ -101,7 +97,7 @@ class const ProxyRow({
         parts.add('出口未知（无法判断是否与别的代理撞 IP）');
       }
     }
-    parts.add(full ? '已用满 $used 个号，下次会跳过' : '已用 $used / $maxPer');
+    parts.add('已看 $used 个号');
 
     return ListTile(
       contentPadding: EdgeInsets.zero,
@@ -124,9 +120,7 @@ class const ProxyRow({
         style: theme.textTheme.labelSmall?.copyWith(
           color: probe != null && !probe!.ok
               ? theme.colorScheme.error
-              : (full
-                    ? theme.colorScheme.error
-                    : theme.colorScheme.onSurfaceVariant),
+              : theme.colorScheme.onSurfaceVariant,
         ),
       ),
       trailing: IconButton(

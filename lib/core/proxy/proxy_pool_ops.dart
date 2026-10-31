@@ -103,25 +103,24 @@ class const RotationChoice({required this.next, required this.clearBinding}) {
   /// 换到的那条。调用方保证非空时才用它。
   final ProxyConfig next;
 
-  /// 目标出口上没有可沿用的身份（或已经用满）——调用方据此清掉绑定，
+  /// 目标出口上没有可沿用的身份 —— 调用方据此清掉绑定，
   /// 下次开号在它上面造新身份。
   final bool clearBinding;
 }
 
-/// 「换到下一条**还能用的**代理」的挑选规则。
+/// 「换到下一条代理」的挑选规则。
 ///
-/// 和 [IdentityLedger.plan] 完全一致（都走
-/// [IdentityLedger.nextUsableProxy]）—— 之前这里是纯 `(idx + 1)`，
-/// 于是「站点报限额时自动换」这条最需要跳过的路径，恰恰会落回一条
-/// 用满的出口上，白烧一次轮转。
+/// 和 [IdentityLedger.nextUsableProxy] 完全一致（都走
+/// `LedgerPlanner._nextProxy`）—— 之前这里是纯 `(idx + 1)`，
+/// 于是「站点报限额时自动换」这条路径会落回一条刚被烧掉的出口上，
+/// 白烧一次轮转。
 ///
 /// - 检测判死的先剔出去；全被判死就不剔（宁可用可疑代理，不裸奔直连）。
-/// - 只在「目标出口上没有可沿用的身份」时才要清：清掉一台还有余额的
-///   设备等于让同一个 IP 换台机器，比不动更扎眼。**用满的也要清** ——
-///   那个身份已经没额度了，留着只会让下一次 plan 又把它当成
-///   「还有余额」然后原地打转。
+/// - `clearBinding` 只在「目标出口上还没有身份」时为真。目标出口上
+///   已经有一台设备时**不清**：复用它，才是「一个代理一个身份」；
+///   在同一 IP 上再造一台才是最扎眼的信号。
 ///
-/// 返回 null = 池子是空的，没得换。
+/// 返回 null = 池子是空的（或只剩当前这一条），没得换。
 RotationChoice? pickRotation({
   required List<ProxyConfig> all,
   required Map<String, ProxyProbeResult> results,
@@ -155,7 +154,11 @@ RotationChoice? pickRotation({
 
   final next = ledger.nextUsableProxy(others, currentId) ?? others.first;
 
-  final bound = ledger.forProxy(next.id);
-  final clear = bound == null || bound.used >= ledger.maxPerIdentity;
+  // 目标出口上有没有可沿用的身份。
+  //
+  // **不再看「用满没」** —— 本地没有额度上限（见 `IdentityLedger` 文件头）。
+  // 这里只关心一件事：那条出口上是不是已经有一台设备。有就复用它
+  // （同一个 IP 上再 mint 一台才是最扎眼的信号），没有就让下次开号造。
+  final clear = ledger.forProxy(next.id) == null;
   return RotationChoice(next: next, clearBinding: clear);
 }

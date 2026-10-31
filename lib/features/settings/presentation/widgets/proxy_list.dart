@@ -132,7 +132,6 @@ class _ProxyListState() extends State<ProxyList> {
       proxy: p,
       active: p.id == state.currentId,
       used: ledger.usedFor(p.id),
-      maxPer: ledger.maxPerIdentity,
       probe: state.results[p.id],
       onUse: () => widget.onUse(p.id),
       onRemove: () => widget.onRemove(p.id),

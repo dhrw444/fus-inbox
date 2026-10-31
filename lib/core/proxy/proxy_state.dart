@@ -97,7 +97,7 @@ class ProxyState {
   final String currentId;
   final IdentityLedger ledger;
 
-  /// 用满额度后自动换代理 + 换身份。
+  /// 站点说新号额度用完时，自动换代理 + 换身份。
   final bool autoRotate;
 
   /// 正在跑连通性检测。

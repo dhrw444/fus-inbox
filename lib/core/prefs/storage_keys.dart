@@ -121,7 +121,7 @@ const kProxyPoolKey = StorageKey('fus:proxy:pool:v1');
 /// 当前选中的出口 id。
 const kProxyCurrentKey = StorageKey('fus:proxy:current:v1');
 
-/// 用满额度后自动换出口。
+/// 站点报额度用完时自动换出口。
 const kProxyAutoRotateKey = StorageKey('fus:proxy:auto:v1');
 
 /// 被用户删掉的内置代理 id（排除表）。

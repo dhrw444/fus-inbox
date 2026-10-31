@@ -4,8 +4,10 @@
 // openedNumbers 取 base（老绑定），但 userAgent 取 binding（新 mint 的）。
 // 于是老出口上原来的设备身份被顶掉，同一个 IP 上出现两个「设备」。
 //
-// 这条路径在 _nextProxy 改成「跳过已满」之后更容易踩到：它专门去找
-// 还有余额的出口，而那些出口大多已经用掉 1~2 个号、带着自己的 UA。
+// 现在本地不再按额度换出口（见 `identity_ledger.dart` 文件头），
+// `plan()` 只在「这条出口上还没有身份」时才 mint。换出口走
+// `nextUsableProxy` + `IdentityRotator`，那条路径**只挑出口，不改身份**。
+// 这个测试守的就是「挑出口时绝不铸造新身份、也绝不顶掉已有的」。
 
 import 'dart:io';
 
@@ -92,7 +94,7 @@ void main() {
   );
 
   check(
-    'P0 已满 3',
+    'P0 看过 3 个号',
     led.usedFor(pool[0].id) == 3,
     '(got=${led.usedFor(pool[0].id)})',
   );
@@ -102,43 +104,36 @@ void main() {
     '(got=${led.usedFor(pool[1].id)})',
   );
 
-  // 开第 4 个号：P0 满 → 轮换。
-  final d = led.plan(
-    pool: pool,
-    currentProxyId: pool[0].id,
-    numberId: 'a4',
-    mintUserAgent: () => currentUa,
-    mintModel: () => 'SM-S918B',
-    mintChromeMajor: () => '134',
-  );
-
+  // 换出口（站点报限额时 `IdentityRotator` 走这条）：
+  // 三条出口都绑过身份了，只能落到绑过的 —— 但**绝不铸造新身份**。
+  final next = led.nextUsableProxy(pool, pool[0].id);
   check(
-    '轮换到 P1（跳过？）',
-    d.proxy.id == pool[1].id,
-    '(got=${d.proxy.displayName})',
+    '挑出了别的出口',
+    next != null && next.id != pool[0].id,
+    '(got=${next?.displayName})',
   );
+  check('没落到当前这条 P0 上', next!.id != pool[0].id, '(got=${next.displayName})');
+
+  final picked = led.forProxy(next.id)!;
   check(
-    '计划带的是目标出口自己的身份，不是当前那条的',
-    d.binding.userAgent == p1OwnUa && d.binding.userAgent != currentUa,
+    '目标出口自己的身份没被顶掉',
+    picked.userAgent != currentUa,
+    '(got=${picked.userAgent.substring(0, 52)}…)',
   );
 
-  led.commit(d.proxy.id, 'a4', d.binding);
-
-  final p1 = led.forProxy(pool[1].id);
-  check('P1 号数变成 2', p1!.used == 2, '(got=${p1.used})');
   print('');
   print('  P1 原本自己的 UA : ${p1OwnUa.substring(0, 52)}…');
-  print('  P1 现在记的 UA   : ${p1.userAgent.substring(0, 52)}…');
-  print('  P1 现在记的机型  : ${p1.model} / Chrome ${p1.chromeMajor}');
+  print('  P1 现在记的 UA   : ${picked.userAgent.substring(0, 52)}…');
+  print('  P1 现在记的机型  : ${picked.model} / Chrome ${picked.chromeMajor}');
   print('');
+  check('【回归】P1 保住自己的身份，没被 P0 的顶掉', picked.userAgent == p1OwnUa);
+  check('【回归】机型没串', picked.model == 'Pixel 7', '(got=${picked.model})');
   check(
-    '【回归】P1 保住自己的身份，没被 P0 的顶掉',
-    p1.userAgent == p1OwnUa,
-    '(own=$p1OwnUa got=${p1.userAgent})',
+    '【回归】Chrome 版本没串',
+    picked.chromeMajor == '131',
+    '(got=${picked.chromeMajor})',
   );
-  check('【回归】机型没串', p1.model == 'Pixel 7', '(got=${p1.model})');
-  check('【回归】Chrome 版本没串', p1.chromeMajor == '131', '(got=${p1.chromeMajor})');
-  check('【回归】计划里带的是 P1 自己的身份', d.binding.userAgent == p1OwnUa);
+  check('【回归】号数没被挑改动', picked.used == 1, '(got=${picked.used})');
 
   print('');
   print('$passed passed, $failed failed');

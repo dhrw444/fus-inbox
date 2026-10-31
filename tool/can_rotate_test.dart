@@ -120,7 +120,7 @@ void main() {
   }
 
   print('');
-  print('=== 9. 账本记满也一样能换（换的是出口，不是额度）===');
+  print('=== 9. 账本里有记录也一样能换（换的是出口，不是计数）===');
   {
     final a = mk('1.1.1.1');
     final b = mk('2.2.2.2');
@@ -135,10 +135,9 @@ void main() {
           createdAtMs: 0,
         ),
       },
-      maxPerIdentity: 3,
     );
     final s = ProxyState(pool: [a, b], currentId: a.id, ledger: ledger);
-    ok(s.canRotate, '当前出口额度用满，池里还有别的 → 能换');
+    ok(s.canRotate, '当前出口看过号，池里还有别的 → 能换');
   }
 
   print('');

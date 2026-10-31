@@ -73,11 +73,16 @@ void main() {
     eq(led.forProxy(pool[0].id)!.used, 1, '入账 1 个号');
   }
 
-  // ---------- 3. 用满 3 个后轮换 ----------
+  // ---------- 3. 本地不限号：同一个身份一直复用 ----------
+  //
+  // 站点从不告诉你「上限是几个、已用几个」（SITE.md §5：没有任何配额
+  // 头、没有计数字段）。本地猜一个数字，猜小了就是白扔站点还愿意给的
+  // 额度 —— 多换一次出口 = 多烧一个身份。所以开号一律复用，
+  // 什么时候换由站点说（429 pause / 403 challenge）。
   {
     final led = IdentityLedger();
     final firstUa = <String>[];
-    for (var i = 1; i <= 3; i++) {
+    for (var i = 1; i <= 12; i++) {
       final plan = led.plan(
         pool: pool,
         currentProxyId: pool[0].id,
@@ -91,29 +96,17 @@ void main() {
         mintChromeMajor: mintChrome,
       );
       // 第 1 个号是「这条出口上第一次开号」→ 现造新设备 → rotate；
-      // 第 2、3 个号才复用同一台设备。
+      // 之后一直是同一台设备，**不管已经看了几个号**。
       eq(
         plan.action,
         i == 1 ? OpenAction.rotate : OpenAction.reuse,
         i == 1 ? '第 $i 个号是新设备，要轮换' : '第 $i 个号仍复用',
       );
+      eq(plan.proxy.id, pool[0].id, '第 $i 个号仍落在同一条出口');
       led.commit(plan.proxy.id, 'n$i', plan.binding);
     }
-    eq(led.forProxy(pool[0].id)!.used, 3, '第一个身份用满 3 个');
-
-    final plan4 = led.plan(
-      pool: pool,
-      currentProxyId: pool[0].id,
-      numberId: 'n4',
-      mintUserAgent: mintUa,
-      mintModel: mintModel,
-      mintChromeMajor: mintChrome,
-    );
-    eq(plan4.action, OpenAction.rotate, '第 4 个号触发轮换');
-    eq(plan4.proxy.id, pool[1].id, '换到下一个代理');
-    eq(plan4.binding.used, 0, '新身份从 0 开始');
-    ok(plan4.binding.userAgent != firstUa.last, '新身份换了 UA');
-    eq(plan4.binding.proxyId, pool[1].id, '新身份绑在新代理上');
+    eq(led.forProxy(pool[0].id)!.used, 12, '看了 12 个号，全记在同一条出口');
+    eq(firstUa.length, 1, '12 个号只铸造过 1 个身份');
   }
 
   // ---------- 4. 重复打开同一个号不耗额度 ----------
@@ -144,10 +137,13 @@ void main() {
     eq(led.forProxy(pool[0].id)!.used, 1, '重开只算 1 个号');
   }
 
-  // ---------- 5. 轮换会跳过已废掉的代理 ----------
+  // ---------- 5. 换出口时优先挑没绑过身份的那条 ----------
+  //
+  // 「满了」这个概念本地已经没有了（不限号）。这里测的是换出口时的
+  // 挑选规则：优先落在没绑过身份的出口上造新设备，其次才落到绑过的
+  // 出口上复用它的身份 —— 同一个 IP 上冒出第二台才是最扎眼的信号。
   {
-    final led = IdentityLedger(maxPerIdentity: 1);
-    // 代理 0 用满
+    final led = IdentityLedger();
     final a = led.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -156,8 +152,9 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
+    eq(a.action, OpenAction.rotate, 'P0 首次要造新身份');
     led.commit(a.proxy.id, 'x1', a.binding);
-    // 代理 1 也用满
+
     final b = led.plan(
       pool: pool,
       currentProxyId: pool[1].id,
@@ -166,20 +163,12 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    // 同第 2 组：代理 1 也是从没绑过 → 现造新设备 → rotate。
     eq(b.action, OpenAction.rotate, '代理 1 首次要轮换（新设备）');
     led.commit(b.proxy.id, 'y1', b.binding);
-    // 现在在代理 1，用满 1 个 → 轮换到下一个（环形）
-    final c = led.plan(
-      pool: pool,
-      currentProxyId: pool[1].id,
-      numberId: 'y2',
-      mintUserAgent: mintUa,
-      mintModel: mintModel,
-      mintChromeMajor: mintChrome,
-    );
-    eq(c.action, OpenAction.rotate, '代理 1 满了要轮换');
-    eq(c.proxy.id, pool[2].id, '轮到第三个代理');
+
+    // 换出口：P0 和 P1 都绑过了，P2 没有 → 必须给 P2。
+    final next = led.nextUsableProxy(pool, pool[1].id);
+    eq(next?.id, pool[2].id, '优先挑没绑过身份的出口');
   }
 
   // ---------- 6. 序列化往返 ----------
@@ -204,7 +193,8 @@ void main() {
       led.forProxy(pool[0].id)!.userAgent,
       '往返后 UA 一致',
     );
-    eq(back.maxPerIdentity, 3, '往返后上限一致');
+    // 落盘里不再写额度上限（本地不限号），老盘面里的这个键要能照常忽略。
+    ok(!led.toJson().containsKey('maxPerIdentity'), '落盘不写额度上限');
     final p4 = back.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -213,7 +203,34 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(p4.action, OpenAction.rotate, '往返后仍然会轮换');
+    eq(p4.action, OpenAction.reuse, '往返后仍然复用同一个身份');
+  }
+
+  // ---------- 6.1 老盘面带 maxPerIdentity 也不崩 ----------
+  {
+    final led = IdentityLedger();
+    final p = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'old1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(p.proxy.id, 'old1', p.binding);
+    final old = jsonDecode(jsonEncode(led.toJson())) as Map<String, Object?>;
+    old['maxPerIdentity'] = 3;
+    final back = IdentityLedger.fromJson(old);
+    eq(back.forProxy(pool[0].id)!.used, 1, '老盘面照样读得出绑定');
+    final again = back.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'old2',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    eq(again.action, OpenAction.reuse, '老盘面里的 3 不再限制开号');
   }
 
   // ---------- 7. 坏 JSON 不崩 ----------
@@ -227,7 +244,7 @@ void main() {
       {'bindings': 'x'},
     ]) {
       final led = IdentityLedger.fromJson(bad);
-      eq(led.maxPerIdentity, 3, '坏数据回落默认上限 ($bad)');
+      ok(led.bindings.isEmpty, '坏数据回落空账本 ($bad)');
     }
   }
 
@@ -282,7 +299,7 @@ void main() {
     ok(p.proxy.id == pool[0].id, '全判死时仍用当前这条');
   }
   {
-    // 满了 + 当前判死 → 换到下一个**活的**，不能换回自己。
+    // 当前出口判死 + 池里还有活的 → 换出口时不落到判死的那条。
     final led = IdentityLedger();
     for (final n in ['a', 'b', 'c']) {
       final q = led.plan(
@@ -304,9 +321,11 @@ void main() {
       mintChromeMajor: mintChrome,
       unusable: {pool[1].id},
     );
-    ok(r.rotated, '用满后轮换');
-    ok(r.proxy.id != pool[1].id, '跳过判死的第二条');
-    ok(r.proxy.id != pool[0].id, '不换回已经满的自己');
+    // 本地不限号，所以这里仍然复用当前出口的身份 —— 判死的是别的出口，
+    // 与「这次用哪条」无关。
+    eq(r.action, OpenAction.reuse, '当前出口还有身份就直接复用');
+    eq(r.proxy.id, pool[0].id, '复用当前这条出口');
+    ok(r.proxy.id != pool[1].id, '不会落到判死的那条');
   }
 
   // ---------- 14. 回头点老号：必须切回原来那条出口 + 原来那个身份 ----------
@@ -315,7 +334,7 @@ void main() {
   {
     final led = IdentityLedger();
 
-    // 在 pool[0] 上看满 3 个号。
+    // 在 pool[0] 上看 3 个号。
     Object? uaOnP0;
     for (final id in ['a1', 'a2', 'a3']) {
       final p = led.plan(
@@ -329,22 +348,23 @@ void main() {
       led.commit(p.proxy.id, id, p.binding);
       uaOnP0 = p.binding.userAgent;
     }
-    eq(led.forProxy(pool[0].id)!.used, 3, 'P0 已用满 3 个');
+    eq(led.forProxy(pool[0].id)!.used, 3, 'P0 已看 3 个号');
 
-    // 第 4 个号 → 额度满，轮换到别的出口 + 新身份。
+    // 站点报限额 → `IdentityRotator` 换出口 + 换身份（这里手工模拟，
+    // 那条路径在 `identity_rotator.dart`，不归账本管）。
     final d = led.plan(
       pool: pool,
-      currentProxyId: pool[0].id,
+      currentProxyId: pool[1].id,
       numberId: 'a4',
       mintUserAgent: mintUa,
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(d.action, OpenAction.rotate, '满 3 个后轮换');
+    eq(d.action, OpenAction.rotate, '换到没绑过的出口要造新身份');
+    eq(d.proxy.id, pool[1].id, '落在 pool[1]');
     led.commit(d.proxy.id, 'a4', d.binding);
-    // commitOpen 会把当前出口设成轮换后的那条，这里手工模拟。
     final nowCurrent = d.proxy.id;
-    ok(nowCurrent != pool[0].id, '轮换后当前出口确实换了');
+    ok(nowCurrent != pool[0].id, '换出口后当前出口确实变了');
 
     // 回头点 a1 —— 它之前是 P0 上的身份看的。
     final back = led.plan(
@@ -394,7 +414,7 @@ void main() {
     ok(!gone.restored, '不应报 restore');
   }
 
-  // ---------- 16. restore 之后下一步仍能正常轮换 ----------
+  // ---------- 16. restore 之后仍能正常开号 ----------
   {
     final led = IdentityLedger();
     for (final id in ['r1', 'r2', 'r3']) {
@@ -408,15 +428,16 @@ void main() {
       );
       led.commit(p.proxy.id, id, p.binding);
     }
+    // 换到没绑过的出口（模拟站点报限额后换出口）。
     final next = led.plan(
       pool: pool,
-      currentProxyId: pool[0].id,
+      currentProxyId: pool[1].id,
       numberId: 'r4',
       mintUserAgent: mintUa,
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(next.action, OpenAction.rotate, '满额轮换');
+    eq(next.action, OpenAction.rotate, '新出口要造新身份');
     led.commit(next.proxy.id, 'r4', next.binding);
 
     final back = led.plan(
@@ -430,7 +451,7 @@ void main() {
     eq(back.action, OpenAction.restore, '切回原出口');
     led.commit(back.proxy.id, 'r2', back.binding);
 
-    // 切回去之后，P0 还是满的 → 再开新号仍要轮换。
+    // 切回去之后 P0 上已经有身份 → 直接复用，不再造新的。
     final again = led.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -439,20 +460,20 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(again.action, OpenAction.rotate, 'restore 不影响额度判定');
+    eq(again.action, OpenAction.reuse, 'restore 之后照常复用 P0 的身份');
+    eq(again.proxy.id, pool[0].id, '仍落在 P0');
   }
 
-  // ---------- 17. 轮转必须跳过「已经满」的出口 ----------
+  // ---------- 17. 换出口时优先挑没绑过身份的那条 ----------
   //
-  // 界面在满的代理上写着「下次会跳过」，之前那是句谎话：_nextProxy 只是
-  // pool[(idx+1) % len]，压根不看下一条满没满。真轮到它时照样被选中，
-  // 在那个烧掉的出口上再造一个新身份 —— 白耗一次轮转，而且站点早盯上
-  // 这个 IP 了，很容易直接弹 CF 验证。
+  // 以前 _nextProxy 只是 pool[(idx+1) % len]，落到一条已经绑了身份的
+  // 出口上又造新身份 —— 同一个 IP 上冒出两台设备，站点眼里最扎眼。
+  // 现在两轮：先找没绑过的，其次才复用绑过的。
   {
     final led = IdentityLedger();
 
-    // pool[0] 和 pool[1] 都用满 3 个，pool[2] 空着。
-    for (final id in ['x1', 'x2', 'x3']) {
+    // pool[0] 和 pool[1] 都绑了身份，pool[2] 还空着。
+    for (final id in ['x1', 'x2']) {
       final p = led.plan(
         pool: pool,
         currentProxyId: pool[0].id,
@@ -463,7 +484,7 @@ void main() {
       );
       led.commit(p.proxy.id, id, p.binding);
     }
-    for (final id in ['y1', 'y2', 'y3']) {
+    for (final id in ['y1', 'y2']) {
       final p = led.plan(
         pool: pool,
         currentProxyId: pool[1].id,
@@ -474,28 +495,19 @@ void main() {
       );
       led.commit(p.proxy.id, id, p.binding);
     }
-    eq(led.usedFor(pool[0].id), 3, 'P0 满');
-    eq(led.usedFor(pool[1].id), 3, 'P1 满');
-    eq(led.usedFor(pool[2].id), 0, 'P2 空');
+    eq(led.usedFor(pool[0].id), 2, 'P0 已看 2 个');
+    eq(led.usedFor(pool[1].id), 2, 'P1 已看 2 个');
+    eq(led.usedFor(pool[2].id), 0, 'P2 没绑过');
 
-    // 站在 P0 上要开新号：下一条 P1 也是满的 → 必须跳到 P2。
-    final plan = led.plan(
-      pool: pool,
-      currentProxyId: pool[0].id,
-      numberId: 'x9',
-      mintUserAgent: mintUa,
-      mintModel: mintModel,
-      mintChromeMajor: mintChrome,
-    );
-    eq(plan.action, OpenAction.rotate, 'P0 满了要轮转');
-    eq(plan.proxy.id, pool[2].id, '跳过同样满的 P1，直接到 P2');
-    ok(!plan.proxy.id.endsWith('2.2.2.2:1080'), '没有落到满的 P1 上');
+    // 换出口：P1 绑过了，P2 没有 → 必须给 P2。
+    final next = led.nextUsableProxy(pool, pool[0].id);
+    eq(next?.id, pool[2].id, '优先挑没绑过身份的出口');
   }
 
-  // ---------- 18. 满的那条留在原地时不会被当成候选 ----------
+  // ---------- 18. 绑过的出口排在没绑过的后面 ----------
   {
     final led = IdentityLedger();
-    for (final id in ['m1', 'm2', 'm3']) {
+    for (final id in ['m1', 'm2']) {
       final p = led.plan(
         pool: pool,
         currentProxyId: pool[0].id,
@@ -506,49 +518,30 @@ void main() {
       );
       led.commit(p.proxy.id, id, p.binding);
     }
-    // 连续轮转三次，每一次都必须落在「没满」的出口上。
-    var cur = pool[0].id;
-    final seen = <String>{};
-    for (var i = 0; i < 3; i++) {
+    // 从 P1 出发换出口：P2 没绑过 → 优先给它，而不是复用 P0 的身份。
+    final next = led.nextUsableProxy(pool, pool[1].id);
+    eq(next?.id, pool[2].id, '没绑过的排在绑过的前面');
+  }
+
+  // ---------- 19. 全绑过时也能换出去，不原地卡死 ----------
+  {
+    final led = IdentityLedger();
+    for (var i = 0; i < pool.length; i++) {
       final p = led.plan(
         pool: pool,
-        currentProxyId: cur,
-        numberId: 'k$i',
+        currentProxyId: pool[i].id,
+        numberId: 'f$i',
         mintUserAgent: mintUa,
         mintModel: mintModel,
         mintChromeMajor: mintChrome,
       );
-      ok(
-        led.usedFor(p.proxy.id) < led.maxPerIdentity ||
-            p.action == OpenAction.reuse,
-        '第 ${i + 1} 次轮转落在还有余额的出口上',
-      );
-      led.commit(p.proxy.id, 'k$i', p.binding);
-      cur = p.proxy.id;
-      seen.add(p.proxy.id);
-    }
-    ok(seen.contains(pool[1].id) || seen.contains(pool[2].id), '轮转真的往前走');
-  }
-
-  // ---------- 19. 全满时退回下一条，不原地卡死 ----------
-  {
-    final led = IdentityLedger();
-    for (var i = 0; i < pool.length; i++) {
-      for (var j = 0; j < led.maxPerIdentity; j++) {
-        final p = led.plan(
-          pool: pool,
-          currentProxyId: pool[i].id,
-          numberId: 'f$i-$j',
-          mintUserAgent: mintUa,
-          mintModel: mintModel,
-          mintChromeMajor: mintChrome,
-        );
-        led.commit(p.proxy.id, 'f$i-$j', p.binding);
-      }
+      led.commit(p.proxy.id, 'f$i', p.binding);
     }
     for (var i = 0; i < pool.length; i++) {
-      eq(led.usedFor(pool[i].id), 3, 'P$i 满');
+      eq(led.usedFor(pool[i].id), 1, 'P$i 各看过 1 个号');
     }
+    // 每条出口都绑过身份，当前这条上也有 → 直接复用，不换出口。
+    // （本地不限号，所以「都绑过」不再是换出口的理由。）
     final plan = led.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -557,16 +550,16 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(plan.action, OpenAction.rotate, '全满仍返回轮转');
-    ok(plan.proxy.id != pool[0].id, '不会原地停在当前这条');
+    eq(plan.action, OpenAction.reuse, '当前出口有身份就复用');
+    eq(plan.proxy.id, pool[0].id, '不会原地乱跳');
+    eq(plan.binding.userAgent, led.forProxy(pool[0].id)!.userAgent, '身份没被顶掉');
   }
 
-  // ---------- 19. 轮换到「用了一半」的出口时，必须复用它自己的身份 ----------
+  // ---------- 19. 换到绑过的出口时，必须复用它自己的身份 ----------
   //
-  // _nextProxy 优先挑没绑过的出口，但池子用旧之后会落到「绑过、还有
-  // 余额」的出口上。那种出口上已经有一台设备了，如果再 mint 一个新
-  // UA，commit() 合并时号数取旧的、UA 取新的 —— 同一个 IP 上冒出第二
-  // 台设备，账本也不再是「一个代理一个身份」。
+  // 落在一条已经绑过身份的出口上时，如果再 mint 一个新 UA，commit()
+  // 合并时号数取旧的、UA 取新的 —— 同一个 IP 上冒出第二台设备，
+  // 账本也不再是「一个代理一个身份」。
   //
   // 实测（identity_drift_test.dart）在改之前确实是串的：
   //   P1 原本自己的 UA : …Pixel 7) …Chrome/131…
@@ -577,8 +570,8 @@ void main() {
     String uaA() => 'UA-A-${n}';
     String uaB() => 'UA-B-${n}';
 
-    // P0 用满 3 个，全部身份是 A。
-    for (final id in ['a1', 'a2', 'a3']) {
+    // P0 先占 2 个号，全部身份是 A。
+    for (final id in ['a1', 'a2']) {
       final p = led.plan(
         pool: pool,
         currentProxyId: pool[0].id,
@@ -615,36 +608,26 @@ void main() {
     );
     led.commit(pool[2].id, 'c1', f2.binding);
 
-    // 站在 P0 上开新号：P1 和 P2 都绑过且没满 → 落到其中一条，
-    // 但**绝不能**把那条的身份换掉。
-    final p = led.plan(
-      pool: pool,
-      currentProxyId: pool[0].id,
-      numberId: 'a4',
-      mintUserAgent: uaA,
-      mintModel: () => 'MODEL-A',
-      mintChromeMajor: () => '131',
-    );
-    eq(p.action, OpenAction.rotate, 'P0 满了要轮转');
-    ok(p.proxy.id != pool[0].id, '没落在满的 P0 上');
-    eq(p.binding.userAgent, 'UA-B-0', '复用的是目标出口自己的身份，不是现造的 A');
-
-    led.commit(p.proxy.id, 'a4', p.binding);
-    final after = led.forProxy(p.proxy.id)!;
-    eq(after.userAgent, 'UA-B-0', '落账后身份没被顶掉');
-    eq(after.model, 'MODEL-B', '机型也没串');
-    eq(after.chromeMajor, '134', 'Chrome 版本没串');
-    eq(after.used, 2, '号数照常往上加');
+    // 三条出口都绑过身份了。换出口时只能落到绑过的，**但挑选本身
+    // 绝不铸造新身份** —— 账本里那条绑定必须原样留着，让调用方复用它。
+    final next = led.nextUsableProxy(pool, pool[0].id);
+    ok(next != null, '全绑过时照样给得出一条');
+    ok(next!.id != pool[0].id, '不会给回当前这条');
+    final kept = led.forProxy(next.id)!;
+    eq(kept.userAgent, 'UA-B-0', '目标出口自己的身份没被顶掉');
+    eq(kept.model, 'MODEL-B', '机型没串');
+    eq(kept.chromeMajor, '134', 'Chrome 版本没串');
+    eq(kept.used, 1, '号数没被挑改动');
   }
 
-  // ---------- 20. 没绑过的出口优先于「用了一半」的出口 ----------
+  // ---------- 20. 没绑过的出口优先于绑过的出口 ----------
   //
-  // 两边都能用的时候应该挑没绑过的：在新出口上开新身份，比挤到一条
+  // 换出口时两边都能用，应该挑没绑过的：在新出口上开新身份，比挤到一条
   // 已经有设备的出口上更干净。
   {
     final led = IdentityLedger();
-    // P0 满、P1 占 1 个、P2 完全没绑过。
-    for (final id in ['a1', 'a2', 'a3']) {
+    // P0 绑了 2 个号、P1 绑了 1 个、P2 完全没绑过。
+    for (final id in ['a1', 'a2']) {
       final p = led.plan(
         pool: pool,
         currentProxyId: pool[0].id,
@@ -665,61 +648,47 @@ void main() {
     );
     led.commit(pool[1].id, 'b1', b.binding);
 
-    final p = led.plan(
-      pool: pool,
-      currentProxyId: pool[0].id,
-      numberId: 'a4',
-      mintUserAgent: mintUa,
-      mintModel: mintModel,
-      mintChromeMajor: mintChrome,
-    );
-    eq(p.proxy.id, pool[2].id, '优先挑完全没绑过的 P2');
+    final next = led.nextUsableProxy(pool, pool[0].id);
+    eq(next?.id, pool[2].id, '优先挑完全没绑过的 P2');
   }
 
   // ---------- 21. nextUsableProxy 与 plan 用同一条规则 ----------
   //
   // rotateToNext（站点报限额时自动换）走的是这个方法。两条路径不一致
-  // 的话，恰恰在最需要跳过的场合（出口刚被限额烧掉）又会落回一条
-  // 用满的出口。
+  // 的话，换出口时会落回一条刚被烧掉的出口。
   {
     final led = IdentityLedger();
-    for (final id in ['a1', 'a2', 'a3']) {
-      final p = led.plan(
-        pool: pool,
-        currentProxyId: pool[0].id,
-        numberId: id,
-        mintUserAgent: mintUa,
-        mintModel: mintModel,
-        mintChromeMajor: mintChrome,
-      );
-      led.commit(p.proxy.id, id, p.binding);
-    }
-    eq(led.usedFor(pool[0].id), 3, 'P0 满');
+    final p0 = led.plan(
+      pool: pool,
+      currentProxyId: pool[0].id,
+      numberId: 'a1',
+      mintUserAgent: mintUa,
+      mintModel: mintModel,
+      mintChromeMajor: mintChrome,
+    );
+    led.commit(p0.proxy.id, 'a1', p0.binding);
+    eq(led.usedFor(pool[0].id), 1, 'P0 绑了 1 个号');
 
     final next = led.nextUsableProxy(pool, pool[0].id);
     ok(next != null, '有可用的下一条');
-    ok(next!.id != pool[0].id, '不会返回满的 P0');
-    eq(next.id, pool[1].id, '跳过满的 P0，取 P1');
+    ok(next!.id != pool[0].id, '不会返回当前这条');
+    eq(next.id, pool[1].id, '取 P1（P1、P2 都没绑过，按顺序给 P1）');
 
     // 空池返回 null，不抛。
     ok(led.nextUsableProxy(const [], pool[0].id) == null, '空池返回 null');
   }
 
-  // ---------- 20. 只剩一条候选时不能假装换出口 ----------
+  // ---------- 22. 只有一条出口时不做任何假装的动作 ----------
   //
-  // 触发面比「用户只配一条」大得多：`plan` 的候选是
-  // `usable.isNotEmpty ? usable : pool`。用户点一次「全部检测」，只要这批
-  // 公共代理里只剩一条通的，候选就变成 1 —— 之后每个第 4 个号都会在
-  // **同一个烂 IP** 上造一台「新身份」。
-  //
-  // 那正是 identity_ledger 开头说的最扎眼信号（同一个 IP 上冒出第二台），
-  // 而且 reason 还宣称「换代理 X」，而 X 就是当前这条：用户在界面上看到
-  // 「换到新出口」，实际一个字节都没换，只是额度又少一个。
+  // `plan` 的候选是 `usable.isNotEmpty ? usable : pool`。用户点一次
+  // 「全部检测」，只要这批公共代理里只剩一条通的，候选就变成 1。
+  // 那种情况下绝不能在这个出口上造第二台设备 —— 同一个 IP 上冒出
+  // 第二台，正是 identity_ledger 开头说的最扎眼信号。
   {
     final solo = <ProxyConfig>[pool[0]];
     final led = IdentityLedger();
     String? firstUa;
-    for (var j = 0; j < led.maxPerIdentity; j++) {
+    for (var j = 0; j < 5; j++) {
       final p = led.plan(
         pool: solo,
         currentProxyId: pool[0].id,
@@ -731,7 +700,7 @@ void main() {
       firstUa ??= p.binding.userAgent;
       led.commit(p.proxy.id, 'solo-$j', p.binding);
     }
-    eq(led.usedFor(pool[0].id), 3, '单条出口已用满');
+    eq(led.usedFor(pool[0].id), 5, '单条出口记了 5 个号');
 
     final over = led.plan(
       pool: solo,
@@ -741,60 +710,30 @@ void main() {
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    eq(over.action, OpenAction.reuse, '只有一条出口时不假装轮转');
+    eq(over.action, OpenAction.reuse, '只有一条出口时只复用');
     eq(over.proxy.id, pool[0].id, '出口确实没变');
     eq(over.binding.userAgent, firstUa, '沿用原身份，不在同一个 IP 上造第二台');
-  }
-
-  // ---------- 21. 整池用满 → 回落到当前这条时，同样不能假装 ----------
-  //
-  // 和 19 的区别：19 是「全满，但下一条是别人」，这里是「全满，且
-  // `_nextProxy` 的兜底 `pool[start % pool.length]` 正好又回到当前这条」。
-  // 少了这条判断，就会在同一个出口上无限造新身份。
-  {
-    final led = IdentityLedger();
-    for (var i = 0; i < pool.length; i++) {
-      for (var j = 0; j < led.maxPerIdentity; j++) {
-        final p = led.plan(
-          pool: pool,
-          currentProxyId: pool[i].id,
-          numberId: 'all-$i-$j',
-          mintUserAgent: mintUa,
-          mintModel: mintModel,
-          mintChromeMajor: mintChrome,
-        );
-        led.commit(p.proxy.id, 'all-$i-$j', p.binding);
-      }
-    }
-    // 候选只剩一条时，即便客观上池子里还有别的出口，也不会去用它们 ——
-    // 这正是「全部检测后只剩一条通」的现实形态。
-    final only = <ProxyConfig>[pool[1]];
-    final over = led.plan(
-      pool: only,
-      currentProxyId: pool[1].id,
-      numberId: 'all-over',
-      mintUserAgent: mintUa,
-      mintModel: mintModel,
-      mintChromeMajor: mintChrome,
+    // 只有一条出口时 nextUsableProxy 也换不出去。
+    ok(
+      led.nextUsableProxy(solo, pool[0].id)?.id == pool[0].id,
+      '单条出口没得换（调用方据此说「加一条代理」）',
     );
-    eq(over.action, OpenAction.reuse, '候选只剩当前这条时不假装轮转');
-    ok(over.reason.contains('没有别的可用出口'), 'reason 如实说明没有别的出口  (${over.reason})');
   }
 
-  // ---------- 19. 一个号被两个身份看过：归属按**最后一次** ----------
+  // ---------- 23. 一个号被两个身份看过：归属按**最后一次** ----------
   //
   // 真机踩过：用户切回一个**已经验证过**的号，身份却变成新的了。
   //
   // 根因是原来靠扫 `bindings` 的 `openedNumbers` 猜「谁看过它」，而
-  // 一个号可以挂在多个绑定上（A 看过，A 满了换到 B，B 又看了一次）。
+  // 一个号可以挂在多个绑定上（A 看过，B 又看了一次）。
   // 猜法取「最早创建」的那个 → 永远拉回 A，而 A 的站点密钥早被清掉，
   // 站点不认，看起来就是「身份变成新的」。
   //
   // 现在 `commit` 每次都写死「这个号归这条出口」，`plan` 直接查表。
   {
-    final led = IdentityLedger(maxPerIdentity: 1);
+    final led = IdentityLedger();
 
-    // A 出口看号 n1（用满 1 个）
+    // A 出口看号 n1。
     final a = led.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -806,16 +745,16 @@ void main() {
     led.commit(a.proxy.id, 'n1', a.binding);
     eq(led.ownerOf('n1'), pool[0].id, 'n1 先归 A');
 
-    // A 满了 → 换到 B 看 n1（同一个号，B 又看了一次）
+    // 站点报限额 → 换到 B 出口（新身份）。
     final b = led.plan(
       pool: pool,
-      currentProxyId: pool[0].id,
+      currentProxyId: pool[1].id,
       numberId: 'n2',
       mintUserAgent: mintUa,
       mintModel: mintModel,
       mintChromeMajor: mintChrome,
     );
-    ok(b.rotated, 'A 满了要换出口');
+    ok(b.rotated, '换到没绑过的出口要造新身份');
     led.commit(b.proxy.id, 'n2', b.binding);
 
     // 现在把 n1 记到 B 名下（模拟 B 也看过它）
@@ -840,9 +779,9 @@ void main() {
     eq(back.binding.createdAtMs, b.binding.createdAtMs, '用的必须是 B 那个身份');
   }
 
-  // ---------- 20. 归属表会持久化 ----------
+  // ---------- 24. 归属表会持久化 ----------
   {
-    final led = IdentityLedger(maxPerIdentity: 3);
+    final led = IdentityLedger();
     final p = led.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -859,10 +798,10 @@ void main() {
   // ---------- 21. 空 numberId 不占额度 ----------
   //
   // 换身份那条路调 `commitOpen(proxyId, '', binding)`（表示「只建了身份、
-  // 还没看号」）。空串若进了 `openedNumbers`，它**白占一个额度** ——
-  // `used = openedNumbers.length`，3 个号变 2 个。
+  // 还没看号」）。空串若进了 `openedNumbers`，它会白占一个计数位置 ——
+  // `used = openedNumbers.length`，界面上「已看 3 个号」就成了假的。
   {
-    final led = IdentityLedger(maxPerIdentity: 3);
+    final led = IdentityLedger();
     final a = led.plan(
       pool: pool,
       currentProxyId: pool[0].id,
@@ -877,9 +816,9 @@ void main() {
     // 连续两次换身份（空 id）
     led.commit(a.proxy.id, '', a.binding);
     led.commit(a.proxy.id, '', a.binding);
-    eq(led.usedFor(a.proxy.id), 1, '空 id 换身份不该占额度');
+    eq(led.usedFor(a.proxy.id), 1, '空 id 换身份不该占计数');
 
-    // 额度还在：还能再看 2 个
+    // 再接着看号，全部落在同一条出口上（本地不限号）。
     for (final n in ['second', 'third']) {
       final r = led.plan(
         pool: pool,
@@ -892,7 +831,7 @@ void main() {
       eq(r.proxy.id, pool[0].id, '$n 该用同一个出口');
       led.commit(r.proxy.id, n, r.binding);
     }
-    eq(led.usedFor(a.proxy.id), 3, '三个号刚好用满');
+    eq(led.usedFor(a.proxy.id), 3, '三个号都记在同一条出口');
   }
 
   print('\n$pass passed, $fail failed');

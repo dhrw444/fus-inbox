@@ -19,11 +19,12 @@ import 'package:material_ui/material_ui.dart';
 
 /// 设置页里的「代理」分组。
 ///
-/// 站点配额记在**出口 IP** 上（实测：同一 IP 清空浏览器身份后第 4 个号
+/// 站点配额记在**出口 IP** 上（同一个 IP 清空浏览器身份后，下一个号
 /// 照样被拒）。所以真正的杠杆是换 IP —— 换身份必须跟着换出口。
 ///
-/// 这里让用户配一堆代理，App 按「一个代理 = 一个身份，用满 3 个号就换
-/// 下一个代理 + 换身份」自己轮。
+/// 这里让用户配一堆代理，App 按「一个代理 = 一个身份，站点说额度用完
+/// 就换下一个代理 + 换身份」自己轮。**本地不数已看几个号**：站点从不
+/// 告诉你上限是几（`SITE.md:157`），自己猜只会白扔它还给的额度。
 ///
 /// 内置清单和手动添加的**显示完全一样、都能删**。内置的只是记进排除
 /// 表，APK 里的资源文件不动。
@@ -84,7 +85,7 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '一个代理绑一个身份，一个身份看 3 个号。满了自动换下一个代理，'
+            '一个代理绑一个身份。站点说新号额度用完时，自动换下一个代理，'
             '并换掉浏览器身份。',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
@@ -99,7 +100,7 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
             dense: true,
-            title: Text('用满就自动换', style: theme.textTheme.bodyMedium),
+            title: Text('额度用完就自动换', style: theme.textTheme.bodyMedium),
             subtitle: Text(
               '关掉就只在手动点「下一个」时换',
               style: theme.textTheme.labelSmall?.copyWith(
@@ -154,7 +155,8 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
 
           if (all.isEmpty)
             Text(
-              '还没配代理。直连也能用，但配额按当前 IP 算，用满 3 个号就没法换了。',
+              '还没配代理。直连也能用，但配额按当前 IP 算，'
+              '站点说额度用完时就没法换出口了。',
               style: theme.textTheme.bodySmall?.copyWith(
                 color: theme.colorScheme.onSurfaceVariant,
               ),
@@ -170,14 +172,14 @@ class _ProxySectionState() extends ConsumerState<ProxySection> {
                 setState(() => _message = '已恢复被删的内置代理');
               },
               onClearLedger: () async {
-                // 这条改的是**配额轮换的判定依据**（每个代理看过几个号），
-                // 后果离按钮很远 —— 事后想联都联不起来。必须事先说清。
+                // 这条改的是**记录在哪个出口上看过哪些号**，后果离按钮
+                // 很远 —— 事后想联都联不起来。必须事先说清。
                 final yes = await confirmDestructive(
                   context,
                   title: '清空使用记录？',
                   message:
-                      '所有代理的用量会归零，重新按「一个身份看 3 个号」'
-                      '轮换。已经发出去的请求不影响，但之后换出口的时机变了。'
+                      '所有出口的「看过哪些号」记录会清空，下次点老号'
+                      '不会再切回原来的出口和身份。已经发出去的请求不受影响。'
                       '\n\n这一步不可撤销。',
                   confirmLabel: '清空',
                 );

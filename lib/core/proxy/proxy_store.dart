@@ -54,7 +54,7 @@ class const ProxyPoolData({
   ///
   /// 磁盘上记的那条可能已经被删除、或者被排除表挡掉了。不校正的话界面会
   /// 拿着一个池子里不存在的 id 去查当前出口，兜底逻辑（`all.firstOrNull`）
-  /// 会把账记到**另一条代理**名下 —— 显示「这个出口已看 1/3 个号」。
+  /// 会把账记到**另一条代理**名下 —— 显示「这个出口已看 N 个号」。
   final String currentId;
 
   final IdentityLedger ledger;

@@ -5,17 +5,28 @@
 /// 绑定表的读写、`commit`、落盘 JSON。**决策不在这里** —— `plan()` 只是把
 /// 请求转给 [LedgerPlanner]，那边一行都不写。
 ///
-/// ## 规则（用户定的）
+/// ## 规则
 ///
-/// 一个代理配置绑定一个浏览器身份；这个身份最多看 3 个号码；
-/// 看满 3 个之后，换代理**并**换身份，重新开始。
+/// 一个代理配置绑定一个浏览器身份；**本地不数「看了几个号」**。
+/// 开号一律复用当前出口上的身份，直到站点自己说「不给新的了」
+/// （`429 X-Fair-Use: pause` / `403 challenge`，见 `SITE.md` §5）。
+/// 那时换代理**并**换身份，重新开始。
+///
+/// ## 为什么不在本地设上限
+///
+/// 站点从不告诉你「上限是几个、已用几个」（`SITE.md:157`：没有任何配额
+/// 头、没有计数字段）。本地猜一个数字，猜小了就是白白扔掉站点还愿意给的
+/// 额度 —— 比如本地按 3 个换，而站点实际还愿意给第 4、第 5 个。
+/// 多换一次出口 = 多烧一个身份、多一次「同一个人换线路」的信号。
+///
+/// 所以判据交给站点：它给，就继续用；它拒，才换。
 ///
 /// ## 为什么是「代理 + 身份」一起换
 ///
-/// 实测过，单独换任何一个都不行：
+/// 单独换任何一个都不行：
 ///
 /// - 只换身份（清 localStorage / IndexedDB / cookie，UA 换新）：
-///   第 4 个号照样 `New inboxes are on pause`。配额记在出口 IP 上。
+///   下一个号照样 `New inboxes are on pause`。配额记在出口 IP 上。
 /// - 只换代理：站点的 reader 身份还是那对 ECDSA 密钥，服务端认得
 ///   这是同一个人换了个出口 —— 更像是「有人在绕」而不是新访客。
 ///
@@ -24,7 +35,7 @@
 /// ## 为什么身份要缓存而不是每次现造
 ///
 /// 同一个代理上反复造新身份会让这个出口迅速积累一堆半死的身份。
-/// 缓存住，3 个号用满之前一直用同一个 —— 这也更接近真实用户行为。
+/// 缓存住，一直用同一个 —— 这也更接近真实用户行为。
 library;
 
 import 'package:fus_inbox/core/proxy/identity_binding.dart';
@@ -42,7 +53,6 @@ class IdentityLedger {
   IdentityLedger({
     Map<String, IdentityBinding>? bindings,
     Map<String, String>? owners,
-    this.maxPerIdentity = 3,
   }) : _bindings = {...?bindings},
        _owners = {...?owners};
 
@@ -67,9 +77,6 @@ class IdentityLedger {
   /// 这个号归哪条出口。没看过就返回 null。
   String? ownerOf(String numberId) => _owners[numberId];
 
-  /// 一个身份最多看几个号。实测站点给新号额度是 3。
-  final int maxPerIdentity;
-
   Map<String, IdentityBinding> get bindings => Map.unmodifiable(_bindings);
 
   IdentityBinding? forProxy(String proxyId) => _bindings[proxyId];
@@ -80,7 +87,7 @@ class IdentityLedger {
   /// 决定这次打开该用哪个代理、哪个身份。
   ///
   /// 判断规则**全在** [LedgerPlanner]（它只读、不写）；这里是账本对外的
-  /// 入口，顺手把当前绑定表和上限交过去。参数含义见那边的 `plan`。
+  /// 入口，顺手把当前绑定表和归属表交过去。参数含义见那边的 `plan`。
   ///
   /// 不会修改账本 —— 落账由 [commit] 做，这样界面可以先把决定
   /// 显示出来再执行。
@@ -92,20 +99,15 @@ class IdentityLedger {
     required String Function() mintModel,
     required String Function() mintChromeMajor,
     Set<String> unusable = const {},
-  }) =>
-      LedgerPlanner(
-        bindings: _bindings,
-        owners: _owners,
-        maxPerIdentity: maxPerIdentity,
-      ).plan(
-        pool: pool,
-        currentProxyId: currentProxyId,
-        numberId: numberId,
-        mintUserAgent: mintUserAgent,
-        mintModel: mintModel,
-        mintChromeMajor: mintChromeMajor,
-        unusable: unusable,
-      );
+  }) => LedgerPlanner(bindings: _bindings, owners: _owners).plan(
+    pool: pool,
+    currentProxyId: currentProxyId,
+    numberId: numberId,
+    mintUserAgent: mintUserAgent,
+    mintModel: mintModel,
+    mintChromeMajor: mintChromeMajor,
+    unusable: unusable,
+  );
 
   /// 记下这次打开。
   ///
@@ -158,11 +160,14 @@ class IdentityLedger {
       LedgerPlanner(
         bindings: _bindings,
         owners: _owners,
-        maxPerIdentity: maxPerIdentity,
       ).nextUsableProxy(pool, currentId);
 
+  /// 只存绑定表和归属表。
+  ///
+  /// 老版本还会写一个 `maxPerIdentity` —— 那是本地自己数的额度上限，
+  /// 已经删掉了（判据交给站点，见文件头）。新代码读到它一律忽略，
+  /// 不报错：老盘面要能照常打开。
   Map<String, Object?> toJson() => {
-    'maxPerIdentity': maxPerIdentity,
     'bindings': _bindings.map((k, v) => MapEntry(k, v.toJson())),
     'owners': _owners,
   };
@@ -194,11 +199,6 @@ class IdentityLedger {
         }
       }
     }
-    return IdentityLedger(
-      bindings: out,
-      owners: owners,
-      maxPerIdentity:
-          int.tryParse(raw['maxPerIdentity']?.toString() ?? '') ?? 3,
-    );
+    return IdentityLedger(bindings: out, owners: owners);
   }
 }

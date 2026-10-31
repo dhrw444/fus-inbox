@@ -370,8 +370,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
 
   /// 按账本决定这次用哪个代理、哪个身份。
   ///
-  /// 规则：一个代理绑一个身份，一个身份最多看 3 个号，满了就
-  /// 换代理 + 换身份。见 [IdentityLedger]。
+  /// 规则：一个代理绑一个身份；**本地不数「看了几个号」**，开号一律
+  /// 复用当前出口上的身份，直到站点自己说「不给新的了」才换。
+  /// 见 [IdentityLedger] 文件头。
   OpenPlan _planForThisNumber() {
     final proxyState = ref.read(proxyProvider);
     // 三个 mint 回调必须给出**同一个**新身份。
@@ -499,8 +500,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     await _engine.setUserAgent(plan.binding.userAgent);
     if (!mounted) return null;
 
-    // 代理设成了才记账。没设成就记一笔的话，这个出口的 3 个额度
-    // 会被白白吃掉 —— 而且记的还是别人的账。
+    // 代理设成了才记账。没设成就记一笔的话，这笔账会挂到这条出口上，
+    // 而这个号其实是用真实 IP 开的 —— 记的还是别人的账。
     await ref
         .read(proxyProvider.notifier)
         .commitOpen(plan.proxy.id, widget.number.id, plan.binding);
