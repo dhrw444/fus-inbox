@@ -84,6 +84,10 @@ class FirstSeenStore() extends Notifier<Map<String, DateTime>> {
   /// 站点会轮换号池：今天下架的号在本地的收录时间就再也不会有用了，
   /// 不清的话缓存只增不减。每次目录刷新后调用一次。
   /// 数量没变就跳过，避免每次都白写一遍盘。
+  ///
+  /// 「数量没变」在这里等价于「一个键都没丢」：[next] 的键只能是 [state]
+  /// 键的子集，长度相等就意味着没有条目被过滤掉。不用另设一个 `dropped`
+  /// 标记。
   Future<void> retainOnly(Set<String> keep) async {
     await ready;
     final next = <String, DateTime>{
@@ -173,7 +177,6 @@ final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
 ///      队列末尾，白白多打几十个请求。
 ///   2. **有间隔**。每路之间 120ms + 抖动，六路合起来仍然是「一页一页
 ///      翻」的节奏，不是一秒几十发的扫描。
-/// 补齐收录时间。
 ///
 /// ## 必须和号码目录走**同一条出口**
 ///
@@ -200,8 +203,19 @@ class FirstSeenFiller({
 
   /// 详情页基址。见构造函数。
   final String baseUrl;
-  bool _running = false;
-  bool _cancelled = false;
+
+  /// 每调一次 [cancel] 就加一。正在跑的轮记住自己开始时的值，值变了就收工。
+  ///
+  /// ## 为什么用世代号而不是 bool
+  ///
+  /// `bool` 在「排队」这套结构里会串味：A 轮在跑 → 用户点开收件页 → `cancel`
+  /// 置真 → A 收工 → 用户从收件页返回 → B 轮排队进来。B 轮开头会把标记
+  /// 清成 false，但**如果 B 是在 A 收工之前排进来的**，它在 `await prev`
+  /// 之后就看到了 A 留下的 `true`，于是自己也放弃 —— 返回之后永远补不上。
+  ///
+  /// 世代号让「谁被取消了」变成精确的：B 记住的是自己开始那一刻的值，
+  /// A 期间的 `cancel` 只影响 A。清标记这件事也就不需要了。
+  int _generation = 0;
 
   /// 整轮补齐复用同一个 HttpClient。
   ///
@@ -235,80 +249,160 @@ class FirstSeenFiller({
   /// 关掉连接池。provider 销毁时调用。
   void dispose() => _http.close(force: true);
 
-  /// 停掉当前这一轮。下一轮会从头扫「还缺哪些」。
-  void cancel() => _cancelled = true;
+  /// 停掉当前这一轮（以及任何还在排队等它的轮）。下一轮会从头扫「还缺哪些」。
+  ///
+  /// 语义是「现在这一刻之前发起的全部作废」：正在跑的收工，排队中的也不再
+  /// 开跑。之后新发起的轮记住的是新世代号，不受这次影响 —— 从收件页返回
+  /// 时续上的那一轮就靠这个。
+  void cancel() => _generation++;
 
   /// 把 [numbers] 里所有还没有缓存的号补齐。
   ///
   /// [onOne] 每补到一条回调一次，让列表能逐行刷新，而不是最后一次性冒出来。
   /// 返回这轮实际新补了多少条。
+  ///
+  /// ## 同时只有一轮在飞，但**后到的调用是排队，不是丢弃**
+  ///
+  /// 两轮同时跑会各自算一份差集、互相看不到对方刚写进 store 的结果，
+  /// 对同一批号重复发请求。所以闸门必须有。
+  ///
+  /// 但闸门不能直接 `return 0`。`_boot` 一启动就开始补一批，100 多个号
+  /// 要跑三十秒，用户在这期间下拉刷新是**很常见**的时序 —— 直接丢掉那次
+  /// 调用，刷新拉回来的新号一个都补不上，得等下次冷启动。
+  ///
+  /// 所以后到的调用等前一轮收工再跑自己那一轮。两轮的 todo 各自从
+  /// `store.missingFrom` 重新算，第二轮的差集里不会再有第一轮已经补上的号。
   Future<int> fillMissing(
     FirstSeenStore store,
     List<String> numbers, {
     void Function(String number, DateTime at)? onOne,
     int limit = 200,
+  }) {
+    // 同步段里取旧值 + 登记新值，中间没有 await —— 单线程下不会交错。
+    final prev = _round;
+    final self = Completer<int>();
+    _round = self.future;
+    return _fillQueued(
+      self,
+      prev: prev,
+      store: store,
+      numbers: numbers,
+      onOne: onOne,
+      limit: limit,
+    );
+  }
+
+  /// 正在跑（或正在排队）的那一轮。null = 空闲。
+  Future<int>? _round;
+
+  Future<int> _fillQueued(
+    Completer<int> self, {
+    required Future<int>? prev,
+    required FirstSeenStore store,
+    required List<String> numbers,
+    required void Function(String number, DateTime at)? onOne,
+    required int limit,
   }) async {
-    if (_running) return 0;
-    _running = true;
-    // 每轮开始都清掉上一轮的取消标记，否则上一轮 cancel 过之后
-    // 这一轮会在第一个号之前就 break。
-    _cancelled = false;
-    var added = 0;
+    // 这一轮开始时的世代号。中途任何一次 `cancel()` 都会让它变化，
+    // 变化就意味着「有人不要这一轮了」。
+    final gen = _generation;
     try {
-      // 先等读盘。`missingFrom` 是拿内存里的 state 算差集，而 state 在
-      // 读盘回来之前是空的 —— 不等的话这一轮会把**所有号**都当成缺的，
-      // 白抓一遍（抓回来 `put` 又发现值没变，连盘都不写，只剩纯粹的请求）。
-      await store.ready;
-      // 差集逻辑只有一处（store.missingFrom），这里不要再自己写一遍：
-      // 两份实现迟早会漂移，而「该不该抓」判断错了要么重复请求、
-      // 要么永远不补。
-      final missing = store.missingFrom(numbers);
-      final todo = missing.length > limit ? missing.sublist(0, limit) : missing;
-      if (todo.isEmpty) return 0;
-
-      // 并发数。见类文档里那段实测。
-      const kConcurrency = 6;
-      final workers = <Future<void>>[];
-      var next = 0;
-      var stopped = false;
-
-      Future<void> worker() async {
-        while (!stopped) {
-          if (_cancelled) return;
-          final i = next++;
-          if (i >= todo.length) return;
-          final number = todo[i];
-          final at = await fetchFirstSeen(
-            number,
-            client: _http,
-            baseUrl: baseUrl,
-          );
-          // 取消之后拿到的结果照样落盘 —— 已经花掉的请求不该白费，
-          // 但不再继续排队。
-          if (at != null) {
-            await store.put(number, at);
-            added++;
-            onOne?.call(number, at);
-          }
-          if (_cancelled) {
-            stopped = true;
-            return;
-          }
-          // 间隔 120ms + 0~80ms 抖动。六路同时跑，合起来仍然是「一页一页
-          // 翻」的节奏，不是一秒几十发的扫描。
-          await Future<void>.delayed(
-            Duration(milliseconds: 120 + _rnd.nextInt(80)),
-          );
+      if (prev != null) {
+        // 前一轮的失败不该让这一轮跟着失败 —— 两轮各自独立，前一轮没补上
+        // 的号这一轮会重新算进差集里。
+        try {
+          await prev;
+        } catch (_) {}
+        // 等它期间有人喊停（点开收件页）。这一轮还没开始，直接放弃 ——
+        // 免得用户已经进了收件页，后台还在往外打详情页请求。
+        if (_generation != gen) {
+          self.complete(0);
+          return 0;
         }
       }
-
-      for (var i = 0; i < kConcurrency && i < todo.length; i++) {
-        workers.add(worker());
-      }
-      await Future.wait(workers);
+      final added = await _fillRound(
+        store,
+        numbers,
+        gen: gen,
+        onOne: onOne,
+        limit: limit,
+      );
+      self.complete(added);
+      return added;
+    } catch (e, st) {
+      // 给排队中那一轮一个**正常结束**的值，否则它会一直挂在这里等
+      // 一个永远不完成的 Future。
+      self.completeError(e, st);
+      // 错误同时挂在 `_round` 上，没有排队者的话就成了未捕获的异步错误。
+      self.future.ignore();
+      rethrow;
     } finally {
-      _running = false;
+      // 只有「没有后来者接替」时才把闸门放开 —— 否则会把排队中那一轮的
+      // 登记抹掉，第三个调用方就会以为自己是第一个、和前一轮并行跑起来。
+      if (identical(_round, self.future)) _round = null;
     }
+  }
+
+  Future<int> _fillRound(
+    FirstSeenStore store,
+    List<String> numbers, {
+    required int gen,
+    void Function(String number, DateTime at)? onOne,
+    int limit = 200,
+  }) async {
+    var added = 0;
+    // 先等读盘。`missingFrom` 是拿内存里的 state 算差集，而 state 在
+    // 读盘回来之前是空的 —— 不等的话这一轮会把**所有号**都当成缺的，
+    // 白抓一遍（抓回来 `put` 又发现值没变，连盘都不写，只剩纯粹的请求）。
+    await store.ready;
+    if (_generation != gen) return 0;
+    // 差集逻辑只有一处（store.missingFrom），这里不要再自己写一遍：
+    // 两份实现迟早会漂移，而「该不该抓」判断错了要么重复请求、
+    // 要么永远不补。
+    final missing = store.missingFrom(numbers);
+    final todo = missing.length > limit ? missing.sublist(0, limit) : missing;
+    if (todo.isEmpty) return 0;
+
+    // 并发数。见类文档里那段实测。
+    const kConcurrency = 6;
+    final workers = <Future<void>>[];
+    var next = 0;
+    var stopped = false;
+
+    Future<void> worker() async {
+      while (!stopped) {
+        if (_generation != gen) return;
+        final i = next++;
+        if (i >= todo.length) return;
+        final number = todo[i];
+        final at = await fetchFirstSeen(
+          number,
+          client: _http,
+          baseUrl: baseUrl,
+        );
+        // 取消之后拿到的结果照样落盘 —— 已经花掉的请求不该白费，
+        // 但不再继续排队。
+        if (at != null) {
+          await store.put(number, at);
+          added++;
+          onOne?.call(number, at);
+        }
+        if (_generation != gen) {
+          stopped = true;
+          return;
+        }
+        // 间隔 120ms + 0~80ms 抖动。六路同时跑，合起来仍然是「一页一页
+        // 翻」的节奏，不是一秒几十发的扫描。
+        await Future<void>.delayed(
+          Duration(milliseconds: 120 + _rnd.nextInt(80)),
+        );
+      }
+    }
+
+    for (var i = 0; i < kConcurrency && i < todo.length; i++) {
+      workers.add(worker());
+    }
+    await Future.wait(workers);
     return added;
   }
 

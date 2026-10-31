@@ -41,8 +41,7 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   /// 启动：先拉目录，目录到手后把还缺收录时间的号补齐。
   ///
   /// 只补缓存里没有的：已经有时间的号码直接跳过，不会重复请求。
-  /// 首次启动会补一批（串行 + 间隔，不并发轰站点），之后就只剩新号。
-  /// 启动：先拉目录，目录到手后把还缺收录时间的号补齐。
+  /// 首次启动会补一批（6 路并发 + 每路 120ms 间隔），之后就只剩新号。
   ///
   /// ## 整个包在 catch 里
   ///
@@ -81,7 +80,6 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   }
 
   /// 补齐收录时间。已有缓存的不再请求。
-  /// 补齐收录时间。已有缓存的不再请求。
   ///
   /// 同 [_boot]：从 `unawaited` 里跑，必须自己兜住异常，否则闪退。
   Future<void> _fillFirstSeen() async {
@@ -108,16 +106,24 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
     }
   }
 
-  /// 页面即将从树里拿掉：停掉收录时间补齐。
+  /// 停掉收录时间补齐。
   ///
-  /// **必须放在 `deactivate` 而不是 `dispose`** —— `State.dispose` 阶段
-  /// 已经不能再用 `ref`（Riverpod 会抛「ref used after dispose」），
-  /// 我第一版就写在 `dispose` 里，那会让切走号码页时直接崩/卡住。
+  /// ## 两个调用点，因为 `deactivate` 在这个 App 里几乎不触发
   ///
-  /// `FirstSeenFiller.cancel()` 原来只被 `ref.onDispose` 调到，而
-  /// `firstSeenFillerProvider` 是**全 App 一个** Provider、不随页面销毁 ——
-  /// 于是注释写的「用户切走就停」从来没实现过：进号码页之后立刻点开
-  /// 某个号，补齐任务会在后台继续打完整轮，和收件页叠在一起撞风控。
+  /// 这里原来只有 [deactivate] 一个钩子，注释写着「用户切走就停」。实测
+  /// 那件事没发生过：
+  ///   - 本页在 `IndexedStack` 里保活（`main_screen.dart`），切底部页签
+  ///     只是换 `index`，State 还在树里 —— `deactivate` 不调；
+  ///   - 点开收件页是 `Navigator.push`，`MainScreen` 依然在树里 ——
+  ///     `deactivate` 也不调。
+  ///
+  /// 于是「点开某个号之后补齐还在后台打站点」这件事从来没被拦住，
+  /// 而它正是最该停的时刻：收件页那几条 `/sms-api/v1/*` 请求要过人机
+  /// 验证，六路详情页请求叠在一起打过去只会更容易撞限额。
+  ///
+  /// 所以真正生效的钩子是 [_openInbox] 里那次显式 `cancel()`。
+  /// [deactivate] 留着是因为它在这个页面结构下基本不触发，但只要页面
+  /// 哪天真的被移出树，它就是最后一个能停下来的机会。
   @override
   void deactivate() {
     ref.read(firstSeenFillerProvider).cancel();
@@ -134,13 +140,44 @@ class _NumbersScreenState() extends ConsumerState<NumbersScreen> {
   ///
   /// `load` 只在「已经在加载中」时返回 false。那个情况下不该弹提示——
   /// 界面上本来就有进度条在转，再弹一条纯属噪音。
+  ///
+  /// ## 刷新完必须再跑一遍补齐
+  ///
+  /// 站点会随时上新号、下架老号，而 [_boot] 只在 `initState` 里跑一次
+  /// （本页在 `IndexedStack` 里保活，整个进程生命周期只 init 一次）。
+  /// 于是刷新这条路原来是断的：
+  ///   - 刷新拉回来的**新号**拿不到收录时间，要等冷启动才补；
+  ///   - 被下架的号**还留在**收录时间缓存里，同样要等冷启动才剪掉。
+  ///
+  /// [_fillFirstSeen] 里那两步（`retainOnly` 剪枝 + `fillMissing` 补齐）
+  /// 正好就是这两件事，所以刷新后跟着跑一次。
+  ///
+  /// **不 await**：`RefreshIndicator` 的转圈绑在这个 Future 上，补齐一百
+  /// 多个号要几十秒，等它会把下拉手势卡在转圈里。补齐是逐条上屏的
+  /// （`onOne` 回调），不 await 用户照样看得到时间一条条冒出来。
   Future<void> _refresh() async {
     await ref.read(numberDirectoryProvider.notifier).load(force: true);
+    if (!mounted) return;
+    unawaited(_fillFirstSeen());
   }
 
+  /// 打开收件页。**顺手停掉收录时间补齐，回来再续上。**
+  ///
+  /// 收件页那几条 `/sms-api/v1/*` 要过人机验证、还要受「新号限额」管着，
+  /// 六路详情页请求同时打过去只会更容易撞上限。所以进收件页之前先停。
+  ///
+  /// 回来之后续上：`fillMissing` 的闸门是排队制（见那边的文档），
+  /// 这一轮会等前一轮收工再算差集，不会和它并行打站点。
   void _openInbox(AvailableNumber n) {
+    ref.read(firstSeenFillerProvider).cancel();
     Navigator.of(context)
-        .push(MaterialPageRoute<void>(builder: (_) => InboxScreen(number: n)));
+        .push(MaterialPageRoute<void>(builder: (_) => InboxScreen(number: n)))
+        .then((_) {
+          // 回来时页面可能已经不在树里 —— `_fillFirstSeen` 第一句就
+          // `ref.read`，dispose 之后那会抛。
+          if (!mounted) return;
+          unawaited(_fillFirstSeen());
+        });
   }
 
   /// 复制号码到剪贴板，带 + 前缀（+14783902317）。
