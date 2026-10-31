@@ -156,27 +156,45 @@ final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
 ///
 /// 首次启动时把目录里还没有缓存的号补上，之后每次只补新增的号。
 ///
-/// ## 节奏：**小并发**，不是串行
+/// ## 节奏：**两路并发**，超过就被站点限流
 ///
-/// 这里原来写的是「串行，不并发」，理由是「一次打十几个并发请求就是最
-/// 典型的站台风控特征」。实测推翻了那个前提：
+/// 这里原来写的是「6 路并发」，依据是「20 个号同时打过去 20/20 都是
+/// 200」。那个结论是错的，重测推翻了它 —— 关键是**测法**：单次 20 个号
+/// 恰好落在计数器还没攒满的时候，看起来没事；连续打 118 个才现原形。
 ///
-/// - 单个详情页 **1.4–1.8 秒**（`curl` 二十次取均值），几乎全耗在等
-///   响应上，不是站点在算；
-/// - 20 个真实号码**同时**打过去，**20/20 都是 200**，最慢 2.79 秒，
-///   没有任何 429 / 503 / 延迟惩罚。
+/// 实测（`flutter test`，走产品自己的 `NumbersRepository` 抓 118 个号，
+/// 同一份号码清单、只改并发与间隔）：
 ///
-/// 串行 105 个号 = 105 × (1.4 + 0.16) ≈ **2 分 45 秒**，这就是用户说的
-/// 「收录时间获取很慢」。改成 6 路并发后同样 105 个号 ≈ **30 秒**。
+/// | 并发 | 间隔 | 结果 |
+/// |---|---|---|
+/// | 1 | 200ms | 40/40 全 200 |
+/// | 2 | 200ms | 40/40 全 200 |
+/// | 3 | 200ms | 41 个 200 / **19 个 429** |
+/// | 3 | 150ms | 33 个 200 / **27 个 429** |
+/// | 3 | 100ms | 30 个 200 / **30 个 429** |
+/// | 4 | 200ms | 30 个 200 / **10 个 429** |
+/// | 6 | 120ms | 32 个 200 / **8 个 429** |
 ///
-/// 6 这个数是有意保守的：实测 20 路没事，但号码目录本身也在同时翻页，
-/// 留出余量。真要再快就把 [_kConcurrency] 调大，代价是风控面变大。
+/// 阈值就在 **2 req/s 附近**：并发 2 + 200ms 是唯一全过的配置，并发 3
+/// 把间隔拉到 200ms 也仍有三分之一被拒。所以并发取 2，间隔 200ms。
+///
+/// 118 个号在 1.9 req/s 下约 **62 秒**。这比 6 路慢，但 6 路那条路
+/// 有 70% 的号拿不到收录时间 —— 快而残缺没有意义。
+///
+/// ## 429 必须重试，不能当「这个号没有收录时间」
+///
+/// 上面那张表的 429 原来被静默吞掉：`fetchFirstSeen` 见 `statusCode != 200`
+/// 就 `return null`，调用方当成「页面里没这个字段」，这个号就**永久**缺
+/// 收录时间。结果是 118 个号只补到 31 个，界面上一大半卡片光秃秃的。
+///
+/// 实测 429 响应头带 `retry-after: 9`（Cloudflare 的短期退避，不是那种
+/// 要等几千秒的配额封禁），所以退避重试是有效的：等它说的时间，再打一次。
+/// 连续被拒几次才放弃，避免在真封禁上死磕。
 ///
 /// 其余两条约束仍然成立：
 ///   1. **可中断**。用户切走或重进页面时旧任务要能停下，否则会一直跑到
 ///      队列末尾，白白多打几十个请求。
-///   2. **有间隔**。每路之间 120ms + 抖动，六路合起来仍然是「一页一页
-///      翻」的节奏，不是一秒几十发的扫描。
+///   2. **有间隔**。每路之间 200ms + 抖动，两路合起来约 1.9 req/s。
 ///
 /// ## 必须和号码目录走**同一条出口**
 ///
@@ -226,8 +244,8 @@ class FirstSeenFiller({
   /// 里读不到 `this` —— 只能等第一次用到时再建。
   late final HttpClient _http = HttpClient()
     // 和并发数对齐：`maxConnectionsPerHost` 比并发数小的话，多出来的
-    // worker 会排在连接池里等，等于把并发又变回串行。6 路并发 → 留 6 条。
-    ..maxConnectionsPerHost = 6
+    // worker 会排在连接池里等，等于把并发又变回串行。两路并发 → 留 2 条。
+    ..maxConnectionsPerHost = 2
     ..connectionTimeout = const Duration(seconds: 8)
     ..idleTimeout = const Duration(seconds: 30)
     // 和号码目录走同一条出口 —— 不挂这句就是直连（见类文档）。
@@ -363,8 +381,13 @@ class FirstSeenFiller({
     final todo = missing.length > limit ? missing.sublist(0, limit) : missing;
     if (todo.isEmpty) return 0;
 
-    // 并发数。见类文档里那段实测。
-    const kConcurrency = 6;
+    // 并发数。实测见类文档那张表：2 是唯一全过的配置，3 就有三分之一
+    // 被 429 拒掉。
+    const kConcurrency = 2;
+    // 单个号最多试几次。429 会退避重试，但连续被拒说明这个出口已经被
+    // 盯上了，再打只会更糟 —— 放弃这一轮，下次刷新再来。
+    const kMaxAttempts = 4;
+
     final workers = <Future<void>>[];
     var next = 0;
     var stopped = false;
@@ -375,11 +398,30 @@ class FirstSeenFiller({
         final i = next++;
         if (i >= todo.length) return;
         final number = todo[i];
-        final at = await fetchFirstSeen(
-          number,
-          client: _http,
-          baseUrl: baseUrl,
-        );
+
+        DateTime? at;
+        for (var attempt = 1; attempt <= kMaxAttempts; attempt++) {
+          if (_generation != gen) return;
+          try {
+            at = await fetchFirstSeen(number, client: _http, baseUrl: baseUrl);
+            break;
+          } on FirstSeenRateLimited catch (e) {
+            // 站点说等多久就等多久。这是唯一值得重试的失败：它不是
+            // 「这个号没有收录时间」，只是这一下打快了。
+            if (attempt == kMaxAttempts) {
+              logLine('抓收录时间连续被限流（$number），本轮放弃');
+              break;
+            }
+            // 等待期间也要能被取消打断。
+            await _sleepCancellable(e.after, gen);
+            if (_generation != gen) return;
+          } catch (e) {
+            // 网络、超时、5xx：试一次就够。重复打同一个坏请求没意义。
+            logLine('抓收录时间失败（$number）：$e');
+            break;
+          }
+        }
+
         // 取消之后拿到的结果照样落盘 —— 已经花掉的请求不该白费，
         // 但不再继续排队。
         if (at != null) {
@@ -391,10 +433,11 @@ class FirstSeenFiller({
           stopped = true;
           return;
         }
-        // 间隔 120ms + 0~80ms 抖动。六路同时跑，合起来仍然是「一页一页
-        // 翻」的节奏，不是一秒几十发的扫描。
-        await Future<void>.delayed(
-          Duration(milliseconds: 120 + _rnd.nextInt(80)),
+        // 间隔 200ms + 0~100ms 抖动。两路合起来约 1.9 req/s —— 实测
+        // 阈值就在 2 req/s 附近，再快就有 429。
+        await _sleepCancellable(
+          Duration(milliseconds: 200 + _rnd.nextInt(100)),
+          gen,
         );
       }
     }
@@ -406,12 +449,36 @@ class FirstSeenFiller({
     return added;
   }
 
+  /// 睡一会儿，但取消时能提前醒。
+  ///
+  /// 直接 `Future.delayed` 的话，用户切走之后 worker 还要把这段睡眠走完
+  /// 才看见世代号变了 —— 几十个 worker 加起来就是白等。
+  Future<void> _sleepCancellable(Duration d, int gen) async {
+    const step = Duration(milliseconds: 50);
+    var left = d;
+    while (left > Duration.zero) {
+      if (_generation != gen) return;
+      final chunk = left < step ? left : step;
+      await Future<void>.delayed(chunk);
+      left -= chunk;
+    }
+  }
+
   static final _rnd = Random();
 }
 
 /// 抓单个号码详情页里的收录时间。
 ///
-/// 失败返回 null —— 收录时间只是附注，不能因为它拦住收件箱。
+/// 三种结果要分开，不能都折成 null：
+///
+/// - **拿到了** → 返回时间
+/// - **页面里确实没有这个字段**（200 但没有 `First recorded`）→ 返回
+///   `null`，调用方记成「这个号没有收录时间」，不必重试
+/// - **被限流**（429）→ **抛** [FirstSeenRateLimited]，调用方退避重试。
+///   折成 null 的话这个号会被当成「没有收录时间」永久跳过 —— 实测
+///   118 个号里有 87 个就是这么丢的。
+///
+/// 其余异常（网络、超时、5xx）也抛，由调用方决定要不要再试。
 Future<DateTime?> fetchFirstSeen(
   String e164, {
   HttpClient? client,
@@ -443,17 +510,39 @@ Future<DateTime?> fetchFirstSeen(
         .timeout(const Duration(seconds: 8));
     applyBrowserHeaders(req.headers, referer: 'https://freeussms.com/numbers/');
     final res = await req.close().timeout(const Duration(seconds: 10));
-    if (res.statusCode != HttpStatus.ok) {
+
+    if (res.statusCode == 429) {
+      // 站点自己说多久之后再来。实测值是 9 秒（Cloudflare 的短期退避）。
       // 响应体不读会占着连接不放。
+      final wait = _retryAfter(res.headers);
       unawaited(res.drain<void>().catchError((Object _) {}));
-      return null;
+      throw FirstSeenRateLimited(wait);
+    }
+    if (res.statusCode != HttpStatus.ok) {
+      unawaited(res.drain<void>().catchError((Object _) {}));
+      throw HttpException('HTTP ${res.statusCode}', uri: req.uri);
     }
     return parseFirstSeen(await res.transform(utf8.decoder).join());
-  } catch (e) {
-    // 失败就当这个号「没有收录时间」：界面少一行附注，功能照常。
-    logLine('抓收录时间失败（$e164）：$e');
-    return null;
   } finally {
     if (own) http.close(force: true);
   }
+}
+
+/// 站点说「等这么久再来」。没有这个头就用保守的默认值。
+Duration _retryAfter(HttpHeaders headers) {
+  final raw = headers.value(HttpHeaders.retryAfterHeader);
+  final secs = int.tryParse(raw ?? '');
+  if (secs != null && secs > 0) return Duration(seconds: secs.clamp(1, 120));
+  // 没有头时按实测值退避。上限压在 120 秒：真遇到长时间封禁，卡在这里
+  // 不如放弃这一轮，让用户下次刷新再来。
+  return const Duration(seconds: 9);
+}
+
+/// 被站点限流。带上它说的等待时长。
+class const FirstSeenRateLimited(this.after) implements Exception {
+  /// 站点 `retry-after` 给的等待时长（已夹到合理区间）。
+  final Duration after;
+
+  @override
+  String toString() => '被限流，等 ${after.inSeconds}s';
 }

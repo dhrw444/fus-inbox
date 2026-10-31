@@ -67,15 +67,21 @@ void main() {
     return s;
   }
 
-  test('6 路同时在飞，且全部抓回', () async {
+  test('并发受限但真的并发，且全部抓回', () async {
     final store = await freshStore(container());
     final filler = FirstSeenFiller(egress: () => 'DIRECT', baseUrl: base);
     final numbers = [for (var i = 0; i < 12; i++) '141900000${10 + i}'];
     await filler.fillMissing(store, numbers);
     expect(paths.length, 12);
-    // 12 个号、6 路并发 → 峰值受 worker 数限制。
+    // 并发数实测是 2（见 FirstSeenStore 类文档那张表：3 就有三分之一
+    // 被 429 拒掉）。这里只断言「确实并发、且不超过 2」—— 写死具体数字
+    // 会在调并发时变成一条永远失败的假测试。
     expect(maxInFlight, greaterThan(1), reason: '并发改动必须真的并发，否则这次优化等于没做');
-    expect(maxInFlight, lessThanOrEqualTo(6), reason: 'worker 数不该超过 6');
+    expect(
+      maxInFlight,
+      lessThanOrEqualTo(2),
+      reason: '实测并发 3 就有大量 429，worker 数不能超过 2',
+    );
     expect(store.state.length, 12);
   });
 
@@ -163,7 +169,73 @@ void main() {
     expect(paths.length, 13, reason: '第二轮不该重抓已有的号');
     expect(a, 12);
     // 两轮之间是串行的 —— 并发峰值不该叠到 12。
-    expect(maxInFlight, lessThanOrEqualTo(6));
+    expect(maxInFlight, lessThanOrEqualTo(2));
+  });
+
+  test('429 会退避重试，不把号当成「没有收录时间」', () async {
+    final store = await freshStore(container());
+    // 这个号第一次被拒，第二次才给。
+    var attempts = 0;
+    final retryServer = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async => retryServer.close(force: true));
+    retryServer.listen((req) {
+      unawaited(() async {
+        attempts++;
+        if (attempts == 1) {
+          req.response
+            ..statusCode = 429
+            ..headers.set(HttpHeaders.retryAfterHeader, '1')
+            ..write('<!doctype html>');
+        } else {
+          req.response
+            ..statusCode = 200
+            ..headers.contentType = ContentType.html
+            ..write(
+              '<div><dt>First recorded in our directory</dt><dd>'
+              '<time data-insights-date="directory_first_seen_at">'
+              '2026-10-28 08:29 UTC</time></dd></div>',
+            );
+        }
+        await req.response.close();
+      }());
+    });
+
+    final filler = FirstSeenFiller(
+      egress: () => 'DIRECT',
+      baseUrl: 'http://${retryServer.address.host}:${retryServer.port}',
+    );
+    final added = await filler.fillMissing(store, ['14190000001']);
+
+    expect(attempts, 2, reason: '第一次 429 之后必须重试一次');
+    expect(added, 1, reason: '重试成功后要真的落盘');
+    expect(store.state['14190000001'], isNotNull, reason: '被限流的号不能永久缺收录时间');
+  });
+
+  test('一直 429 时最终放弃，不无限重试', () async {
+    final store = await freshStore(container());
+    var attempts = 0;
+    final always429 = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() async => always429.close(force: true));
+    always429.listen((req) {
+      unawaited(() async {
+        attempts++;
+        req.response
+          ..statusCode = 429
+          ..headers.set(HttpHeaders.retryAfterHeader, '1')
+          ..write('<!doctype html>');
+        await req.response.close();
+      }());
+    });
+
+    final filler = FirstSeenFiller(
+      egress: () => 'DIRECT',
+      baseUrl: 'http://${always429.address.host}:${always429.port}',
+    );
+    final added = await filler.fillMissing(store, ['14190000001']);
+
+    expect(added, 0);
+    expect(attempts, lessThanOrEqualTo(4), reason: '有重试上限，不能死磕');
+    expect(attempts, greaterThan(1), reason: '但也不能一次就放弃');
   });
 
   test('第一轮失败不会让排队的第二轮一起失败', () async {
