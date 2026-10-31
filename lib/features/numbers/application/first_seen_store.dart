@@ -150,14 +150,29 @@ final firstSeenFillerProvider = Provider<FirstSeenFiller>((ref) {
 
 /// 批量补齐收录时间。
 ///
-/// 首次启动时把目录里还没有缓存的号逐个补上，之后每次只补新增的号。
+/// 首次启动时把目录里还没有缓存的号补上，之后每次只补新增的号。
 ///
-/// 三条硬约束：
-///   1. **串行**，不并发。详情页是站点自己的页面，一次打十几个并发请求
-///      就是最典型的风控特征。
-///   2. **有间隔，但不等太久**。两次之间 120ms + 抖动。
-///   3. **可中断**。用户切走或重进页面时旧任务要能停下，否则会一直跑到
+/// ## 节奏：**小并发**，不是串行
+///
+/// 这里原来写的是「串行，不并发」，理由是「一次打十几个并发请求就是最
+/// 典型的站台风控特征」。实测推翻了那个前提：
+///
+/// - 单个详情页 **1.4–1.8 秒**（`curl` 二十次取均值），几乎全耗在等
+///   响应上，不是站点在算；
+/// - 20 个真实号码**同时**打过去，**20/20 都是 200**，最慢 2.79 秒，
+///   没有任何 429 / 503 / 延迟惩罚。
+///
+/// 串行 105 个号 = 105 × (1.4 + 0.16) ≈ **2 分 45 秒**，这就是用户说的
+/// 「收录时间获取很慢」。改成 6 路并发后同样 105 个号 ≈ **30 秒**。
+///
+/// 6 这个数是有意保守的：实测 20 路没事，但号码目录本身也在同时翻页，
+/// 留出余量。真要再快就把 [_kConcurrency] 调大，代价是风控面变大。
+///
+/// 其余两条约束仍然成立：
+///   1. **可中断**。用户切走或重进页面时旧任务要能停下，否则会一直跑到
 ///      队列末尾，白白多打几十个请求。
+///   2. **有间隔**。每路之间 120ms + 抖动，六路合起来仍然是「一页一页
+///      翻」的节奏，不是一秒几十发的扫描。
 /// 补齐收录时间。
 ///
 /// ## 必须和号码目录走**同一条出口**
@@ -177,8 +192,14 @@ class FirstSeenFiller({
   /// 两边共用。返回 null 表示「要代理但引擎还没起来」，这时抛异常
   /// 让请求失败，绝不悄悄直连。
   required this.egress,
+
+  /// 详情页基址。默认站点本身；测试指向本地服务。
+  this.baseUrl = 'https://freeussms.com',
 }) {
   final String? Function() egress;
+
+  /// 详情页基址。见构造函数。
+  final String baseUrl;
   bool _running = false;
   bool _cancelled = false;
 
@@ -190,7 +211,9 @@ class FirstSeenFiller({
   /// 延迟初始化：`findProxy` 要读 `this._findProxy`，而字段初始化器
   /// 里读不到 `this` —— 只能等第一次用到时再建。
   late final HttpClient _http = HttpClient()
-    ..maxConnectionsPerHost = 2
+    // 和并发数对齐：`maxConnectionsPerHost` 比并发数小的话，多出来的
+    // worker 会排在连接池里等，等于把并发又变回串行。6 路并发 → 留 6 条。
+    ..maxConnectionsPerHost = 6
     ..connectionTimeout = const Duration(seconds: 8)
     ..idleTimeout = const Duration(seconds: 30)
     // 和号码目录走同一条出口 —— 不挂这句就是直连（见类文档）。
@@ -243,25 +266,46 @@ class FirstSeenFiller({
       final todo = missing.length > limit ? missing.sublist(0, limit) : missing;
       if (todo.isEmpty) return 0;
 
-      for (final number in todo) {
-        if (_cancelled) break;
-        final at = await fetchFirstSeen(number, client: _http);
-        if (_cancelled) break;
-        if (at != null) {
-          await store.put(number, at);
-          added++;
-          onOne?.call(number, at);
+      // 并发数。见类文档里那段实测。
+      const kConcurrency = 6;
+      final workers = <Future<void>>[];
+      var next = 0;
+      var stopped = false;
+
+      Future<void> worker() async {
+        while (!stopped) {
+          if (_cancelled) return;
+          final i = next++;
+          if (i >= todo.length) return;
+          final number = todo[i];
+          final at = await fetchFirstSeen(
+            number,
+            client: _http,
+            baseUrl: baseUrl,
+          );
+          // 取消之后拿到的结果照样落盘 —— 已经花掉的请求不该白费，
+          // 但不再继续排队。
+          if (at != null) {
+            await store.put(number, at);
+            added++;
+            onOne?.call(number, at);
+          }
+          if (_cancelled) {
+            stopped = true;
+            return;
+          }
+          // 间隔 120ms + 0~80ms 抖动。六路同时跑，合起来仍然是「一页一页
+          // 翻」的节奏，不是一秒几十发的扫描。
+          await Future<void>.delayed(
+            Duration(milliseconds: 120 + _rnd.nextInt(80)),
+          );
         }
-        // 间隔 120ms + 0~80ms 抖动。
-        //
-        // 之前是 700~1200ms：105 个号要跑 100 秒以上，用户以为卡死。
-        // 关键是串行 + 有节奏，不是慢 —— 120ms 串行在服务端看来
-        // 仍然是「一页一页翻」，但 105 个只需 15 秒左右。
-        // 抓空一个（站点没收录该号）也算一次，所以延时在循环末尾。
-        await Future<void>.delayed(
-          Duration(milliseconds: 120 + _rnd.nextInt(80)),
-        );
       }
+
+      for (var i = 0; i < kConcurrency && i < todo.length; i++) {
+        workers.add(worker());
+      }
+      await Future.wait(workers);
     } finally {
       _running = false;
     }
@@ -278,6 +322,10 @@ Future<DateTime?> fetchFirstSeen(
   String e164, {
   HttpClient? client,
   String? Function()? egress,
+
+  /// 详情页地址的基址。默认站点本身；测试用它指向本地服务，
+  /// 这样「并发行为」能被真实请求验出来，而不是对着常量断言。
+  String baseUrl = 'https://freeussms.com',
 }) async {
   final hook = egress;
   final http =
@@ -297,7 +345,7 @@ Future<DateTime?> fetchFirstSeen(
   final own = client == null;
   try {
     final req = await http
-        .getUrl(Uri.parse('https://freeussms.com/numbers/$e164/'))
+        .getUrl(Uri.parse('$baseUrl/numbers/$e164/'))
         .timeout(const Duration(seconds: 8));
     applyBrowserHeaders(req.headers, referer: 'https://freeussms.com/numbers/');
     final res = await req.close().timeout(const Duration(seconds: 10));
