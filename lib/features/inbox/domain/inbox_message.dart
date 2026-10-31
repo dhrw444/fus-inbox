@@ -109,6 +109,7 @@ class const SiteHold({
   required this.title,
   required this.message,
   this.retrySeconds = 0,
+  this.newInboxesOnly = false,
 }) {
   final SiteHoldKind kind;
 
@@ -119,6 +120,14 @@ class const SiteHold({
 
   /// 站点建议多少秒后再试。0 表示它没说。
   final int retrySeconds;
+
+  /// 拒绝**只针对没开过的新号码**，已打开过的号照读。
+  ///
+  /// 站点在 429 的 body 里给 `scope: "new_inboxes"`（实测：第 6 个新号
+  /// 触发，同一时刻打已打开过的号仍然是 200）。这一档只有换出口 + 换
+  /// 身份才解得开，所以界面要给它一个按钮；其它两档（`challenge` /
+  /// `unavailable`）换出口没用，不该给。
+  final bool newInboxesOnly;
 }
 
 class const InboxState({

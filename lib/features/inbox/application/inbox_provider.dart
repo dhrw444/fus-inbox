@@ -115,6 +115,13 @@ class InboxStore({this.onChanged}) {
           title: payload['title']?.toString() ?? '',
           message: payload['message']?.toString() ?? '',
           retrySeconds: retry is int ? retry : int.tryParse('$retry') ?? 0,
+          // 判据用站点自己贴的档位 `data-notice-kind`（`live.js:552`
+          // 渲染这段文案时写进去的），比从状态码倒推准。`new-inboxes`
+          // 是唯一「换出口 + 换身份」解得开的一档。
+          newInboxesOnly:
+              payload['notice']?.toString() == 'new-inboxes' ||
+              (payload['scope']?.toString() == 'new_inboxes' &&
+                  kind == 'pause'),
         ),
         phase: InboxPhase.waiting,
         clearError: true,

@@ -577,11 +577,38 @@ class IdentityRotator({
     }
   }
 
+  /// 一键摆脱「新号码额度用完」：**换出口 + 换身份，一起做**。
+  ///
+  /// 和 [restartWithNewIdentity] 的区别只有一件：那个不管 IP，这个先
+  /// 把出口换掉。站点把新号额度记在出口 IP 上（实测：同一 IP 清空
+  /// 全部浏览器数据后换新身份，再开新号仍然是 429 `fair_use_pause`），
+  /// 所以只清身份那一半等于白烧一个新身份。
+  ///
+  /// 走的是 [_rotateToNextProxy] 同一条实现 —— 它本来就做「换出口 +
+  /// 换身份」，只是以前**只有自动路径**能调到它（受 `autoRotate` 开关和
+  /// 45 秒冷却管着）。用户主动点按钮不该被那两道闸挡住：他明确说了
+  /// 「现在就要换」，不是在等自动行为。
+  ///
+  /// 池里没别的出口可换时**不退化成只清身份** —— 那样界面说「已换新
+  /// 身份」而限额一点没动，比不给按钮更糟。返回 false 让界面说清楚。
+  ///
+  /// 返回是否真的换出去了。
+  Future<bool> rotateEgressAndIdentity() async {
+    final pool = ref.read(proxyProvider);
+    if (!pool.canRotate) {
+      store.note('代理池里没有别的出口可换，需要你换个网络再试。');
+      return false;
+    }
+    await _rotateToNextProxy();
+    return true;
+  }
+
   /// 用户已经换了出口 IP，点这个把浏览器身份也一起清掉再重来。
   ///
   /// 配额记在 IP 上，换身份单独做没用（实测同一 IP 换身份后第 4 个号
   /// 依然被拒）。反过来只换 IP 不清身份，站点那边还认旧会话。所以
-  /// 这两半必须一起 —— App 负责身份这一半，IP 那一半用户来做。
+  /// 这两半必须一起 —— 这条路径假定 IP 那一半用户已经自己做了；
+  /// App 自己会换出口的那条走 [rotateEgressAndIdentity]。
   Future<void> restartWithNewIdentity() async {
     // 账本里这个出口的绑定也要清掉 —— 否则下次打开还会拿回同一个
     // 身份，用户明明换了 IP 却还是旧身份，等于白换。

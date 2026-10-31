@@ -362,19 +362,32 @@
     if (box) {
       var t = box.querySelector('[data-fair-use-title]');
       var m = box.querySelector('[data-fair-use-message]');
+      // 站点自己给这四档贴了标签（`live.js:552`）：
+      //   challenge / new-inboxes / pause / connection
+      // 这是**同一段渲染**里写进去的，比我们从状态码倒推更准。
+      var notice = box.getAttribute('data-notice-kind') || '';
       if (t || m) {
         return {
           title: t ? (t.textContent || '').trim() : '',
           message: m ? (m.textContent || '').trim() : '',
+          notice: notice,
         };
       }
     }
     // 站点还没渲染出来，用已知的文案。
     return {
-      pause: { title: '免费额度用完了', message: '站点限制了新号码的免费读取。已打开过的号码仍然可以读。' },
-      challenge: { title: '需要过人机验证', message: '点右上角盾牌，在页面里完成验证，通过后会自动收起。' },
-      unavailable: { title: '站点暂时繁忙', message: '服务器暂时没有响应，稍等一会它会自己恢复。' },
-    }[kind] || { title: '', message: '' };
+      title: ({
+        pause: '免费额度用完了',
+        challenge: '需要过人机验证',
+        unavailable: '站点暂时繁忙',
+      })[kind] || '',
+      message: ({
+        pause: '站点限制了新号码的免费读取。已打开过的号码仍然可以读。',
+        challenge: '点右上角盾牌，在页面里完成验证，通过后会自动收起。',
+        unavailable: '服务器暂时没有响应，稍等一会它会自己恢复。',
+      })[kind] || '',
+      notice: '',
+    };
   }
 
   function reportHold(kind, retry, scope, serverMessage) {
@@ -388,6 +401,9 @@
       type: 'holdup',
       kind: kind,
       scope: scope || '',
+      // 站点自己贴的档位。`new-inboxes` = 新号额度用完（已开过的照读），
+      // 界面只对这一档给「换 IP + 重置身份」。
+      notice: copy.notice || '',
       retry: retry || 0,
       title: copy.title,
       message: serverMessage || copy.message,

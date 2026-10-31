@@ -92,12 +92,17 @@ class const HoldNotice({
             FilledButton.tonalIcon(
               onPressed: onRestart,
               icon: const Icon(Icons.vpn_key_outlined, size: 18),
-              label: const Text('换 IP 后重置浏览器'),
+              label: const Text('换出口并重置身份'),
             ),
             const SizedBox(height: 6),
             Text(
-              '配额按出口 IP 算，不按号码。先换 IP，再点上面那个 —— '
-              '它会清掉旧浏览器身份（密钥 / cookie / 本地存储）一起重来。',
+              hold.newInboxesOnly
+                  ? '新号码的免费额度用完了，已打开过的号仍能读。点上面那个会'
+                        '换一条出口 IP 并清掉旧浏览器身份（密钥 / cookie / '
+                        '本地存储），站点那边就是全新访客。代理池里没有别的'
+                        '出口时会明说，不会假装换成了。'
+                  : '配额按出口 IP 算，不按号码。点上面那个会换一条出口 IP '
+                        '并清掉旧浏览器身份（密钥 / cookie / 本地存储）一起重来。',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodySmall?.copyWith(
                 color: scheme.onSurfaceVariant,

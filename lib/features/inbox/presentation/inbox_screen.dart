@@ -887,6 +887,27 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _pumpVerification();
   }
 
+  /// 额度用完那个按钮：**换出口 + 换身份，一次做完**。
+  ///
+  /// 原来这个按钮直接接 `restartWithNewIdentity`，它只管身份那一半 ——
+  /// 界面上写着「先换 IP，再点这个」，把换 IP 推给用户自己做。可站点把
+  /// 新号额度记在**出口 IP** 上（实测：同一个 IP 清空全部浏览器数据、
+  /// 换新身份之后，再开新号仍然 429 `fair_use_pause`），所以只清身份
+  /// 那一半是白烧一个新身份，用户点完还是打不开新号。
+  ///
+  /// 现在由 App 自己挑下一条出口。池里没有别的出口时**不退化成只清
+  /// 身份**：界面会明说「需要换个网络」，不会假装换成了。
+  Future<void> _restartWithNewEgress() async {
+    final done = await _rotator.rotateEgressAndIdentity();
+    if (!mounted) return;
+    if (!done) {
+      _store.note('代理池里没有别的出口可换，需要你换个网络再试。');
+      return;
+    }
+    _store.note('已换出口并重置身份，重新打开这个号。');
+    unawaited(_reload());
+  }
+
   /// 用户说先不弄了：收起页面，但继续盯状态。
   ///
   /// 起算点同样重置（免得旧轮次已经超窗口），但**不解开闸门** —— 用户
@@ -1038,7 +1059,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
               onRescan: _rescan,
               onReload: _reload,
               onChallenge: () => _openChallenge(reload: true),
-              onRestart: _rotator.restartWithNewIdentity,
+              onRestart: _restartWithNewEgress,
               onRevealMore: _store.revealMore,
               onLoadMore: _loadMore,
               onCopyCode: (c) => _copy(c, '验证码'),
