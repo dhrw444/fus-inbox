@@ -239,6 +239,28 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     return choice.next;
   }
 
+  /// 单独重测一条出口，把结果写回 [ProxyState.results]。
+  ///
+  /// 换出口的意义就是换 IP，而 IP 只能实测（`ProxyProbeResult.egressIp`）。
+  /// 不实测的话界面只能说「换了出口」—— 可用户要的是「IP 真的变了」，这两
+  /// 件事在池子配错的时候会不一样：同一家代理商的两条端口可能落到同一个
+  /// 出口 IP（见 `pickRotation` 里的同 IP 判据），条目名变了、IP 没变。
+  ///
+  /// 顺便这也会刷新那条出口的检测结论：写回去之后 `pickRotation` 的
+  /// 「已知出口 IP」和 `unusable` 判据都跟着更新。
+  ///
+  /// 失败不抛：拿不到 IP 只是少一条信息，不该把换出口这条路径带崩。
+  Future<ProxyProbeResult?> probeEgressIp(ProxyConfig proxy) async {
+    try {
+      final result = await _probe.probeOne(proxy);
+      state = state.copyWith(results: {...state.results, proxy.id: result});
+      return result;
+    } on Object catch (e) {
+      logLine('出口 IP 复测失败：$e');
+      return null;
+    }
+  }
+
   Future<void> clearLedger() async {
     state.ledger.clearAll();
     await _persist();

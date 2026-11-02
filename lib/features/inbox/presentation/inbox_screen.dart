@@ -1034,12 +1034,25 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   Future<void> _restartWithNewEgress() async {
     final done = await _rotator.rotateEgressAndIdentity();
     if (!mounted) return;
-    if (!done) {
-      _store.note('代理池里没有别的出口可换，需要你换个网络再试。');
-      return;
-    }
+    // 失败原因由 rotator 写在状态栏（正在换 / 池里没有别的出口 / 代理没设上 /
+    // 挑不到下一条）。这里再盖一句笼统的会把真原因顶掉 —— 上一版就是无条件
+    // 盖「代理池里没有别的出口可换，需要你换个网络再试。」，于是「出口其实
+    // 换了但没设上」也显示成「没有别的出口」，用户照着这句话去加代理，加完
+    // 还是不行。
+    if (!done) return;
     _store.note('已换出口并重置身份，重新打开这个号。');
-    unawaited(_reload());
+    // **这里不要再 `_reload()`。**
+    //
+    // 换出口这条路径里，`_rotateIdentityBody` 已经走完了一整串：作废本页 →
+    // 清站点数据 → 换 UA → 打开收件页 →（onPageFinished 时）删 IndexedDB →
+    // 再重载一次。而本页挂在 rotator 上的两个回调 —— `onPageDiscarded` =
+    // `_discardPage`、`onLoadStarted` = `_beginPageRound` —— 已经被那一串
+    // 各自调过一次，轮询、看门狗、验证轮全都重开了。
+    //
+    // 再插一次 `_reload()` 就是两串导航叠在一起：后一次会**打断**前一次刚起
+    // 的加载，还可能插进「删 IndexedDB」那一步的中间（`_wipeOnLoad` 是留给
+    // 下一次加载消费的）。表现是换完之后白闪两下、等待翻倍，而新出口上的
+    // 第一批请求是重复的。
   }
 
   /// 用户说先不弄了：收起页面，但继续盯状态。

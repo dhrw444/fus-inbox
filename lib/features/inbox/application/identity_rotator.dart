@@ -28,6 +28,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:fus_inbox/core/log.dart';
 import 'package:fus_inbox/core/proxy/identity_binding.dart';
+import 'package:fus_inbox/core/proxy/proxy_config.dart';
 import 'package:fus_inbox/core/proxy/proxy_engine_provider.dart';
 import 'package:fus_inbox/core/proxy/proxy_provider.dart';
 // 带 as identity 前缀：本类自己的方法就叫 [rotateIdentity]，不加前缀的话
@@ -274,7 +275,10 @@ class IdentityRotator({
   ///
   /// 没得换时（池空 / 只剩一条可用）就什么都不做，界面上的
   /// 「换 IP 后重置浏览器」还留着，由用户自己换。
-  Future<void> _rotateToNextProxy() async {
+  ///
+  /// **返回是否真的换成了** —— 每一条提前退出都在状态栏留下一句话，
+  /// 不能只是安静地 return：按钮那边要据此决定说不说「已换出口」。
+  Future<bool> _rotateToNextProxy() async {
     // **入口必须有闸。**
     //
     // 这里原来只有 `_rotating = true`、没有前置检查 —— 而 `rotateIdentity`
@@ -284,24 +288,39 @@ class IdentityRotator({
     // 没有闸就**无限递归地起任务**。
     //
     // 真机表现：点一下就闪退、运行内存被跑满。
-    if (_rotating) return;
+    if (_rotating) {
+      // 原来这里静默 return：用户点按钮、界面什么都不发生，而调用方还会
+      // 报「已换出口并重置身份」。「点了没有用」有一半是这么来的。
+      store.note('上一次换出口还没走完，稍等一下。');
+      return false;
+    }
     _rotating = true;
     try {
       final notifier = ref.read(proxyProvider.notifier);
-      if (!ref.read(proxyProvider).canRotate) {
+      final before = ref.read(proxyProvider);
+      if (!before.canRotate) {
         store.note('代理池里没有别的出口可换，需要你换个网络再点重置。');
-        return;
+        return false;
       }
+      // 旧出口的已知 IP（空 = 没测过）。换完拿新出口的**实测** IP 跟它比：
+      // 换了条目但 IP 没变，配额就没变 —— 那是这套东西最要命的失败，
+      // 因为它长得和成功一模一样。
+      final oldIp = before.results[before.currentId]?.egressIp ?? '';
+
       final next = await notifier.rotateToNext();
-      if (next == null || !isAlive()) return;
+      if (next == null) {
+        store.note('没挑到下一条出口，池里没有别的可用条目。');
+        return false;
+      }
+      if (!isAlive()) return false;
 
       // 出口要先换掉。rotateIdentity 最后会打开收件页，那一下的流量
       // 必须已经走新出口 —— 晚一步就是拿旧 IP 又去撞一次限额。
       final active = await ref.read(proxyEngineProvider).apply(next);
-      if (!isAlive()) return;
+      if (!isAlive()) return false;
       if (!active.ok && !next.isDirectProxy) {
         store.note('换到 ${next.displayName} 没设上：${active.detail}。');
-        return;
+        return false;
       }
       store.note('配额用满，换到 ${next.displayName}（${active.detail}）。');
 
@@ -311,9 +330,51 @@ class IdentityRotator({
       // [rotateIdentity] 会被它自己的闸门当成「正在换」直接 return，
       // 自动轮换就此失效 —— 而且失效得很安静。
       await _rotateIdentityBody();
+      // 换完把新出口的**真实 IP** 报出来。不 await：一次探活最坏要等
+      // 10 秒超时，而这一步只为了补一行说明，不该让页面晚 10 秒才回来
+      // （`_rotateIdentityBody` 已经把页面重新打开了）。
+      unawaited(_reportEgressIp(notifier, next, oldIp));
+      return true;
     } finally {
       _rotating = false;
     }
+  }
+
+  /// 换完之后实测新出口的出口 IP，把事实写进状态栏。
+  ///
+  /// 为什么要实测：换出口的全部意义是换个 IP 去拿新号额度，而「换了条目」
+  /// 和「换了 IP」不是一回事 —— 同一家代理商的两条端口经常落到同一个出口
+  /// IP（配额按 IP 算，见 `proxy_cards.dart`）。`pickRotation` 只能按检测
+  /// 结果**优先**避开重复 IP，避不开时照样得给一条出口。那种情况下界面
+  /// 必须说实话，否则用户看到的就是「点了没反应」。
+  Future<void> _reportEgressIp(
+    ProxyNotifier notifier,
+    ProxyConfig next,
+    String oldIp,
+  ) async {
+    final result = await notifier.probeEgressIp(next);
+    if (!isAlive()) return;
+    if (result == null) {
+      store.note('已换到 ${next.displayName}（出口 IP 没测出来）。');
+      return;
+    }
+    if (!result.ok) {
+      store.note('已换到 ${next.displayName}，但这条出口连不上：${result.failure}。');
+      return;
+    }
+    final ip = result.egressIp;
+    if (ip.isEmpty) {
+      store.note('已换到 ${next.displayName}（出口 IP 未知，这条代理可能拦了 IP 查询）。');
+      return;
+    }
+    if (oldIp.isNotEmpty && ip == oldIp) {
+      store.note(
+        '已换到 ${next.displayName}，但出口 IP 还是 $ip —— '
+        '这两条代理是同一个出口，配额不会变，得换一家。',
+      );
+      return;
+    }
+    store.note('已换到 ${next.displayName}，出口 IP $ip。');
   }
 
   /// 换一个浏览器身份并重新打开收件页。
@@ -554,13 +615,17 @@ class IdentityRotator({
   ///
   /// 返回是否真的换出去了。
   Future<bool> rotateEgressAndIdentity() async {
-    final pool = ref.read(proxyProvider);
-    if (!pool.canRotate) {
-      store.note('代理池里没有别的出口可换，需要你换个网络再试。');
-      return false;
-    }
-    await _rotateToNextProxy();
-    return true;
+    // **如实返回。**
+    //
+    // 这里原来只查一遍 `canRotate` 就 `return true`，而 [_rotateToNextProxy]
+    // 内部还有好几条提前退出（重入闸、挑不到下一条、代理没设上、页面已经
+    // 死了）。于是「真的换了」和「点了什么都没发生」在界面上长得一模一样：
+    // 都写着「已换出口并重置身份」。用户报的「点了没有用」里，有一半是
+    // 按钮在说谎 —— 界面说换了，其实一步都没走。
+    //
+    // `canRotate` 那个预检留给 [_rotateToNextProxy]：它不是静默返回，
+    // 会写明原因（池里没有别的出口），而且只在一个地方写，不会两处漂。
+    return _rotateToNextProxy();
   }
 
   /// 用户已经换了出口 IP，点这个把浏览器身份也一起清掉再重来。

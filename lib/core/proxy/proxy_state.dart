@@ -11,6 +11,7 @@ library;
 
 import 'package:fus_inbox/core/proxy/identity_ledger.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/proxy_pool_ops.dart';
 import 'package:fus_inbox/core/proxy/proxy_probe.dart';
 
 class ProxyState {
@@ -66,18 +67,21 @@ class ProxyState {
   /// 下一条是不是还是我自己？」是就是没得换。规则只有一处定义，
   /// 不可能再对不上。
   ///
-  /// **必须和 [pickRotation] 的「目标不能是当前那条」对齐**：
-  /// `pickRotation` 现在把 `currentId` 从候选里剔掉，剔完为空就返回
-  /// null（宁可什么都不做，也不在同一 IP 上换身份）。这里照同一套：
-  /// 剔完为空 = 没得换。
-  bool get canRotate {
-    final usable = all.where((p) => !isUnusable(p.id)).toList();
-    // 和 pickRotation 一样：全判死也不剔，全池当候选。
-    final candidates = usable.isNotEmpty ? usable : all;
-    final others = candidates.where((p) => p.id != currentId).toList();
-    if (others.isEmpty) return false;
-    return ledger.nextUsableProxy(others, currentId)?.id != currentId;
-  }
+  /// **判据只有一处定义**：直接问 [pickRotation]「按换出口的规则，下一条
+  /// 挑得出来吗」。挑不出来（池里没别的条目、别的条目都被检测判死、
+  /// 或者有别的条目但组合下来仍然只能是当前这条）= 没得换。
+  ///
+  /// 以前这里把 `pickRotation` 的筛选规则复述了一遍（剔判死 → 剔当前 →
+  /// 问账本），两处各写一遍必然漂：加一条「出口 IP 相同的跳过」就得记得
+  /// 两边都改，忘一处就是「界面说能换，点了什么都不发生」。
+  bool get canRotate =>
+      pickRotation(
+        all: all,
+        results: results,
+        ledger: ledger,
+        currentId: currentId,
+      ) !=
+      null;
 
   /// 这条代理是不是被检测判死了。
   bool isUnusable(String proxyId) => results[proxyId]?.ok == false;

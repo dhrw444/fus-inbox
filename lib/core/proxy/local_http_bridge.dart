@@ -78,6 +78,16 @@ class LocalProxyBridge._(this._server, this._upstream) {
   /// 而不是「一条 SOCKS5 隧道」。
   ProxyConfig? _upstream;
 
+  /// 此刻活着的客户端连接（WebView / `dart:io` 那两侧）。
+  ///
+  /// 只服务一件事：换出口时把它们全部掐掉（[dropEstablished]）。
+  /// 登记和注销都发生在同一条生命周期上 —— 收尾一律走 [_shutdown]，
+  /// 所以集合里不会留下已经断掉的句柄。
+  final Set<Socket> _live = {};
+
+  /// 此刻活着的客户端连接数。只用于测试和排查。
+  int get liveConnections => _live.length;
+
   /// 出口变了多少次。只用于测试和排查。
   int get upstreamSwitches => _switches;
   int _switches = 0;
@@ -105,8 +115,8 @@ class LocalProxyBridge._(this._server, this._upstream) {
     return bridge;
   }
 
-  /// 换出口。只影响**之后建立**的连接；已经在传的隧道不动
-  /// （中途换掉会把正在收的短信截断）。
+  /// 换出口。**换掉之后会把所有已建立的连接掐掉**（见 [dropEstablished]），
+  /// 因为它们串的是旧上游。
   ///
   /// `null` = 直连。
   ///
@@ -119,6 +129,33 @@ class LocalProxyBridge._(this._server, this._upstream) {
     if (next == _upstream) return;
     _upstream = next;
     _switches++;
+    // **换出口 = 之后所有流量都走新出口。**
+    //
+    // 只改 [_upstream] 是不够的：那个值是在**建连那一刻**读的
+    // （[_connect] 每次现读），已经建好的连接里那一段仍然是旧上游。
+    // 而浏览器会把空闲连接留着复用 —— 重新加载同一个站点时走的是同一条
+    // 隧道，站点看到的出口 IP 一点没变，界面却已经显示新出口了。
+    // 配额按出口 IP 算（见 `proxy_cards.dart`），于是「换了出口、额度没变」。
+    //
+    // 掐掉的代价是正在传的连接会断。这条路径只在**真的换了出口**时走到
+    // （`next == _upstream` 直接 return），而本 App 每次换出口都紧跟着清
+    // 站点数据 + 重新导航：被掐断的那条连接属于马上要被丢掉的那个文档，
+    // 留着它才是 bug。
+    dropEstablished();
+  }
+
+  /// 掐掉所有**已经建立**的客户端连接。
+  ///
+  /// 掐的是客户端那一侧（`destroy`），不是上游那一侧：客户端立刻看到连接
+  /// 断了，下一次请求会重新建连，也就重新读一遍当前出口。反过来只关上游，
+  /// 客户端还以为连接活着 —— 它会先把请求发进去、失败、再重试。对浏览器
+  /// 是透明的一次重试，对 `dart:io` 的调用方是一次白失败。
+  void dropEstablished() {
+    // 先拷一份：`destroy` 会同步触发收尾，而收尾会改 [_live]。
+    for (final client in _live.toList()) {
+      client.destroy();
+    }
+    _live.clear();
   }
 
   /// 按当前出口连到 `host:port`。
@@ -153,6 +190,8 @@ class LocalProxyBridge._(this._server, this._upstream) {
   Future<void> _handle(Socket client) async {
     client.setOption(SocketOption.tcpNoDelay, true);
     final head = SocketReader(client);
+    // 登记进活连接表：换出口时要把它们全掐掉（见 [dropEstablished]）。
+    _live.add(client);
     BridgePipe? pipe;
     // 已经给客户端回过状态行没有。**决定 catch 里能不能再写 502。**
     //
@@ -243,7 +282,11 @@ class LocalProxyBridge._(this._server, this._upstream) {
     } finally {
       // _pump 成功时它自己会收尾（两条 listen 的 onDone），这里只兜
       // 「压根没进泵」的情况：读者还握着 socket 订阅，必须放掉。
-      if (pipe == null) await head.close();
+      if (pipe == null) {
+        await head.close();
+        // 进过泵的连接由 [_shutdown] 注销，这条没进过泵，在这里注销。
+        _live.remove(client);
+      }
     }
   }
 
@@ -252,11 +295,7 @@ class LocalProxyBridge._(this._server, this._upstream) {
   /// 客户端 → 隧道这段**不能**再 `client.listen(...)` —— Socket 是单订阅
   /// 流，SocketReader 已经订阅了，第二次 listen 直接抛「Stream has already
   /// been listened to」。改成让 reader 自己切到转发模式。
-  static Future<void> _pump(
-    Socket client,
-    SocketReader head,
-    BridgePipe t,
-  ) async {
+  Future<void> _pump(Socket client, SocketReader head, BridgePipe t) async {
     final pending = head.takeBuffer();
     if (pending.isNotEmpty) {
       t.write(pending);
@@ -294,9 +333,12 @@ class LocalProxyBridge._(this._server, this._upstream) {
   }
 
   /// 一边断了就把两边都收掉。半开的隧道没有任何用处，只会占 fd。
-  static void _shutdown(BridgePipe t, Socket client) {
+  ///
+  /// 也是**活连接表的唯一注销点** —— 进过泵的连接只有这里会结束。
+  void _shutdown(BridgePipe t, Socket client) {
     t.close();
     client.destroy();
+    _live.remove(client);
   }
 
   /// 读请求头的上限。20 秒足够慢网络发完一行请求头，再久就是对面不说话。

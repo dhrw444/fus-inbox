@@ -152,7 +152,30 @@ RotationChoice? pickRotation({
   final others = candidates.where((p) => p.id != currentId).toList();
   if (others.isEmpty) return null;
 
-  final next = ledger.nextUsableProxy(others, currentId) ?? others.first;
+  // **优先挑一条出口 IP 不同的。**
+  //
+  // 配额按出口 IP 算，不按代理条目（见 `proxy_cards.dart`：同一个 IP 的代理
+  // 再多也只算一个出口）。同一家代理商的一串端口经常落到同一个出口 IP ——
+  // 换过去只是换了个条目名，站点看到的 IP 和额度一点没变。用户看到的就是
+  // 「点了换出口，IP 没变」。
+  //
+  // 出口 IP 来自连通性检测（`ProxyProbeResult.egressIp`，读 api.ipify.org
+  // 的回显）。**只知道才判**：没测过的条目 IP 未知，既不能当它一样、也不能
+  // 当它不一样 —— 排在「已知不同」后面当兜底。
+  //
+  // 已知相同的**仍然可换**（`preferred` 空了就退回全集）：一条都不换等于
+  // 按钮死掉，而那正是这个函数要避免的失败模式。真换成同一个 IP 的话，
+  // 上层会拿实测结果如实说出来（见 `IdentityRotator` 的出口 IP 核对）。
+  final currentIp = results[currentId]?.egressIp ?? '';
+  final preferred = currentIp.isEmpty
+      ? others
+      : others.where((p) {
+          final ip = results[p.id]?.egressIp ?? '';
+          return ip.isEmpty || ip != currentIp;
+        }).toList();
+  final pool = preferred.isNotEmpty ? preferred : others;
+
+  final next = ledger.nextUsableProxy(pool, currentId) ?? pool.first;
 
   // 目标出口上有没有可沿用的身份。
   //

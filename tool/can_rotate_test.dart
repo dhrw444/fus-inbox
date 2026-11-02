@@ -12,6 +12,7 @@
 // 纯逻辑，不碰网络、不碰 Flutter。
 import 'package:fus_inbox/core/proxy/identity_ledger.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
+import 'package:fus_inbox/core/proxy/proxy_pool_ops.dart';
 import 'package:fus_inbox/core/proxy/proxy_probe.dart';
 import 'package:fus_inbox/core/proxy/proxy_state.dart';
 
@@ -138,6 +139,101 @@ void main() {
     );
     final s = ProxyState(pool: [a, b], currentId: a.id, ledger: ledger);
     ok(s.canRotate, '当前出口看过号，池里还有别的 → 能换');
+  }
+
+  print('');
+  print('=== 10. 出口 IP：优先挑 IP 不同的那条 ===');
+  {
+    // 配额按出口 IP 算，不按代理条目。两条端口落到同一个出口 IP 时，
+    // 换过去只是换了个条目名 —— 站点看到的 IP 和额度一点没变，
+    // 用户看到的就是「点了换出口，IP 没变」。
+    final a = mk('1.1.1.1');
+    final same = mk('2.2.2.2');
+    final other = mk('3.3.3.3');
+    final results = {
+      a.id: ProxyProbeResult(proxy: a, ok: true, egressIp: '1.1.1.1'),
+      same.id: ProxyProbeResult(proxy: same, ok: true, egressIp: '1.1.1.1'),
+      other.id: ProxyProbeResult(proxy: other, ok: true, egressIp: '7.7.7.7'),
+    };
+    final choice = pickRotation(
+      all: [a, same, other],
+      results: results,
+      ledger: IdentityLedger(),
+      currentId: a.id,
+    );
+    ok(
+      choice?.next.id == other.id,
+      '跳过同 IP 的条目，挑到不同 IP 的那条',
+      '(挑的是 ${choice?.next.host})',
+    );
+  }
+
+  print('');
+  print('=== 11. 全都是同一个出口 IP：仍然要给出下一条 ===');
+  {
+    // 一条都不换 = 按钮死掉，那是这个函数要避免的失败模式。
+    // 真换成同一个 IP 的话，由上层拿实测结果如实告诉用户。
+    final a = mk('1.1.1.1');
+    final b = mk('2.2.2.2');
+    final results = {
+      a.id: ProxyProbeResult(proxy: a, ok: true, egressIp: '1.1.1.1'),
+      b.id: ProxyProbeResult(proxy: b, ok: true, egressIp: '1.1.1.1'),
+    };
+    final choice = pickRotation(
+      all: [a, b],
+      results: results,
+      ledger: IdentityLedger(),
+      currentId: a.id,
+    );
+    ok(choice?.next.id == b.id, '同 IP 也得给一条（不能让按钮死掉）');
+    ok(
+      ProxyState(pool: [a, b], currentId: a.id, results: results).canRotate,
+      'canRotate 和 pickRotation 结论一致',
+    );
+  }
+
+  print('');
+  print('=== 12. 出口 IP 未知的不参与比较 ===');
+  {
+    // 没测过 = 不知道它跟谁撞 IP，既不能当它一样也不能当它不一样。
+    // 两条候选：一条和当前同 IP，一条未知 —— 该挑未知的那条。
+    final a = mk('1.1.1.1');
+    final same = mk('2.2.2.2');
+    final unknown = mk('3.3.3.3');
+    final results = {
+      a.id: ProxyProbeResult(proxy: a, ok: true, egressIp: '1.1.1.1'),
+      same.id: ProxyProbeResult(proxy: same, ok: true, egressIp: '1.1.1.1'),
+      unknown.id: ProxyProbeResult(proxy: unknown, ok: true),
+    };
+    final choice = pickRotation(
+      all: [a, same, unknown],
+      results: results,
+      ledger: IdentityLedger(),
+      currentId: a.id,
+    );
+    ok(
+      choice?.next.id == unknown.id,
+      '未知 IP 的排在「已知同 IP」前面',
+      '(挑的是 ${choice?.next.host})',
+    );
+  }
+
+  print('');
+  print('=== 13. 当前出口的 IP 未知：不做任何偏好 ===');
+  {
+    final a = mk('1.1.1.1');
+    final b = mk('2.2.2.2');
+    final results = {
+      a.id: ProxyProbeResult(proxy: a, ok: true),
+      b.id: ProxyProbeResult(proxy: b, ok: true, egressIp: '7.7.7.7'),
+    };
+    final choice = pickRotation(
+      all: [a, b],
+      results: results,
+      ledger: IdentityLedger(),
+      currentId: a.id,
+    );
+    ok(choice?.next.id == b.id, '当前 IP 未知 → 照旧挑下一条');
   }
 
   print('');

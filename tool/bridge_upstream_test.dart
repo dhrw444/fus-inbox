@@ -237,6 +237,77 @@ Future<void> main() async {
   ok(socks1.connections > c1d, '重新走 #1');
   ok(bridge.port == fixedPort, '全程端口一致');
 
+  print('');
+  print('=== 5. 换出口必须掐掉**已经建立**的隧道 ===');
+  {
+    // 立一个不回话、也不关连接的目标：这样隧道会一直活着，正是浏览器
+    // 留着复用的那种空闲连接。
+    final quiet = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    var quietAccepts = 0;
+    quiet.listen((s) {
+      quietAccepts++;
+      // 故意不回也不关 —— 连接保持打开。
+    });
+
+    final client = await Socket.connect('127.0.0.1', bridge.port);
+    final closed = Completer<void>();
+    client.listen(
+      (Uint8List _) {},
+      onDone: () {
+        if (!closed.isCompleted) closed.complete();
+      },
+      onError: (Object _) {
+        if (!closed.isCompleted) closed.complete();
+      },
+    );
+    client.write(
+      'GET http://127.0.0.1:${quiet.port}/ HTTP/1.1\r\n'
+      'Host: 127.0.0.1\r\n'
+      'Connection: keep-alive\r\n\r\n',
+    );
+    await client.flush();
+
+    var waited = 0;
+    while (quietAccepts == 0 && waited < 2500) {
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      waited += 20;
+    }
+    ok(quietAccepts > 0, '经桥建好了一条活隧道（目标是接上就不说话的那种）');
+    ok(
+      bridge.liveConnections > 0,
+      '桥登记了这条活连接',
+      '(live=${bridge.liveConnections})',
+    );
+
+    // 同值换上游（此刻上游就是 #1，第 4 步刚切回来）：什么都不该动。
+    final liveBefore = bridge.liveConnections;
+    bridge.setUpstream(p1);
+    ok(bridge.liveConnections == liveBefore, '同值换上游不动已建立的连接');
+
+    // 真换：旧隧道必须断。
+    //
+    // 不掐的后果是「换了出口、额度没变」：客户端把空闲连接留着复用，
+    // 重新加载站点那一下还走在旧上游上，站点看到的出口 IP 一点没变，
+    // 而界面已经显示新出口了。
+    bridge.setUpstream(p2);
+    var killed = false;
+    try {
+      await closed.future.timeout(const Duration(seconds: 3));
+      killed = true;
+    } on TimeoutException {
+      killed = false;
+    }
+    ok(killed, '换出口后旧隧道被掐断');
+    ok(
+      bridge.liveConnections == 0,
+      '桥里的活连接归零',
+      '(live=${bridge.liveConnections})',
+    );
+
+    client.destroy();
+    await quiet.close();
+  }
+
   await bridge.stop();
   await socks1.stop();
   await socks2.stop();
