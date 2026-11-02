@@ -183,10 +183,7 @@ void main() {
       final a = mk('1.1.1.1');
       final b = mk('2.2.2.2');
       final ledger = filled(a);
-      ledger.burn(
-        a.id,
-        untilMs: DateTime.now().millisecondsSinceEpoch - 1,
-      );
+      ledger.burn(a.id, untilMs: DateTime.now().millisecondsSinceEpoch - 1);
       expect(ledger.isBurned(a.id), isFalse);
 
       // 站点那边额度恢复了、烧痕也跟着过期 —— 这时切回 a 是对的：

@@ -113,19 +113,16 @@ class IdentityLedger {
     required String Function() mintModel,
     required String Function() mintChromeMajor,
     Set<String> unusable = const {},
-  }) => LedgerPlanner(
-    bindings: _bindings,
-    owners: _owners,
-    burned: burnedNow(),
-  ).plan(
-    pool: pool,
-    currentProxyId: currentProxyId,
-    numberId: numberId,
-    mintUserAgent: mintUserAgent,
-    mintModel: mintModel,
-    mintChromeMajor: mintChromeMajor,
-    unusable: unusable,
-  );
+  }) => LedgerPlanner(bindings: _bindings, owners: _owners, burned: burnedNow())
+      .plan(
+        pool: pool,
+        currentProxyId: currentProxyId,
+        numberId: numberId,
+        mintUserAgent: mintUserAgent,
+        mintModel: mintModel,
+        mintChromeMajor: mintChromeMajor,
+        unusable: unusable,
+      );
 
   /// 记下这次打开。
   ///
