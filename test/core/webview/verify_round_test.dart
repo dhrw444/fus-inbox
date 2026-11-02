@@ -123,6 +123,68 @@ void main() {
       round.begin(rearm: false);
       expect(round.autoPopped, isTrue);
     });
+
+    // 下面四条锁的是「站点又开了一轮」的语义。它不是 Optional 的修饰：
+    // 页面被 Offstage 藏着的时候内核会把渲染器置为 hidden，站点在那种页面
+    // 里建的 Turnstile 组件（跨域 iframe，垫片够不到它自己的 document.hidden）
+    // 永远过不去 —— 用户看到的就是「验证界面老是自己刷新」。
+
+    test('同一轮不重复计数、不解闸', () {
+      final round = build();
+      round.markHumanCheck(1);
+      expect(round.humanCheckCount, 1);
+      round.markPopped();
+      round.markHumanCheck(1);
+      expect(round.autoPopped, isTrue, reason: '数字没长 = 还是同一轮');
+    });
+
+    test('收起之后站点又开一轮 —— 解开闸门，这一轮必须让人看见', () {
+      final round = build();
+      round.markHumanCheck(1);
+      round.markPopped();
+      round.close();
+      expect(round.shouldAutoPop, isFalse, reason: '只是收起，站点没动静');
+      round.markHumanCheck(2);
+      expect(round.autoPopped, isFalse);
+      expect(round.shouldAutoPop, isTrue);
+    });
+
+    test('层开着时计数增长 —— 只记数，不解闸', () {
+      final round = build();
+      round.markHumanCheck(1);
+      round.showAuto();
+      round.markPopped();
+      // 层本来就开着，页面是可见的，这一轮不需要额外动作。
+      round.markHumanCheck(2);
+      expect(round.humanCheckCount, 2);
+      round.close();
+      expect(round.autoPopped, isTrue, reason: '解了闸的话一收起就被下一拍弹回来，收起就白给了');
+    });
+
+    test('新的一轮 = 新的窗口，不带着上一轮的超时', () {
+      final round = build();
+      round.markHumanCheck(1);
+      now = now.add(const Duration(seconds: 300));
+      expect(round.timedOut, isTrue);
+      round.showAuto();
+      round.markPopped();
+      round.close();
+      round.markHumanCheck(2);
+      expect(round.timedOut, isFalse);
+    });
+
+    test('换页之后计数归零 —— 新页面第一轮照样弹得出来', () {
+      final round = build();
+      round.markHumanCheck(5);
+      round.markPopped();
+      round.begin();
+      expect(round.humanCheckCount, 0);
+      // 新页面是新的 window，它从 1 重新数；不归零的话
+      // 「旧页面 5、新页面 1」会被判成「没增长」。
+      round.markHumanCheck(1);
+      expect(round.autoPopped, isFalse);
+      expect(round.shouldAutoPop, isTrue);
+    });
   });
 
   group('自动收层', () {

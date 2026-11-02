@@ -879,12 +879,19 @@
   function boot() {
     // 站点自己派发的验证事件，是「站点真的在等人点」的唯一证据。
     //
-    // `reader.js:103` 在开始摆人机验证时 dispatch `fus:reader-check`，
+    // `reader.js` 在开始摆人机验证时 dispatch `fus:reader-check`，
     // 在会话建好时 dispatch `fus:reader-ready`。监听它们，把信号落到
-    // `window.__fusHumanCheckSeen` —— Dart 侧轮询时读这一个布尔值，
-    // 替代旧实现「等满 6 秒就弹」的计时推断。
+    // `window.__fusHumanCheckSeen` / `__fusHumanCheckCount` —— Dart 侧轮询
+    // 时读这两个值，替代旧实现「等满 6 秒就弹」的计时推断。
+    //
+    // **计数是必须的，不能只置布尔。** 只置布尔的话 App 那个「这轮弹过了」
+    // 的闩再也解不开，站点第二轮的 Turnstile 组件就会在 `Offstage` 藏起来
+    // 的页面里建 —— 渲染器停摆（rAF 不跑）、而那个组件是跨域 iframe，
+    // 垫片够不到它自己的 `document.hidden`。组件永远过不去，用户看到的是
+    // 「验证界面老是自己刷新」。详见 `reader_signal.js` 头部。
     try {
       document.addEventListener('fus:reader-check', function () {
+        window.__fusHumanCheckCount = (window.__fusHumanCheckCount || 0) + 1;
         window.__fusHumanCheckSeen = true;
       });
       document.addEventListener('fus:reader-ready', function () {

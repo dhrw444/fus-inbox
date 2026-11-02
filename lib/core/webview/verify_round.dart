@@ -91,6 +91,13 @@ class VerifyRound {
   /// 就弹」会在站点只是慢的时候无端弹层。
   bool humanCheckSeen = false;
 
+  /// 站点到现在一共开过几轮人机验证（`window.__fusHumanCheckCount`）。
+  ///
+  /// 判据是「**有没有增长**」，不是具体数字 —— 注入脚本有两份同样的监听
+  /// （见 `reader_signal.js` 头部），重复自增只是数字偏大。
+  /// [markHumanCheck] 靠它认出「站点又开了一轮」，再把 [autoPopped] 解开。
+  int humanCheckCount = 0;
+
   /// 这一轮已经自动弹过了。收起后不再重复弹，否则用户一收就又弹回来。
   bool autoPopped = false;
 
@@ -141,6 +148,11 @@ class VerifyRound {
     if (resetPhase) {
       phase = ReaderPhase.unknown;
       humanCheckSeen = false;
+      // 计数也要跟着归零：新页面是新的 `window`，它的
+      // `__fusHumanCheckCount` 从 0 重新数。不归零的话「旧页面数到 5、
+      // 新页面数到 1」会被判成「没有增长」，站点在新页面里开的第一轮
+      // 就再也弹不出来了 —— 正是要修的那个症状。
+      humanCheckCount = 0;
     }
     if (rearm) autoPopped = false;
   }
@@ -159,8 +171,34 @@ class VerifyRound {
     return true;
   }
 
-  /// 站点开始摆人机验证了。
-  void markHumanCheck() => humanCheckSeen = true;
+  /// 站点开始摆人机验证了。[count] = 站点到现在一共开过几轮。
+  ///
+  /// **`count` 增长 = 新的一轮，闸门必须解开。**
+  ///
+  /// 站点是在**页面里**建 Turnstile 组件。页面只要被 `Offstage` 藏着，
+  /// 平台视图就是 `GONE`，Chromium 随之把渲染器置为 hidden —— **rAF 停摆、
+  /// 定时器降频**；而那个组件是**跨域 iframe**，垫片
+  /// （`browser_shim.js`）只覆写了主文档的 `document.hidden`，够不到它自己
+  /// 那份 document，它读到的就是真的 `hidden`。组件在停摆的渲染器里永远
+  /// 过不去 → 超时拆掉 → 重建 —— 用户看到的是「验证界面老是自己刷新」。
+  ///
+  /// 所以「第一轮弹过了」推不出「后面几轮不用弹」：每一轮都得在站点**建
+  /// 组件之前**把页面恢复成真可见，事后补来不及。
+  ///
+  /// **弹层开着时只记数、不解闸**：那一轮页面本来就是可见的，动它没意义；
+  /// 而且解了闸，用户一按「收起」下一拍就被弹回来 —— 那样收起就白给了。
+  /// 于是收起的语义变成：**只收当前这一轮**，站点开下一轮时再弹。
+  void markHumanCheck([int count = 0]) {
+    humanCheckSeen = true;
+    if (count <= humanCheckCount) return;
+    humanCheckCount = count;
+    if (open) return;
+    autoPopped = false;
+    // 起算点一起归位：上一轮耗掉的窗口不该算在新的一轮上，否则新轮刚进来
+    // 就可能已经 `timedOut`，直接走「停止等待」那条分支把它掐了。
+    // （和 [begin] 的 `rearm` 那条一样：新的一轮 = 新的窗口。）
+    _start = _clock();
+  }
 
   /// 自动弹：显示验证界面。
   void showAuto() {

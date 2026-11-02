@@ -827,7 +827,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       if (status != null) {
         // 站点是否真的摆了人机验证 —— 只认它自己派的 `fus:reader-check`。
         // 注入脚本把它落到 `window.__fusHumanCheckSeen`。
-        if (status.humanCheckSeen) _round.markHumanCheck();
+        if (status.humanCheckSeen) {
+          // 带上计数：增长 = 站点又开了一轮，那一轮得让页面真可见
+          // （见 `VerifyRound.markHumanCheck`）。
+          _round.markHumanCheck(status.humanCheckCount);
+        }
 
         final next = readerPhaseOf(status.phase);
         final changed = _round.updatePhase(next);
@@ -897,7 +901,8 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         '      category: String(s.category || ""),'
         '      errorCode: String(s.errorCode || ""),'
         '      message: String(s.message || ""),'
-        '      humanCheckSeen: window.__fusHumanCheckSeen === true'
+        '      humanCheckSeen: window.__fusHumanCheckSeen === true,'
+        '      humanCheckCount: (window.__fusHumanCheckCount || 0)'
         '    });'
         '  }catch(e){ return ""; }'
         '})()',
@@ -920,6 +925,9 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
         errorCode: map['errorCode']?.toString() ?? '',
         message: map['message']?.toString() ?? '',
         humanCheckSeen: map['humanCheckSeen'] == true,
+        humanCheckCount: map['humanCheckCount'] is int
+            ? map['humanCheckCount'] as int
+            : 0,
       );
     } catch (_) {
       // 页面正在导航时执行 JS 会抛，那是正常时序，下一轮再试。
@@ -1264,6 +1272,7 @@ class const _ReaderStatus({
   required this.errorCode,
   required this.message,
   required this.humanCheckSeen,
+  required this.humanCheckCount,
 }) {
   final String phase;
   final String category;
@@ -1272,4 +1281,8 @@ class const _ReaderStatus({
 
   /// 站点真的摆了人机验证。来源是 `fus:reader-check` 事件。
   final bool humanCheckSeen;
+
+  /// 站点一共开过几轮验证（`window.__fusHumanCheckCount`）。
+  /// [VerifyRound.markHumanCheck] 用「有没有增长」认出新的一轮。
+  final int humanCheckCount;
 }
