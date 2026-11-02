@@ -21,9 +21,22 @@ import 'package:fus_inbox/core/proxy/identity_binding.dart';
 import 'package:fus_inbox/core/proxy/proxy_config.dart';
 
 /// 账本的决策器。纯逻辑，不碰磁盘不碰网络。
-class const LedgerPlanner({required this.bindings, required this.owners}) {
+class const LedgerPlanner({
+  required this.bindings,
+  required this.owners,
+  this.burned = const {},
+}) {
   /// 账本里的绑定表：代理 id -> 那个出口上绑着的身份。
   final Map<String, IdentityBinding> bindings;
+
+  /// **此刻烧着的出口**：站点刚用 `429 X-Fair-Use: pause` / `403 challenge`
+  /// 拒过它们，在各自的窗口到期前给不出新号（见
+  /// `IdentityLedger.burnedNow`）。
+  ///
+  /// 和 `unusable`（本地检测判死）是两条独立的判据，走到的地方也一样：
+  /// 不该被当作**归属**切回（`plan` 的 `ownerBurned`），也不该被挑作
+  /// **下一条**出口（`nextUsableProxy`）。
+  final Set<String> burned;
 
   /// 号码 → 出口 id 的确定映射（见 `IdentityLedger.owners`）。
   ///
@@ -70,6 +83,12 @@ class const LedgerPlanner({required this.bindings, required this.owners}) {
     // 全都被判死时退化成不剔 —— 那说明检测本身有问题（比如用户
     // 在没网的时候点了一次全部检测），按检测结果走会变成直连，
     // 拿真实 IP 去撞站点比用一条可疑代理更糟。
+    //
+    // **烧着的出口不在这里剔。** 剔了会让「我现在在哪条出口上」这个
+    // 问题的答案从 currentId 变成另一条 —— 而真正的出口切换是
+    // `rotateToNext` 的活（它还会清站点数据、重设代理）。
+    // 这里只保证一件事：**不把用户切回一条刚撞墙的出口**（见下面
+    // `ownerBurned` 那段）。
     final usable = pool.where((p) => !unusable.contains(p.id)).toList();
     final candidates = usable.isNotEmpty ? usable : pool;
 
@@ -131,7 +150,20 @@ class const LedgerPlanner({required this.bindings, required this.owners}) {
     // 以前是扫 `bindings` 的 `openedNumbers` 猜「谁看过它」，一个号挂在
     // 多个绑定上时必然猜错。现在 `commit` 每次都写死归属，这里查就完了。
     final ownerProxyId = owners[numberId];
-    final owner = ownerProxyId == null ? null : bindings[ownerProxyId];
+    // **归属的那条出口撞过墙的话，这份归属就用不了。**
+    //
+    // 站点把新号额度记在出口 IP 上。A 回过 `429 pause` 之后，账本里
+    // `owners[n] == A` 还挂着 —— 用户点「换出口并重置身份」换到 B，
+    // 下一次点开 n 时这里查到归属是 A，直接 `restore` 回 A：界面上
+    // 写着换了出口，实际又切了回去。
+    //
+    // 归属的全部价值是「站点认得这台设备看过这个号」，而 A 现在连号都
+    // 拿不到，这份价值是零。当它不存在，让流程落到下面的正常分支：
+    // 在当前出口（也就是刚换到的那条）上用它自己的身份。
+    final ownerBurned = ownerProxyId != null && burned.contains(ownerProxyId);
+    final owner = ownerProxyId == null || ownerBurned
+        ? null
+        : bindings[ownerProxyId];
     if (owner != null) {
       // 这个号有归属身份。**要不要切回去，分两种情况** ——
       // 原来只判 `owner.proxyId != current.id`，漏了第二种。
@@ -265,6 +297,10 @@ class const LedgerPlanner({required this.bindings, required this.owners}) {
     for (var i = 0; i < pool.length; i++) {
       final p = pool[(start + i) % pool.length];
       if (p.id == currentId) continue;
+      // 烧着的出口跳过。站点刚拒过它，换过去只是原地打转一轮 ——
+      // 而这一轮要花的代价是：清掉目标出口的身份、重新导航、
+      // 站点再拒一次。
+      if (burned.contains(p.id)) continue;
       final b = bindings[p.id];
       if (b == null) return p;
       partial ??= p;
@@ -279,7 +315,12 @@ class const LedgerPlanner({required this.bindings, required this.owners}) {
     //
     // 这里改成「在池里找一条不是 current 的」，找得到就给，找不到
     // 才给 current。这样调用方判「是不是我自己」时，结论才是真的。
-    final fallback = pool.where((p) => p.id != currentId).firstOrNull;
+    //
+    // 烧着的出口仍然优先回避：**两轮都先剔一遍**，全池都烧了才退回去
+    // 用一条烧掉的（总比原地不动强 —— 撞墙窗口本来就会自愈）。
+    final notCurrent = pool.where((p) => p.id != currentId).toList();
+    final notBurned = notCurrent.where((p) => !burned.contains(p.id));
+    final fallback = notBurned.firstOrNull ?? notCurrent.firstOrNull;
     return fallback ?? pool[start % pool.length];
   }
 

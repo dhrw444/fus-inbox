@@ -390,12 +390,66 @@
     };
   }
 
+  /* ---------------- 自己点站点的「Try again」 ----------------
+
+   * 站点在额度暂停时渲染一个重试按钮（`live.js` 的 `renderMessageHold`）：
+   * 倒计时没走完时它 `disabled` + `hidden`，走完才放开，文案随之变成
+   * "Ready to retry"。真正让站点重新拉消息的动作（`resumeMessages()`）
+   * 就挂在这个按钮的点击上。
+   *
+   * 站点自己也有一个定时器会在倒计时结束时自动 `resumeMessages()`，但那
+   * 个定时器和这个页面一起受限：宿主把 WebView 藏起来的时候内核会给页面
+   * 降频，倒计时到了它不保证立刻跑。**等它 = 把恢复交给一个不保证会跑的
+   * 东西。** 所以这里自己盯：按钮一变成可用就点一下。
+   *
+   * 只在「不可用 → 可用」那一次跳变上点（`retryArmed`）。站点再次拒绝
+   * 之后按钮会重新变回 disabled，于是下一次跳变又会点一次 —— 一轮暂停
+   * 一次，不会连点。
+   *
+   * **只对 pause / unavailable 点。** challenge 那一档的按钮长得一模一样
+   * （那边是 `f.disabled = !k.challengeFailed`），但点它的后果是站点
+   * `resumeMessages()` → `clearMessageChallenge()` + `renderMessageHold()`
+   * → 把 Turnstile 组件整个销毁重建。用户正在过的那次验证会被点没。
+   * 那一档必须由人点。
+   */
+  var lastHoldKind = '';
+  var retryWatch = 0;
+  var retryArmed = false;
+
+  function clickSiteRetry() {
+    if (lastHoldKind !== 'pause' && lastHoldKind !== 'unavailable') return;
+    var btn = document.querySelector('[data-fair-use-retry]');
+    if (!btn) return;
+    if (btn.disabled || btn.hidden) {
+      // 还在倒计时 —— 重新武装，等它放开的那一次。
+      retryArmed = false;
+      return;
+    }
+    if (retryArmed) return;
+    retryArmed = true;
+    try { btn.click(); } catch (e) {}
+  }
+
+  function watchSiteRetry(kind) {
+    lastHoldKind = kind || '';
+    if (kind !== 'pause' && kind !== 'unavailable') {
+      if (retryWatch) { clearInterval(retryWatch); retryWatch = 0; }
+      return;
+    }
+    retryArmed = false;
+    if (retryWatch) return;
+    // 2 秒一次，只在挂着额度暂停时跑。一次 querySelector 的成本，
+    // 换来的是「不依赖被降频的站点定时器」。
+    retryWatch = setInterval(clickSiteRetry, 2000);
+  }
+
   function reportHold(kind, retry, scope, serverMessage) {
     // 同一种拒绝 + 同一个重试秒数只报一次，避免每帧刷屏。
     var key = kind + '|' + retry;
     if (holdupSeen[key]) return;
     holdupSeen[key] = 1;
     holdReported = true;
+    watchSiteRetry(kind);
     var copy = holdCopy(kind);
     post({
       type: 'holdup',
@@ -414,6 +468,8 @@
   // 拿到消息就说明这次拒绝结束了，下次再被拒要重新告诉用户。
   function clearHold() {
     holdupSeen = {};
+    // 拿到消息 = 这次拒绝结束了，重试观察器也收工。
+    watchSiteRetry('');
     if (!holdReported) return;
     holdReported = false;
     post({ type: 'holdup', kind: '', scope: '' });

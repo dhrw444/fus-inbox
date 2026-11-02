@@ -199,7 +199,21 @@ class ProxyNotifier() extends Notifier<ProxyState> {
   ///
   /// **不**无条件清目标出口的绑定 —— 那个判断在 [pickRotation] 里。
   /// 返回换到的那条，池子空时返回 null。
-  Future<ProxyConfig?> rotateToNext() async {
+  ///
+  /// [burnFor] = 把**刚离开的那条**出口认定「撞了墙」多久。
+  ///
+  /// 能走到这里，前提就是「当前那条被站点拒了」，所以它必须留下烧痕。
+  /// 不烧的话，账本里归它名下的号会在下次被打开时把用户拉回去
+  /// （`LedgerPlanner.plan` 的 `restore` 分支）—— 用户看到的正是
+  /// 「点了换出口，实际又切回那条已经烧掉的」。
+  ///
+  /// 默认 60 秒取自站点自己的兜底：`live.js` 的 `holdMessages` 在服务端
+  /// 既没给 `retry_after` 也没给 `Retry-After` 时按 `"pause"===e?60:15`
+  /// 算，也就是暂停 60 秒。真值比这个长的话，下次在那条出口上还会再撞
+  /// 一次、再烧一次 —— 自纠偏，不需要本地猜一个更大的数。
+  Future<ProxyConfig?> rotateToNext({
+    Duration burnFor = const Duration(seconds: 60),
+  }) async {
     final choice = pickRotation(
       all: state.all,
       results: state.results,
@@ -208,9 +222,18 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     );
     if (choice == null) return null;
 
+    // 记下离开的是哪一条。**在 copyWith 之前拿**，之后 `currentId`
+    // 就是新那条了。
+    final leaving = state.currentId;
     state = state.copyWith(currentId: choice.next.id);
     if (choice.clearBinding) {
       state.ledger.clearProxy(choice.next.id);
+    }
+    if (leaving.isNotEmpty && leaving != choice.next.id) {
+      state.ledger.burn(
+        leaving,
+        untilMs: DateTime.now().add(burnFor).millisecondsSinceEpoch,
+      );
     }
     await _persist();
     return choice.next;

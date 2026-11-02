@@ -66,9 +66,15 @@ class VerifyRound {
 
   /// 最多等这么久。
   ///
-  /// 站点自己的人机验证组件超时是 **180 秒**（`reader.js:110`），
-  /// 而 `recover()` 的重试间隔是 30 秒（`reader.js:172`）。
-  /// 窗口比站点短，就会出现「用户还在站点的验证框上，App 已经放弃了」。
+  /// 站点自己的人机验证组件超时是 **180 秒**（`reader.js` 里
+  /// `widgetForView` 的 `setTimeout(...,180000)`）。窗口比站点短，就会出现
+  /// 「用户还在站点的验证框上，App 已经放弃了」。
+  ///
+  /// **不要按「站点每 30 秒自愈一次」来定这个窗口。** 站点里确实有个 30 秒
+  /// 的数（`reader.js` 的 `recoveryAt = now + 30000`），但那是 `recover()`
+  /// 内部的**节流器**，而 `recover()` 在整份站点脚本里没有任何调用点 ——
+  /// 它不是调度器，在等人来调（调用方是 App，见 `inbox_screen.dart` 的
+  /// `_nudgeSiteRecovery`）。
   final Duration window;
 
   final DateTime Function() _clock;

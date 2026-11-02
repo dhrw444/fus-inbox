@@ -53,8 +53,10 @@ class IdentityLedger {
   IdentityLedger({
     Map<String, IdentityBinding>? bindings,
     Map<String, String>? owners,
+    Map<String, int>? burned,
   }) : _bindings = {...?bindings},
-       _owners = {...?owners};
+       _owners = {...?owners},
+       _burned = {...?burned};
 
   final Map<String, IdentityBinding> _bindings;
 
@@ -70,6 +72,18 @@ class IdentityLedger {
   /// 现在每次 [commit] 都写死「这个号归这条出口」，之后 [plan] 直接查表，
   /// 不猜。
   final Map<String, String> _owners;
+
+  /// **烧着的出口：出口 id → 到期时刻（epoch ms）。**
+  ///
+  /// 站点把新号额度记在出口 IP 上（`429 X-Fair-Use: pause`，见 `SITE.md` §5）。
+  /// 某条出口撞墙之后，[plan] 会把用户拉回它 —— 因为账本里那些号仍然写着
+  /// 「归它所有」（`_owners`）。于是点「换出口并重置身份」换到 B，下一次
+  /// 点开同一个号时又切回 A：**界面说换了出口，实际回到了那条已经烧掉的**。
+  ///
+  /// 这张表补的就是那条判据：到期之前，烧着的出口既不被当作归属切回、
+  /// 也不进候选。**到期自动失效，不用人清** —— 站点的暂停本来就会自愈，
+  /// 只是没人知道确切的到期时刻，所以由调用方把自己知道的那个窗口填进来。
+  final Map<String, int> _burned;
 
   /// 号码 → 出口 id。只读视图。
   Map<String, String> get owners => Map.unmodifiable(_owners);
@@ -99,7 +113,11 @@ class IdentityLedger {
     required String Function() mintModel,
     required String Function() mintChromeMajor,
     Set<String> unusable = const {},
-  }) => LedgerPlanner(bindings: _bindings, owners: _owners).plan(
+  }) => LedgerPlanner(
+    bindings: _bindings,
+    owners: _owners,
+    burned: burnedNow(),
+  ).plan(
     pool: pool,
     currentProxyId: currentProxyId,
     numberId: numberId,
@@ -149,9 +167,37 @@ class IdentityLedger {
     _owners.removeWhere((_, owner) => owner == proxyId);
   }
 
+  /// 记下「这条出口撞墙了」。[untilMs] 之后自动失效。
+  ///
+  /// 空 id（直连）不记：直连没有「换一条出口」这回事，把它烧了只会让
+  /// 整池都被剔掉。
+  void burn(String proxyId, {required int untilMs}) {
+    if (proxyId.isEmpty) return;
+    _burned[proxyId] = untilMs;
+  }
+
+  /// 这条出口此刻是不是还烧着。
+  bool isBurned(String proxyId, {int? nowMs}) {
+    final until = _burned[proxyId];
+    if (until == null) return false;
+    return until > (nowMs ?? DateTime.now().millisecondsSinceEpoch);
+  }
+
+  /// 人工解封（比如用户自己知道那条出口又能用了）。
+  void clearBurn(String proxyId) => _burned.remove(proxyId);
+
+  /// 此刻还烧着的出口 id。**顺手剔掉已过期的** —— 不剔的话这张表只增
+  /// 不减，换过一百次出口之后落盘里就攒着一百条死记录。
+  Set<String> burnedNow({int? nowMs}) {
+    final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
+    _burned.removeWhere((_, until) => until <= now);
+    return _burned.keys.toSet();
+  }
+
   void clearAll() {
     _bindings.clear();
     _owners.clear();
+    _burned.clear();
   }
 
   /// `plan` 和 `ProxyNotifier.rotateToNext` 共用同一条挑选规则。
@@ -160,9 +206,10 @@ class IdentityLedger {
       LedgerPlanner(
         bindings: _bindings,
         owners: _owners,
+        burned: burnedNow(),
       ).nextUsableProxy(pool, currentId);
 
-  /// 只存绑定表和归属表。
+  /// 只存绑定表、归属表和烧表。
   ///
   /// 老版本还会写一个 `maxPerIdentity` —— 那是本地自己数的额度上限，
   /// 已经删掉了（判据交给站点，见文件头）。新代码读到它一律忽略，
@@ -170,6 +217,9 @@ class IdentityLedger {
   Map<String, Object?> toJson() => {
     'bindings': _bindings.map((k, v) => MapEntry(k, v.toJson())),
     'owners': _owners,
+    // 烧表要落盘：用户重启 App 之后「这条出口刚刚撞过墙」仍然成立 ——
+    // 不落盘的话重启就把烧痕抹了，点同一个号又会被拉回那条出口。
+    'burned': _burned,
   };
 
   static IdentityLedger fromJson(Object? raw) {
@@ -199,6 +249,17 @@ class IdentityLedger {
         }
       }
     }
-    return IdentityLedger(bindings: out, owners: owners);
+    // 烧表：老盘面里没有这一项，读到就按「一条都没烧」处理 ——
+    // 老盘面要能照常打开（和 `owners` 的兼容规则一样）。
+    final burned = <String, int>{};
+    final rawBurned = raw['burned'];
+    if (rawBurned is Map) {
+      for (final e in rawBurned.entries) {
+        final k = e.key?.toString() ?? '';
+        final until = int.tryParse('${e.value}');
+        if (k.isNotEmpty && until != null) burned[k] = until;
+      }
+    }
+    return IdentityLedger(bindings: out, owners: owners, burned: burned);
   }
 }

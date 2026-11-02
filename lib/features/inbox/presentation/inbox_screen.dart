@@ -78,6 +78,15 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   /// 必须留引用，否则页面销毁后它还会触发 setState。
   Timer? _loadMoreWatchdog;
 
+  /// 站点说了「等 N 秒」之后的自动重发。见 [_scheduleHoldRetry]。
+  Timer? _holdRetryTimer;
+
+  /// 已经排过的那一段暂停（`kind|retrySeconds`）。同一段只排一次。
+  String _holdRetryKey = '';
+
+  /// 上次让站点自己重试会话的时刻（epoch ms）。见 [_nudgeSiteRecovery]。
+  int _lastRecoveryNudgeMs = 0;
+
   /// 站点页面（连着验证）是不是露出来了。
   ///
   /// 两个来源：用户点「自己过验证」主动要看；或者自动路径判定
@@ -164,6 +173,14 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           _armWatchdog();
         }
 
+        // 站点在拒绝里给了「多少秒后可以再来」的话，到点由 App 自己重发一次。
+        //
+        // 不能把恢复交给页面：站点自己那个倒计时定时器和它的 JS 一样，会在
+        // 宿主把 WebView 藏起来时被内核降频；注入脚本去点那个「Try again」
+        // 也一样受限。**Dart 的 Timer 不受 WebView 可见性影响** —— 这是
+        // 唯一一条不依赖「页面还在正常跑」的恢复路径。
+        _scheduleHoldRetry();
+
         // 翻页结束了就撤掉那 15 秒看门狗。
         //
         // 它原来只在「发起下一次翻页」和 `dispose` 时取消 —— 正常翻完
@@ -185,8 +202,13 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       return '';
     });
     // 信号监听器读不到时**不 fail 整个页面**：它只影响「自动弹层快不快」，
-    // 不影响能不能收到消息。站点自己的 `recover()` 还会在 30 秒后再派一次
-    // 事件，那时 `fus_inbox.js` 那份监听已经在位了。
+    // 不影响能不能收到消息。
+    //
+    // **但别指望「站点过一会再派一次」。** 原来这里写「站点自己的
+    // `recover()` 还会在 30 秒后再派一次事件」，那是假的：`recover()`
+    // 确实挂在 `window.FUSReader` 上，可全站没有任何地方调它（它内部那个
+    // 30 秒是节流器，不是调度器，见 [_nudgeSiteRecovery]）。收不到那一次
+    // 事件，弹层就不会自己冒出来 —— 所以这份信号脚本是必需的，不是优化。
     _signalFuture = rootBundle.loadString(_kSignalAsset).catchError((Object e) {
       logLine('验证信号脚本读不到：$e');
       return '';
@@ -309,6 +331,7 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
   void dispose() {
     _watchdog?.cancel();
     _loadMoreWatchdog?.cancel();
+    _holdRetryTimer?.cancel();
     _stopVerifyPoll();
     _searchController.dispose();
     // 引擎常驻在后台，页面走了就把它带走，别留着继续加载和回传。
@@ -380,8 +403,11 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
       // `runJavaScript` 注入 —— 事件早派完了，监听器收不到。
       //
       // 收不到的后果：`__fusHumanCheckSeen` 一直是 false → `shouldAutoPop`
-      // 永远不成立 → 用户只能干等站点 30 秒一次的 `recover()` 重试
-      // （`reader.js:172`）再派一次，弹层才「过一大会」冒出来。
+      // 永远不成立 → 弹层不会自己冒出来。
+      //
+      // **别指望「站点过一会再派一次」。** 原来这里写「等站点 30 秒一次的
+      // `recover()` 重试再派一次」—— 那个调用根本不存在（见
+      // `_nudgeSiteRecovery`）。所以这份信号脚本是必需的，不是优化。
       final signal = await _signalFuture;
       if (signal.isNotEmpty) _engine.injectOnDocumentStart(signal);
       if (!mounted) return;
@@ -571,6 +597,70 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
     _store.note(st.hits == 0 ? '25 秒没截获到接口响应，可能卡在站点的人机验证。' : '截获到了接口，但里面没有消息。');
   }
 
+  /// 站点说了「等 N 秒」的那一档，到点由 App 自己重发一次。
+  ///
+  /// 只对**带倒计时**的拒绝排期（`retrySeconds > 0`），而且**跳过挑战那一档**：
+  /// 站点收到重试走的是 `resumeMessages()` → `clearMessageChallenge()` +
+  /// `renderMessageHold()`，也就是把 Turnstile 组件销毁重建 —— 用户正在过
+  /// 的那一次会被点没。
+  ///
+  /// 同一段暂停（同 kind、同秒数）只排一次：状态一变就重排的话，
+  /// 用户每点一下界面就把倒计时往后推一次，永远等不到。
+  ///
+  /// 重发用「重新加载」而不是「重扫」：hold 来自接口响应头，DOM 里不会有
+  /// 新东西，光重扫永远清不掉它（这条区分见 `HoldNotice.onReload`）。
+  void _scheduleHoldRetry() {
+    final hold = _store.state.hold;
+    if (hold == null ||
+        hold.retrySeconds <= 0 ||
+        hold.kind == SiteHoldKind.challenge) {
+      _holdRetryKey = '';
+      _holdRetryTimer?.cancel();
+      _holdRetryTimer = null;
+      return;
+    }
+    final key = '${hold.kind.name}|${hold.retrySeconds}';
+    if (_holdRetryKey == key) return;
+    _holdRetryKey = key;
+    _holdRetryTimer?.cancel();
+    // +2 秒余量：站点那个倒计时按它自己的时钟算，卡在边界上重发只会再
+    // 吃一次同样的拒绝。
+    _holdRetryTimer = Timer(Duration(seconds: hold.retrySeconds + 2), () {
+      _holdRetryTimer = null;
+      if (!mounted) return;
+      _store.note('站点说 ${hold.retrySeconds} 秒后可再来，重发一次请求。');
+      unawaited(_reload());
+    });
+  }
+
+  /// 叫站点自己重试一次会话建立。
+  ///
+  /// **站点不会自己重试。** `reader.js` 把 `recover()` 挂在
+  /// `window.FUSReader` 上（`:234`），但整份站点脚本里**没有任何地方调它**
+  /// —— `live.js` 零命中，`reader.js` 里也只有定义和导出。它内部那个
+  /// `recoveryAt = now + 30000` 是**节流器，不是调度器**：它在等人来调。
+  ///
+  /// 之前 App 这边按「站点每 30 秒自愈一次」写注释，于是失败分支什么都不做。
+  /// 实际结果是站点一旦没把会话建起来就永久停住，用户只能自己重开。
+  /// 现在按同样的 30 秒节流，由 App 去调 —— 节流两边都有，重复调用无害，
+  /// 但没必要每 900 毫秒打一次 JS。
+  void _nudgeSiteRecovery() {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    if (now - _lastRecoveryNudgeMs < 30000) return;
+    _lastRecoveryNudgeMs = now;
+    unawaited(
+      _engine
+          .evaluateJavascript(
+            'window.FUSReader && window.FUSReader.recover && '
+            'window.FUSReader.recover();',
+          )
+          .catchError((Object e) {
+            logLine('叫站点自愈失败: $e');
+            return null;
+          }),
+    );
+  }
+
   /// 造这个页面的 WebView。
   ///
   /// 回调在这里**一次注册完**：引擎会把它们攒着，等 [WebEngine.buildView]
@@ -754,8 +844,15 @@ class _InboxScreenState() extends ConsumerState<InboxScreen> {
           if (!_round.open && !_round.autoPopped) {
             _openChallenge(auto: true);
           }
-          // 站点自己在 `recover()` 里会重试（30 秒一次，`reader.js:172`），
-          // 所以这里不自杀：让它继续盯，站点恢复后 phase 会变回 ready。
+          // **站点不会自己重试。**
+          //
+          // `reader.js` 把 `recover()` 挂出来了，但整个站点脚本里没有任何
+          // 地方调它（见 [_nudgeSiteRecovery]）。原来这里写「站点自己在
+          // recover() 里会重试（30 秒一次）」，于是选择什么都不做 —— 等的
+          // 是一个永远不会来的调用，站点一卡就永久停在那里。
+          // 现在由 App 按同样的 30 秒节流去催一次；轮询继续盯，
+          // 站点恢复后 phase 会变回 ready。
+          _nudgeSiteRecovery();
           return;
         }
 
