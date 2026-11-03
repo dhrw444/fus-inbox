@@ -170,7 +170,18 @@ class InboxStore({this.onChanged}) {
     final hits = payload['hits'] is int
         ? payload['hits'] as int
         : int.tryParse('${payload['hits']}') ?? _state.hits;
-    final err = payload['err']?.toString();
+    // **失败原因不能被一帧空 items 抹掉。**
+    //
+    // `err` 只来自 payload —— 而 items 帧本来就不带 `err`（那一帧是注入脚本
+    // 扫出来的 DOM，只有 `src`/`hits`）。所以一个空 items 帧（本文件自己的
+    // 注释写着这是常态：「注入脚本早期那次 DOM 扫描可能一条有效消息都没有」）
+    // 会让 `err` 变成 null，`status` 被重算成「收件页已打开，等新短信…」，
+    // 而 `phase` 那行还特意保留了 `failed` —— 失败面板于是说不出原因，
+    // 却宣称页面已打开。
+    //
+    // `_ingestHold` 对同一类问题已经加过对称的保护（`keepError`），这里漏了。
+    final keepError = _state.phase == InboxPhase.failed;
+    final err = payload['err']?.toString() ?? (keepError ? _state.error : null);
 
     _emit(
       InboxState(

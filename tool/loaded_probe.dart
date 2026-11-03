@@ -120,6 +120,42 @@ void main() {
     '(proxy=${allBad.proxy.id})',
   );
 
+  // ---------- 当前出口：直连就是直连，不是池里第一条 ----------
+  //
+  // `current` 原来在 id 查不到时兜底到 `all.firstOrNull`。于是 `currentId`
+  // 为空串（用户选了直连）时，设置页卡片左边写「当前：<某条节点>」——
+  // 那个「当前：直连」的分支永远显示不出来 —— 而右边「这个出口已看 N 个号」
+  // 取的却是空串的账本。同一张卡片两半说的不是同一条出口。
+  {
+    final s = ProxyState(
+      pool: [p('10.0.0.1', 1080), p('10.0.0.2', 1080)],
+      loaded: true,
+    );
+    ok(
+      s.current != null && s.current!.id == '',
+      '空 currentId = 直连，不该兜底到池里第一条',
+      '(got=${s.current?.id})',
+    );
+    ok(s.current!.isDirectProxy, '直连占位要认得出是直连');
+    ok(s.realProxy == null, '直连时没有「真代理」可交给目录请求');
+
+    final onProxy = s.copyWith(currentId: '10.0.0.2:1080');
+    ok(
+      onProxy.current != null && onProxy.current!.id == '10.0.0.2:1080',
+      '选了代理就返回那条代理',
+    );
+    ok(
+      onProxy.realProxy != null && onProxy.realProxy!.id == '10.0.0.2:1080',
+      '真代理也跟着走',
+    );
+
+    // 反面：currentId 指向一条已经不存在的出口（删了节点但没对齐）
+    // —— 不能退回直连冒充「用户选了直连」，也不能冒充池里第一条。
+    final stale = s.copyWith(currentId: 'gone:9');
+    ok(stale.current == null, 'id 查不到就是没有，不拿第一条顶替');
+    ok(stale.realProxy == null, '真代理同样为 null');
+  }
+
   print('');
   print('$pass passed, $fail failed');
   // **有失败就抛。**

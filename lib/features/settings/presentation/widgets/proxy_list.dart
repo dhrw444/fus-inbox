@@ -59,9 +59,16 @@ class _ProxyListState() extends State<ProxyList> {
     if (!_expanded) {
       // 收起时把「当前正在用的那条」留在外面 —— 否则用户一眼看过去
       // 一条代理都没有，会以为配置丢了。其余的收进按钮后面。
+      //
+      // 当前是**直连**时也要留一行：`state.current` 现在返回直连占位
+      // （`id` 空串），照原样 `_row(active)` 会渲染出一个 `ValueKey('')`、
+      // 名字「直连」、却在删除时对着空 id 调 `onRemove` 的行 —— 那行不是
+      // 池里的条目，不能删也不能「使用」。所以直连单独给一行只读的。
       final active = widget.state.current;
+      final direct = active != null && active.isDirectProxy;
       return [
-        if (active != null) _row(active),
+        if (active != null && !direct) _row(active),
+        if (direct) _directRow(),
         _expandButton(
           onPressed: () => setState(() {
             _expanded = true;
@@ -135,6 +142,24 @@ class _ProxyListState() extends State<ProxyList> {
       probe: state.results[p.id],
       onUse: () => widget.onUse(p.id),
       onRemove: () => widget.onRemove(p.id),
+    );
+  }
+
+  /// 「直连」那一行。**只读**：直连不在池里，没有 id 可删、也没有可「使用」
+  /// 的条目（选直连是在别处做的），所以不给按钮 —— 否则那一行会把空 id 交给
+  /// `onRemove`。
+  Widget _directRow() {
+    final state = widget.state;
+    final theme = Theme.of(context);
+    return ListTile(
+      key: const ValueKey('direct'),
+      leading: const Icon(Icons.public_off),
+      title: const Text('直连（没用代理）'),
+      subtitle: Text(
+        '这个出口已看 ${state.ledger.usedFor('')} 个号',
+        style: theme.textTheme.bodySmall,
+      ),
+      trailing: Text('当前', style: theme.textTheme.labelMedium),
     );
   }
 

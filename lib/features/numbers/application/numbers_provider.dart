@@ -141,14 +141,13 @@ class NumberDirectoryNotifier() extends Notifier<NumberDirectoryState> {
     }
     if (!proxyState.loaded) return '代理清单还没读完';
 
-    final proxy = proxyState.current;
+    // 判据是「有没有一条**真的**代理」，不是 `current`：`current` 在直连时
+    // 会返回直连占位（`id` 空串），拿它交差等于用真实 IP 抓目录。
+    final proxy = proxyState.realProxy;
     if (proxy == null) {
       return '一条代理都没配（去设置里加一条，或关掉「号码目录走代理」）';
     }
-    // 池子里一条都没有时 `current` 兜底到 `all.firstOrNull`，而 `all` 里
-    // 只有用户真加的 / 内置的条目，没有「直连」占位。所以这里判的是
-    // 「引擎只能给直连」那种情况：直连不是用户要的出口，不能拿来交差
-    // （那等于拿真实 IP 抓目录）。
+    // 直连不是用户要的出口，不能拿来交差。
     if (proxy.isDirectProxy) {
       return '没有可用的代理出口（当前出口是直连，目录走代理需要一条真代理）';
     }

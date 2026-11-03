@@ -119,8 +119,27 @@ class ProxyState {
   /// 全部代理，内置在前。
   List<ProxyConfig> get all => [...builtin, ...pool];
 
-  ProxyConfig? get current =>
-      all.where((p) => p.id == currentId).firstOrNull ?? all.firstOrNull;
+  /// **当前真正在用的出口**，包括「直连」这个选择本身。
+  ///
+  /// `currentId` 为空串 = 用户在设置里选了直连 —— 返回 [directProxy()]（`id` 也是
+  /// 空串，`displayName` 是「直连」），**不是**池里第一条。
+  ///
+  /// 原来这里是 `?? all.firstOrNull`：id 查不到就退到第一条，而 `all` 里只有
+  /// 用户加的 / 内置的条目，没有直连占位。于是设置页那张卡片左边写着
+  /// 「当前：<某条节点>」（`proxy_cards.dart` 里 `current == null` 那个「当前：
+  /// 直连」的分支**永远显示不出来**），右边「这个出口已看 N 个号」取的却是
+  /// `currentId`（空串）的直连账本 —— 同一张卡片两半说的不是同一条出口。
+  ///
+  /// 唯一依赖那个兜底的是目录请求（`numbers_provider.dart`），它要的答案是
+  /// 「有没有一条真代理可以拿出去抓目录」。那就给它 [realProxy] —— 需求写成
+  /// 需求，不要靠一个「查不到就当第一条」的兜底去碰运气。直连也一样被明确
+  /// 判掉（`isDirectProxy`）。
+  ProxyConfig? get current => currentId.isEmpty ? directProxy() : realProxy;
+
+  /// 池里**那条真的代理**，直连不算。没有任何真代理时为 null。
+  ///
+  /// 目录请求用它：直连不是用户要的出口，拿真实 IP 去抓目录不算交差。
+  ProxyConfig? get realProxy => all.where((p) => p.id == currentId).firstOrNull;
 
   ProxyState copyWith({
     List<ProxyConfig>? pool,
