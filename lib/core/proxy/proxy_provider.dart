@@ -142,6 +142,15 @@ class ProxyNotifier() extends Notifier<ProxyState> {
       excludedBuiltin: r.excludedBuiltin,
       currentId: r.currentId,
     );
+    // **账本里属于这条出口的记录一起清掉。**
+    //
+    // `clearProxy` 就是为这个动作写的（它自己的文档：不清的话那些号会指向
+    // 一条已经不存在的出口），但在这之前它只有两个调用点 —— 一个已经没人调
+    // 的手动重置、一个「本来就没绑定所以什么都没清」的空动作。于是删掉一条
+    // 代理之后，它的绑定和全部归属还留在盘上：将来这条代理被重新加回来
+    // （或内置恢复），`plan()` 会照着旧记录 `restore` 回那个身份，而它的
+    // 站点侧密钥早就没了 —— 账本说这是台老设备，站点那边是全新访客。
+    state.ledger.clearProxy(id);
     await _persist();
   }
 
@@ -185,12 +194,6 @@ class ProxyNotifier() extends Notifier<ProxyState> {
     if (proxyId.isNotEmpty && state.currentId != proxyId) {
       state = state.copyWith(currentId: proxyId);
     }
-    await _persist();
-  }
-
-  /// 手动换身份：清掉当前代理上的绑定，下次打开会造新的。
-  Future<void> resetCurrentIdentity() async {
-    state.ledger.clearProxy(state.currentId);
     await _persist();
   }
 

@@ -416,7 +416,25 @@ class FirstSeenFiller({
             await _sleepCancellable(e.after, gen);
             if (_generation != gen) return;
           } catch (e) {
-            // 网络、超时、5xx：试一次就够。重复打同一个坏请求没意义。
+            // **撞在「连接刚被关掉」上要重发一次。**
+            //
+            // 本客户端是 keep-alive 复用连接池的（`idleTimeout` 30 秒），而
+            // 换出口时桥会掐掉所有已建立的连接 —— 于是轮换之后的第一批请求
+            // 里，必有一两个落在「池里那条空闲连接已经被关掉」上，
+            // `dart:io` 报的是 `HttpException: Connection closed before full
+            // header was received`。那不是这个号的问题，重发一次就走上新连接。
+            //
+            // 其余失败（网络断、超时、5xx）照旧只试一次：重复打同一个坏请求
+            // 没意义。
+            final stale =
+                e is SocketException ||
+                (e is HttpException && e.message.contains('closed'));
+            if (stale && attempt < 2) {
+              logLine('抓收录时间撞到已关闭的空闲连接（$number），重发一次');
+              await _sleepCancellable(const Duration(milliseconds: 300), gen);
+              if (_generation != gen) return;
+              continue;
+            }
             logLine('抓收录时间失败（$number）：$e');
             break;
           }

@@ -65,9 +65,16 @@ void main() {
   ok(withPool.all.every((e) => !e.isDirectProxy), '都不是直连');
 
   final led = IdentityLedger();
+  // `currentProxyId` 必须给一条**真实的出口**。
+  //
+  // 空串的含义是「用户在设置里选了直连」—— `plan()` 有一条专门分支照着它
+  // 返回直连，压根不走候选层（见 `identity_plan.dart` 那段，以及账本测试里
+  // 「直连是合法选择，不能被『校正』掉」）。这里原来传的是空串，于是这条
+  // 断言测的是直连，不是「有池子该用代理」；它从空串语义定下来那天起就一直
+  // 挂着，而 `loaded.main` 只打印不抛 —— gate 一路上没看见（现在收尾会抛）。
   final plan = led.plan(
     pool: withPool.all,
-    currentProxyId: '',
+    currentProxyId: '10.0.0.1:1080',
     numberId: 'n1',
     unusable: const <String>{},
     mintUserAgent: () => 'UA-NEW',
@@ -94,7 +101,10 @@ void main() {
   print('=== 6. 有池子但全不可用 → 回退用池子，绝不退直连 ===');
   final allBad = led.plan(
     pool: withPool.all,
-    currentProxyId: '',
+    // 同上：要测「全判死也不退直连」这条 fail-closed 规则，就得站在一条
+    // 真实的出口上 —— 空串会被直连分支提前返回，测不到候选层
+    // （`identity_plan.dart` 里 `usable.isNotEmpty ? usable : pool` 那句）。
+    currentProxyId: '10.0.0.1:1080',
     numberId: 'n1',
     unusable: {'10.0.0.1:1080', '10.0.0.2:1080'},
     mintUserAgent: () => 'UA-NEW',
@@ -112,4 +122,14 @@ void main() {
 
   print('');
   print('$pass passed, $fail failed');
+  // **有失败就抛。**
+  //
+  // gate 判定「这一段过没过」靠的是异常（`tool/gate.dart` 的注释：「一段
+  // 检查。抛异常 = 这段失败」）。原来这里只打印 —— 于是这一段的失败 gate
+  // 一次都没看见过：上面那两条从空串语义定下来那天起就一直挂着（
+  // `currentProxyId: ''` 走的是直连分支），而 gate 每次都报「全部通过」。
+  // 打印不等于判据，这段自己也得是判据。
+  //
+  // 不用 `exit(1)`：那会把整条 gate 一起杀掉，后面几段就不跑了。
+  if (fail > 0) throw StateError('$fail failed');
 }

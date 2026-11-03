@@ -406,7 +406,13 @@ class IdentityRotator({
   /// 矛盾的访客。所以闸门要开在入口这一层，不能只靠
   /// [_rotateToNextProxy] 里那个（那条路是自动触发的，走的不是同一个口）。
   Future<void> rotateIdentity() async {
-    if (_rotating) return;
+    if (_rotating) {
+      // 连点第二下什么都不做是对的（不然两次导航会互相打断），但不能悄无声
+      // 息：这条路径要清库、换 UA、导航、删 IndexedDB、再重载一遍，慢的
+      // 时候十几秒 —— 这期间再点按钮的人只会以为按钮坏了。
+      store.note('上一次换身份还没走完，稍等一下。');
+      return;
+    }
     _rotating = true;
     try {
       await _rotateIdentityBody();
@@ -460,23 +466,35 @@ class IdentityRotator({
       // `commitOpen` 原来只在「打开号码」那条路（inbox_screen）里调，换身份
       // 这条完全没写账。这里补上，`numberId` 传空串表示「只是建了身份、还没
       // 看号」—— `commit` 只在 numberId 非空时才往 openedNumbers 里加。
+      //
+      // **直连（`currentId` 为空串）也必须写。**
+      //
+      // 空串不是「没有出口」，而是「直连」这个明确的选择：`plan()` 有一条
+      // 专门读 `bindings['']` 给它 mint 身份的分支；账本的 `burn` 也为它留了
+      // 守卫（`if (proxyId.isEmpty) return;` —— 直连没什么可烧的）；
+      // `IdentityBinding` 的文档把话说得更直：拒掉空串的后果是
+      // 「在同一个 IP 上又造一台设备」。
+      //
+      // 这里原先是个 `if (proxyId.isNotEmpty)`：直连下这次换身份**一个字节
+      // 都没进账本**。于是下次开号 `plan()` 拿 `bindings['']` 里的旧记录说事
+      // —— 要么把刚换的新 UA 覆盖回旧 UA（站点拿到新密钥、却配着旧设备画像），
+      // 要么现场再 mint 一台、再清一次站点数据。用户看到的就是「点了换身份，
+      // 下次开号又换了一遍」。
       final proxyId = ref.read(proxyProvider).currentId;
-      if (proxyId.isNotEmpty) {
-        await ref
-            .read(proxyProvider.notifier)
-            .commitOpen(
-              proxyId,
-              '',
-              IdentityBinding(
-                proxyId: proxyId,
-                userAgent: fresh.userAgent,
-                model: fresh.model,
-                chromeMajor: fresh.chromeMajor,
-                openedNumbers: const [],
-                createdAtMs: DateTime.now().millisecondsSinceEpoch,
-              ),
-            );
-      }
+      await ref
+          .read(proxyProvider.notifier)
+          .commitOpen(
+            proxyId,
+            '',
+            IdentityBinding(
+              proxyId: proxyId,
+              userAgent: fresh.userAgent,
+              model: fresh.model,
+              chromeMajor: fresh.chromeMajor,
+              openedNumbers: const [],
+              createdAtMs: DateTime.now().millisecondsSinceEpoch,
+            ),
+          );
 
       // 下一次加载完成时删密钥，然后重载。
       _wipeOnLoad = true;
@@ -600,8 +618,8 @@ class IdentityRotator({
 
   /// 一键摆脱「新号码额度用完」：**换出口 + 换身份，一起做**。
   ///
-  /// 和 [restartWithNewIdentity] 的区别只有一件：那个不管 IP，这个先
-  /// 把出口换掉。站点把新号额度记在出口 IP 上（实测：同一 IP 清空
+  /// 单独清身份那一半不算数：AppBar 上那个按钮**只换身份、不动 IP**，而
+  /// 这个先把出口换掉。站点把新号额度记在出口 IP 上（实测：同一 IP 清空
   /// 全部浏览器数据后换新身份，再开新号仍然是 429 `fair_use_pause`），
   /// 所以只清身份那一半等于白烧一个新身份。
   ///
@@ -626,21 +644,5 @@ class IdentityRotator({
     // `canRotate` 那个预检留给 [_rotateToNextProxy]：它不是静默返回，
     // 会写明原因（池里没有别的出口），而且只在一个地方写，不会两处漂。
     return _rotateToNextProxy();
-  }
-
-  /// 用户已经换了出口 IP，点这个把浏览器身份也一起清掉再重来。
-  ///
-  /// 配额记在 IP 上，换身份单独做没用（实测同一 IP 换身份后第 4 个号
-  /// 依然被拒）。反过来只换 IP 不清身份，站点那边还认旧会话。所以
-  /// 这两半必须一起 —— 这条路径假定 IP 那一半用户已经自己做了；
-  /// App 自己会换出口的那条走 [rotateEgressAndIdentity]。
-  Future<void> restartWithNewIdentity() async {
-    // 账本里这个出口的绑定也要清掉 —— 否则下次打开还会拿回同一个
-    // 身份，用户明明换了 IP 却还是旧身份，等于白换。
-    await ref.read(proxyProvider.notifier).resetCurrentIdentity();
-    if (!isAlive()) return;
-    onPageDiscarded();
-    // 公开入口：这条路径没有别的闸门持有者，交给 [rotateIdentity] 自己管。
-    await rotateIdentity();
   }
 }

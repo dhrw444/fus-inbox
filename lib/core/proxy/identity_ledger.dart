@@ -185,10 +185,17 @@ class IdentityLedger {
 
   /// 此刻还烧着的出口 id。**顺手剔掉已过期的** —— 不剔的话这张表只增
   /// 不减，换过一百次出口之后落盘里就攒着一百条死记录。
-  Set<String> burnedNow({int? nowMs}) {
+  Set<String> burnedNow({int? nowMs}) => _liveBurned(nowMs).keys.toSet();
+
+  /// 剔掉过期的烧痕，返回**剩下那些活的**（带时间戳）。
+  ///
+  /// 读（[burnedNow]）和落盘（[toJson]）都走它。落盘原来直写 [_burned]，
+  /// 于是上面那句「只增不减」在盘上照样发生：读的时候会再剔一次，所以不是
+  /// 功能错误，是盘面越攒越脏。判据只留这一处，不在这里再写一遍 `until > now`。
+  Map<String, int> _liveBurned([int? nowMs]) {
     final now = nowMs ?? DateTime.now().millisecondsSinceEpoch;
     _burned.removeWhere((_, until) => until <= now);
-    return _burned.keys.toSet();
+    return _burned;
   }
 
   void clearAll() {
@@ -216,7 +223,10 @@ class IdentityLedger {
     'owners': _owners,
     // 烧表要落盘：用户重启 App 之后「这条出口刚刚撞过墙」仍然成立 ——
     // 不落盘的话重启就把烧痕抹了，点同一个号又会被拉回那条出口。
-    'burned': _burned,
+    //
+    // 值走 `_liveBurned()` 而不是直写 `_burned`：过期的烧痕在落盘时一起
+    // 剔掉（判据复用 [burnedNow] 那一处，不在这里再写一遍 `until > now`）。
+    'burned': Map<String, int>.of(_liveBurned()),
   };
 
   static IdentityLedger fromJson(Object? raw) {
@@ -237,7 +247,13 @@ class IdentityLedger {
       for (final e in rawOwners.entries) {
         final k = e.key?.toString() ?? '';
         final v = e.value?.toString() ?? '';
-        if (k.isNotEmpty && v.isNotEmpty) owners[k] = v;
+        // **值可以是空串。** 空串是「直连」这个合法出口（见 plan 里那条
+        // 专门分支、以及 `IdentityBinding` 的文档），`commit` 照样会写
+        // `owners[n] = ''`。原来这里判的是 `v.isNotEmpty` —— 于是同一个号
+        // 「本次运行里有归属、重启后没归属」，而下面那条老盘面重建的兜底
+        // 路径反而是照写不误的（`owners[n] = b.proxyId`）。同一个函数里两套
+        // 判据，只能有一个对：内存里存了什么，读回来就该是什么。
+        if (k.isNotEmpty) owners[k] = v;
       }
     } else {
       for (final b in out.values) {

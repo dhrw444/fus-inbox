@@ -878,6 +878,101 @@ void main() {
     eq(again.action, OpenAction.reuse, '重启后重开同一个号不该再清数据');
   }
 
+  // ---------- 烧表落盘也要剔过期（判据只留一处） ----------
+  //
+  // 原来 `burnedNow()` 会剔过期、`toJson()` 却直写 `_burned` —— 于是注释里
+  // 承诺的「不剔就会攒一百条死记录」在盘上照样发生。读的时候会再剔一次，
+  // 所以不是功能错误，是盘面越攒越脏。这条锁住「读和落盘同一套判据」。
+  {
+    final led = IdentityLedger();
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    led.burn('gone', untilMs: now - 1);
+    eq(led.burnedNow().contains('gone'), false, '过期的烧痕进不了 burnedNow()');
+    eq(
+      (led.toJson()['burned'] as Map).containsKey('gone'),
+      false,
+      '过期的烧痕也不该写进落盘',
+    );
+
+    // 反面：还烧着的必须留着 —— 否则就修成了「一律不落盘」。
+    led.burn('alive', untilMs: now + 60000);
+    ok(led.burnedNow().contains('alive'), '还烧着的出口算数');
+    eq(
+      (led.toJson()['burned'] as Map).containsKey('alive'),
+      true,
+      '还烧着的出口必须落盘',
+    );
+    final back = IdentityLedger.fromJson(jsonDecode(jsonEncode(led.toJson())));
+    ok(back.isBurned('alive'), '重启后烧痕仍成立（不落盘就抹了）');
+    eq(back.isBurned('gone'), false, '过期那条读回来也不算数');
+
+    // 直连（空串）没什么可烧的 —— 账本自己写了这条守卫。
+    led.burn('', untilMs: now + 60000);
+    eq((led.toJson()['burned'] as Map).containsKey(''), false, '空串（直连）不该进烧表');
+  }
+
+  // ---------- 直连换身份也要能落账 ----------
+  //
+  // 「换身份」那条路（`rotateIdentity`）传的 numberId 是空串，出口也可能
+  // 是空串（直连）。账本为直连留了一整条分支（上面那段测的「直连是合法
+  // 选择」），`IdentityBinding` 的文档也写明拒掉空串的后果是「在同一个 IP
+  // 上又造一台设备」。所以换身份**必须**把新身份写进 `bindings['']`，否则
+  // 下次开号又拿旧记录说事，把刚换的新 UA 覆盖回去 —— 用户看到的是
+  // 「点了换身份，下次开号又换了一遍」。
+  {
+    var k = 0;
+    String ua() => 'Direct-UA-${++k}';
+    String model() => 'Direct-Model-$k';
+    String chrome() => '9$k';
+
+    final led = IdentityLedger();
+    final a = led.plan(
+      pool: pool,
+      currentProxyId: '',
+      numberId: 'n1',
+      mintUserAgent: ua,
+      mintModel: model,
+      mintChromeMajor: chrome,
+    );
+    eq(a.action, OpenAction.rotate, '直连上第一次开号要建身份');
+    led.commit('', 'n1', a.binding);
+
+    final fresh = IdentityBinding(
+      proxyId: '',
+      userAgent: 'Direct-UA-fresh',
+      model: 'Direct-Model-fresh',
+      chromeMajor: '99',
+      openedNumbers: const [],
+      createdAtMs: DateTime.now().millisecondsSinceEpoch,
+    );
+    led.commit('', '', fresh);
+    eq((led.toJson()['bindings'] as Map).containsKey(''), true, '直连换身份必须写进账本');
+
+    final after = led.plan(
+      pool: pool,
+      currentProxyId: '',
+      numberId: 'n1',
+      mintUserAgent: ua,
+      mintModel: model,
+      mintChromeMajor: chrome,
+    );
+    eq(after.action, OpenAction.reuse, '换完身份后开号仍是复用');
+    eq(after.binding.userAgent, 'Direct-UA-fresh', '复用的是刚换的新 UA，不是被覆盖回旧的那台');
+
+    final back = IdentityLedger.fromJson(jsonDecode(jsonEncode(led.toJson())));
+    final again = back.plan(
+      pool: pool,
+      currentProxyId: '',
+      numberId: 'n1',
+      mintUserAgent: ua,
+      mintModel: model,
+      mintChromeMajor: chrome,
+    );
+    eq(again.binding.userAgent, 'Direct-UA-fresh', '重启后仍是新身份');
+    eq(back.ownerOf('n1'), '', '归属仍指向直连，不会被校正到池里第一条');
+  }
+
   print('\n$pass passed, $fail failed');
   if (fail > 0) throw StateError('$fail failed');
 }
