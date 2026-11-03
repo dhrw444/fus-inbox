@@ -64,7 +64,19 @@
   var uaParen = /\(([^)]*)\)/.exec(UA);
   var FULL = uaChrome ? uaChrome[1] : (SEED.full || '');
   var MAJOR = FULL.split('.')[0] || (SEED.major || '');
-  var PLATFORM = /Android/i.test(UA) ? 'Android' : (SEED.plat || 'Android');
+  // 兜底也按 UA 推。以前最后那个 `|| 'Android'` 会在种子缺席时把一台
+  // Windows 机器说成 Android —— 同一份身份里又多一处矛盾。
+  var PLATFORM = /Android/i.test(UA)
+    ? 'Android'
+    : /Windows/i.test(UA)
+      ? 'Windows'
+      : /CrOS/i.test(UA)
+        ? 'Chrome OS'
+        : /Mac OS X|Macintosh/i.test(UA)
+          ? 'macOS'
+          : /Linux|X11/i.test(UA)
+            ? 'Linux'
+            : (SEED.plat || 'Android');
   // UA 里连 Chrome 标记都没有 = 整串解不出来，这时才用装机时的值。
   var MOBILE = /Chrome\//.test(UA) ? /Mobile/i.test(UA) : SEED.mobile;
   var PLATFORM_VERSION = (SEED.pv || '');
@@ -74,7 +86,13 @@
     // "(Linux; Android 14)" —— 只有两段就是 UA 本身没有机型。
     // 这时给空串（**和 UA 保持一致**），绝不退回装机时那个机型：
     // 机型在换身份时是会变的，退回旧值等于又造一处矛盾。
-    MODEL = segs.length >= 3
+    //
+    // **机型只有安卓有。** 这段以前不分平台：Windows 的 UA 是
+    // `(Windows NT 10.0; Win64; x64)`，切出来正好三段，于是 `MODEL`
+    // 被解成 `'x64'`。真 Chrome 在桌面上 `model` 是空串 ——
+    // `getHighEntropyValues(['model'])` 一读就对上。照安卓 UA 形状写的
+    // 解析，不能套到桌面串上。
+    MODEL = /Android/i.test(UA) && segs.length >= 3
       ? segs[2].trim().replace(/\s+Build\/.*$/, '')
       : '';
     if (segs.length >= 2) {
@@ -123,46 +141,129 @@
       ];
 
   // ---- navigator.userAgentData ----
-  if (!('userAgentData' in navigator)) {
-    var highEntropy = {
-      architecture: 'arm',
-      bitness: '64',
-      brands: BRANDS,
-      fullVersionList: FULL_LIST,
-      mobile: MOBILE,
-      model: MODEL,
-      platform: PLATFORM,
-      platformVersion: PLATFORM_VERSION,
-      uaFullVersion: FULL,
-      wow64: false
-    };
+  //
+  // 高位熵值也要跟 UA 对得上：`architecture: 'arm'` 是**手机上**的实话
+  // （那边的 UA 里写着 `Linux; Android 14`），可 Windows 的 UA 是
+  // `Windows NT 10.0; Win64; x64` —— 一份说 arm、一份说 x64，又一处自己
+  // 打自己。所以按 UA 推，不许写死。
+  var IS_DESKTOP_UA = !/Android|iPhone|iPad|iPod|Mobile/i.test(UA);
+  var ARCH = IS_DESKTOP_UA ? (/aarch64|arm64/i.test(UA) ? 'arm' : 'x86') : 'arm';
+  var BITNESS = IS_DESKTOP_UA
+    ? (/aarch64|arm64|Win64|x64|WOW64|amd64/i.test(UA) ? '64' : '32')
+    : '64';
 
-    var uaData = {
-      brands: BRANDS,
-      mobile: MOBILE,
-      platform: PLATFORM,
-      getHighEntropyValues: function (hints) {
-        return new Promise(function (resolve) {
-          var out = {};
-          var want = hints || [];
-          for (var i = 0; i < want.length; i++) {
-            var k = want[i];
-            if (Object.prototype.hasOwnProperty.call(highEntropy, k)) {
-              out[k] = highEntropy[k];
-            }
+  var highEntropy = {
+    architecture: ARCH,
+    bitness: BITNESS,
+    brands: BRANDS,
+    fullVersionList: FULL_LIST,
+    mobile: MOBILE,
+    model: MODEL,
+    platform: PLATFORM,
+    platformVersion: PLATFORM_VERSION,
+    uaFullVersion: FULL,
+    wow64: false
+  };
+
+  var uaData = {
+    brands: BRANDS,
+    mobile: MOBILE,
+    platform: PLATFORM,
+    getHighEntropyValues: function (hints) {
+      return new Promise(function (resolve) {
+        var out = {};
+        var want = hints || [];
+        for (var i = 0; i < want.length; i++) {
+          var k = want[i];
+          if (Object.prototype.hasOwnProperty.call(highEntropy, k)) {
+            out[k] = highEntropy[k];
           }
-          // 真 Chrome 的返回里一定带 brands / mobile / platform。
-          out.brands = BRANDS;
-          out.mobile = MOBILE;
-          out.platform = PLATFORM;
-          resolve(out);
-        });
-      },
-      toJSON: function () {
-        return { brands: BRANDS, mobile: MOBILE, platform: PLATFORM };
-      }
-    };
+        }
+        // 真 Chrome 的返回里一定带 brands / mobile / platform。
+        out.brands = BRANDS;
+        out.mobile = MOBILE;
+        out.platform = PLATFORM;
+        resolve(out);
+      });
+    },
+    toJSON: function () {
+      return { brands: BRANDS, mobile: MOBILE, platform: PLATFORM };
+    }
+  };
 
+  // 把同一份假值盖到**已经存在**的原生对象上（Windows 的 WebView2 就有）。
+  //
+  // 优先改原型：`instanceof NavigatorUAData` 与原型链都不动，实例上也不会
+  // 多出自己属性 —— 那些都是能被摸出来的破绽。原型不让改再退到改实例。
+  function overwriteUAData(real) {
+    if (!real) return false;
+    var proto = null;
+    try {
+      proto = Object.getPrototypeOf(real);
+    } catch (e) {}
+    if (proto && proto !== Object.prototype) {
+      try {
+        Object.defineProperty(proto, 'brands', {
+          get: function () { return BRANDS; },
+          configurable: true,
+          enumerable: true
+        });
+        Object.defineProperty(proto, 'mobile', {
+          get: function () { return MOBILE; },
+          configurable: true,
+          enumerable: true
+        });
+        Object.defineProperty(proto, 'platform', {
+          get: function () { return PLATFORM; },
+          configurable: true,
+          enumerable: true
+        });
+        Object.defineProperty(proto, 'getHighEntropyValues', {
+          value: uaData.getHighEntropyValues,
+          configurable: true,
+          writable: true
+        });
+        Object.defineProperty(proto, 'toJSON', {
+          value: uaData.toJSON,
+          configurable: true,
+          writable: true
+        });
+        return true;
+      } catch (e) {}
+    }
+    try {
+      Object.defineProperty(real, 'brands', {
+        get: function () { return BRANDS; },
+        configurable: true,
+        enumerable: true
+      });
+      Object.defineProperty(real, 'mobile', {
+        get: function () { return MOBILE; },
+        configurable: true,
+        enumerable: true
+      });
+      Object.defineProperty(real, 'platform', {
+        get: function () { return PLATFORM; },
+        configurable: true,
+        enumerable: true
+      });
+      Object.defineProperty(real, 'getHighEntropyValues', {
+        value: uaData.getHighEntropyValues,
+        configurable: true,
+        writable: true
+      });
+      Object.defineProperty(real, 'toJSON', {
+        value: uaData.toJSON,
+        configurable: true,
+        writable: true
+      });
+      return true;
+    } catch (e) {}
+    return false;
+  }
+
+  if (!('userAgentData' in navigator)) {
+    // 手机上（Android WebView）本来没有这个属性 —— 装一个。
     try {
       Object.defineProperty(navigator, 'userAgentData', {
         get: function () { return uaData; },
@@ -170,13 +271,40 @@
         enumerable: true
       });
     } catch (e) {}
+  } else {
+    // **桌面上（Windows 的 WebView2）本来就有 —— 以前这里什么都不做。**
+    //
+    // 于是页面读到的是引擎真实的 `[{brand:"Microsoft Edge"},...]`，而同一份
+    // 身份在 `navigator.userAgent` 和 `Sec-CH-UA` 请求头里都写着 Chrome。
+    // 同一次请求三方对不上 —— Turnstile 最先看的就是这个，验证于是永远过不去。
+    var realUAData = null;
+    try {
+      realUAData = navigator.userAgentData;
+    } catch (e) {}
+    if (!overwriteUAData(realUAData)) {
+      // 连实例都改不动，最后才换掉 navigator 上那个 getter。
+      try {
+        Object.defineProperty(navigator, 'userAgentData', {
+          get: function () { return uaData; },
+          configurable: true,
+          enumerable: true
+        });
+      } catch (e) {}
+    }
   }
 
   // ---- window.chrome ----
   // 真 Chrome 暴露这几个命名空间。Turnstile 会摸 chrome.runtime 之类
   // 来判断「是不是真的 Chromium 内核」。
-  if (typeof window.chrome === 'undefined') {
-    window.chrome = {
+  //
+  // **这扇门以前也是「只在没有时才装」。** 手机上 `window.chrome` 是
+  // undefined，所以一直走「整个装上」；Windows 的 WebView2 里它是**存在但
+  // 内容不全**的（有 `chrome.webview` 这类宿主桥，却没有 `chrome.app` /
+  // `chrome.csi`）—— 条件不成立、整段跳过，页面摸到的是一个有缺口的 chrome。
+  //
+  // 改法：先把这份「完整长相」备好，下面按缺补齐 —— 已有的一个字节都不动
+  // （`chrome.webview` 是插件自己的宿主桥，动了桥就断）。
+  var CHROME_FILL = {
       app: {
         isInstalled: false,
         InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
@@ -227,7 +355,37 @@
         };
       }
     };
+
+  // 按缺补齐。已有的一个字节都不动 —— `chrome.webview` 是插件自己的宿主桥
+  // （`callHandler` 底下就是它），动了桥就断。所以只补缺的，不删也不改。
+  if (typeof window.chrome === 'undefined' || window.chrome === null) {
+    window.chrome = {};
   }
+  (function () {
+    var names = ['app', 'runtime', 'csi', 'loadTimes'];
+    for (var i = 0; i < names.length; i++) {
+      var name = names[i];
+      var have = window.chrome[name];
+      var want = CHROME_FILL[name];
+      if (typeof have === 'undefined' || have === null) {
+        try {
+          window.chrome[name] = want;
+        } catch (e) {}
+        continue;
+      }
+      if (typeof want !== 'object' || typeof have !== 'object') continue;
+      // 浅补一层就够：缺的是 app/runtime 里的枚举常量，
+      // 不是再深一层的结构。
+      for (var k in want) {
+        if (!Object.prototype.hasOwnProperty.call(want, k)) continue;
+        if (typeof have[k] === 'undefined') {
+          try {
+            have[k] = want[k];
+          } catch (e) {}
+        }
+      }
+    }
+  })();
 
   // ---- navigator.plugins / mimeTypes ----
   // Chrome 内置 PDF 查看器，所以这两个都不是空的。WebView 里是 0。

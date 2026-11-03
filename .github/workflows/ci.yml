@@ -42,6 +42,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get --enforce-lockfile
 
+      # 垫片必须在**原生 UA-CH 已经存在**的场合把它盖住 —— 也就是 Windows 的
+      # WebView2。原来那两扇门只在「缺属性」时才装（见 tool/shim_test.js 开头），
+      # 桌面上整段跳过，页面读到引擎真实的 Microsoft Edge 品牌表，
+      # 跟同一份身份的 UA 串和 Sec-CH-UA 请求头自相矛盾。
+      # 这条测试用 node 模拟两种内核，负对照验过（未修版必红）。
+      - name: Test browser shim (platform consistency)
+        run: node tool/shim_test.js
+
       - name: Check formatting
         run: dart format --set-exit-if-changed .
 
@@ -53,7 +61,7 @@ jobs:
 
       # 纯逻辑那部分收在一个入口里：账本 / 代理配置 / 身份 / 状态机 /
       # 排序 / 收录时间解析 / findProxy 兜底 / ready 语义 / 代理失败必须停，
-      # 共 12 段。一条命令，失败就非零退出。
+      # 共 14 段。一条命令，失败就非零退出。
       - name: Gate (pure logic)
         run: dart run tool/gate.dart
 
